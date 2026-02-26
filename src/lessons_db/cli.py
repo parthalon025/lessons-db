@@ -290,3 +290,24 @@ def cluster_discover(ctx, min_size):
         click.echo(f"\n✓ Updated {count} lesson cluster assignments.")
     else:
         click.echo("No clusters confirmed.")
+
+
+@main.group()
+def stats():
+    """Surfacing and efficiency statistics."""
+    pass
+
+
+@stats.command("surfacing")
+@click.pass_context
+def stats_surfacing(ctx):
+    """Show outcome rates and surfacing event counts."""
+    from lessons_db.learn import surfacing_stats
+    s = surfacing_stats(ctx.obj["conn"])
+    click.echo(f"Total surfacing events : {s['total_surfacing_events']}")
+    click.echo(f"  Heeded               : {s['heeded']}")
+    click.echo(f"  Dismissed            : {s['dismissed']}")
+    click.echo(f"  Unknown              : {s['unknown']}")
+    if s["heed_rate"] is not None:
+        click.echo(f"  Heed rate            : {s['heed_rate']:.0%}")
+    click.echo(f"Avg per session        : {s['avg_per_session']}")

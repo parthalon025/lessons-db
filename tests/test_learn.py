@@ -1,0 +1,127 @@
+"""Tests for learning pipeline — outcome tracking and relevance scoring."""
+
+import pytest
+from datetime import datetime
+
+from lessons_db.learn import (
+    record_surfacing,
+    record_outcome,
+    relevance_score,
+    surfacing_stats,
+)
+from lessons_db.db import init_db, insert_lesson
+
+
+@pytest.fixture
+def conn_with_lesson(db_path):
+    conn = init_db(db_path)
+    lid = insert_lesson(conn, {
+        "title": "Test lesson",
+        "one_liner": "Always log before swallowing exceptions",
+        "created_date": "2026-02-26",
+    })
+    return conn, lid
+
+
+class TestRecordSurfacing:
+    def test_creates_surfacing_event(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        event_id = record_surfacing(conn, lid, hook_point="read", context="src/hub.py")
+        assert event_id is not None
+        row = conn.execute(
+            "SELECT * FROM surfacing_events WHERE id=?", [event_id]
+        ).fetchone()
+        assert row["lesson_id"] == lid
+        assert row["hook_point"] == "read"
+        assert row["outcome"] == "unknown"
+
+    def test_stores_context(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        event_id = record_surfacing(conn, lid, hook_point="plan", context="authentication refactor")
+        row = conn.execute("SELECT context FROM surfacing_events WHERE id=?", [event_id]).fetchone()
+        assert "authentication" in row["context"]
+
+
+class TestRecordOutcome:
+    def test_updates_outcome_to_heeded(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        event_id = record_surfacing(conn, lid, hook_point="read", context="hub.py")
+        record_outcome(conn, event_id, "heeded")
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id=?", [event_id]).fetchone()
+        assert row["outcome"] == "heeded"
+
+    def test_updates_outcome_to_dismissed(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        event_id = record_surfacing(conn, lid, hook_point="read", context="hub.py")
+        record_outcome(conn, event_id, "dismissed")
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id=?", [event_id]).fetchone()
+        assert row["outcome"] == "dismissed"
+
+    def test_rejects_invalid_outcome(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        event_id = record_surfacing(conn, lid, hook_point="read", context="hub.py")
+        with pytest.raises(ValueError):
+            record_outcome(conn, event_id, "ignored")
+
+
+class TestRelevanceScore:
+    def test_cold_start_returns_half_semantic(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        # No history → outcome_rate=0.5, recurrence=0
+        score = relevance_score(conn, lid, context="hub.py", semantic_sim=0.8)
+        # 0.5*0.8 + 0.3*0.5 + 0.2*0.0 = 0.4 + 0.15 = 0.55
+        assert abs(score - 0.55) < 0.01
+
+    def test_heeded_history_boosts_score(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        for _ in range(3):
+            eid = record_surfacing(conn, lid, "read", "hub.py")
+            record_outcome(conn, eid, "heeded")
+        score_with_history = relevance_score(conn, lid, context="hub.py", semantic_sim=0.8)
+        score_cold = relevance_score(conn, lid, context="other.py", semantic_sim=0.8)
+        assert score_with_history > score_cold
+
+    def test_dismissed_history_lowers_score(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        for _ in range(3):
+            eid = record_surfacing(conn, lid, "read", "hub.py")
+            record_outcome(conn, eid, "dismissed")
+        score = relevance_score(conn, lid, context="hub.py", semantic_sim=0.8)
+        # outcome_rate=0.0 → 0.5*0.8 + 0.3*0.0 + 0.2*0 = 0.4
+        assert score < 0.55
+
+    def test_recurrence_boosts_score(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        # Add 10 near-misses to push recurrence to max
+        for _ in range(10):
+            conn.execute(
+                "INSERT INTO near_misses (lesson_id, file_path, event_type, timestamp) "
+                "VALUES (?, 'hub.py', 'hookify_warn', '2026-02-26T10:00:00')",
+                [lid]
+            )
+        conn.commit()
+        score = relevance_score(conn, lid, context="other.py", semantic_sim=0.5)
+        # 0.5*0.5 + 0.3*0.5 + 0.2*1.0 = 0.25 + 0.15 + 0.20 = 0.60
+        assert score > 0.55
+
+
+class TestSurfacingStats:
+    def test_returns_zero_counts_when_empty(self, db_path):
+        conn = init_db(db_path)
+        stats = surfacing_stats(conn)
+        assert stats["total_surfacing_events"] == 0
+        assert stats["heed_rate"] is None
+
+    def test_counts_heeded_and_dismissed(self, conn_with_lesson):
+        conn, lid = conn_with_lesson
+        e1 = record_surfacing(conn, lid, "read", "a.py")
+        record_outcome(conn, e1, "heeded")
+        e2 = record_surfacing(conn, lid, "read", "b.py")
+        record_outcome(conn, e2, "dismissed")
+        record_surfacing(conn, lid, "plan", "c")  # unknown
+        stats = surfacing_stats(conn)
+        assert stats["total_surfacing_events"] == 3
+        assert stats["heeded"] == 1
+        assert stats["dismissed"] == 1
+        assert stats["unknown"] == 1
+        assert stats["heed_rate"] == 0.33
