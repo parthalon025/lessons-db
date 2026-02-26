@@ -327,6 +327,55 @@ def rule_test(ctx, rules_dir):
         ctx.exit(result.returncode)
 
 
+@main.command()
+@click.option("--rules-dir", type=click.Path(), default=None,
+              help="Rules directory (default: ~/.local/share/lessons-db/rules/)")
+@click.option("--target", type=click.Path(), default=None,
+              help="Target directory to scan (default: ~/Documents/projects/)")
+@click.option("--baseline", default=None,
+              help="Git commit hash for diff-aware scanning.")
+@click.pass_context
+def scan(ctx, rules_dir, target, baseline):
+    """Run Semgrep scan against all lessons rules and record findings."""
+    from lessons_db.scan import run_scan
+    from lessons_db.db import insert_scan_finding
+
+    rules = Path(rules_dir) if rules_dir else RULES_DIR
+    if not rules.exists() or not any(rules.rglob("*.yaml")):
+        click.echo("No rules found. Run: lessons-db rule generate <id>")
+        return
+
+    target_path = Path(target) if target else Path.home() / "Documents" / "projects"
+    conn = ctx.obj["conn"]
+
+    click.echo(f"Scanning {target_path} with rules from {rules}...")
+    findings = run_scan(
+        rules_dir=rules,
+        target_dir=target_path,
+        baseline_commit=baseline,
+    )
+
+    if not findings:
+        click.echo("No findings.")
+        return
+
+    for f in findings:
+        rule_id = f.get("rule_id", "")
+        click.echo(f"  [{rule_id}] {f.get('file_path')}:{f.get('line_number')}")
+        try:
+            insert_scan_finding(conn, {
+                "lesson_id": 0,
+                "rule_id": rule_id,
+                "file_path": f.get("file_path", ""),
+                "line_number": f.get("line_number"),
+                "snippet": f.get("message", ""),
+            })
+        except Exception:
+            logger.warning("scan: failed to insert finding %s", rule_id)
+
+    click.echo(f"\nTotal findings: {len(findings)} (saved to DB)")
+
+
 @main.group()
 def capture():
     """Capture new lessons and manage draft queue."""

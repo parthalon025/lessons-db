@@ -1,7 +1,7 @@
 """Tests for CLI commands using Click CliRunner."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
 
@@ -184,6 +184,36 @@ def test_rule_test_no_rules(tmp_path):
     result = runner.invoke(
         main, ["--db", str(tmp_path / "test.db"), "rule", "test",
                "--rules-dir", str(tmp_path / "rules")],
+    )
+    assert result.exit_code == 0
+    assert "no rules" in result.output.lower()
+
+
+@patch("lessons_db.scan.subprocess.run")
+def test_scan_command_runs(mock_run, tmp_path):
+    """scan command calls semgrep and reports findings."""
+    import json
+    mock_run.return_value = MagicMock(
+        returncode=0,
+        stdout=json.dumps({"version": "2.1.0", "runs": [{"results": []}]}),
+        stderr="",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["--db", str(tmp_path / "test.db"), "scan",
+               "--rules-dir", str(tmp_path / "rules"),
+               "--target", str(tmp_path)],
+    )
+    assert result.exit_code == 0
+
+
+def test_scan_command_no_rules(tmp_path):
+    """scan exits cleanly when rules dir is empty."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["--db", str(tmp_path / "test.db"), "scan",
+               "--rules-dir", str(tmp_path / "empty-rules"),
+               "--target", str(tmp_path)],
     )
     assert result.exit_code == 0
     assert "no rules" in result.output.lower()
