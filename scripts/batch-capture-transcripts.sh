@@ -9,14 +9,14 @@
 # Options:
 #   --dry-run     Print what would be processed without calling lessons-db
 #   --since DATE  Only process sessions modified after DATE (default: all)
-#   --positive    Extract positive patterns (what worked well) — use with deepseek-r1
+#   --positive    Extract positive patterns (what worked well) — use with deepseek-r1:8b-0528-qwen3-q4_K_M
 #
 # Examples:
 #   # Default: extract failure lessons with current ANALYSIS_MODEL
 #   ./scripts/batch-capture-transcripts.sh
 #
-#   # Positive sweep with deepseek-r1
-#   LESSONS_DB_OLLAMA_ANALYSIS_MODEL=deepseek-r1:8b ./scripts/batch-capture-transcripts.sh --positive
+#   # Positive sweep with deepseek-r1 (qwen3-based checkpoint — best for positive patterns)
+#   LESSONS_DB_OLLAMA_ANALYSIS_MODEL=deepseek-r1:8b-0528-qwen3-q4_K_M ./scripts/batch-capture-transcripts.sh --positive
 #
 # Output: progress to stderr, capture results to stdout.
 # Estimated time: ~30-60s per session (Ollama inference). Run in tmux.
