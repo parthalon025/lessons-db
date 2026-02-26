@@ -18,11 +18,12 @@ LESSONS_SOURCE_DIR = Path(os.environ.get(
     str(Path.home() / "Documents" / "docs" / "lessons"),
 ))
 
-# Ollama queue API (generation / analysis tasks)
+# Ollama queue API (generation / analysis tasks) — used for queue-aware callers
 OLLAMA_QUEUE_URL = os.environ.get("LESSONS_DB_OLLAMA_QUEUE_URL", "http://127.0.0.1:7683")
 
-# Ollama direct API (embeddings — synchronous, bypasses queue)
+# Ollama direct API — bypasses queue, used for embeddings and batch analysis
 OLLAMA_EMBED_URL = os.environ.get("LESSONS_DB_OLLAMA_EMBED_URL", "http://127.0.0.1:11434")
+OLLAMA_ANALYSIS_URL = os.environ.get("LESSONS_DB_OLLAMA_ANALYSIS_URL", "http://127.0.0.1:11434")
 
 EMBED_MODEL = "nomic-embed-text"
 EMBED_DIMS = 768

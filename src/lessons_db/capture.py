@@ -10,7 +10,7 @@ import requests
 
 from lessons_db.config import (
     ANALYSIS_MODEL,
-    OLLAMA_QUEUE_URL,
+    OLLAMA_ANALYSIS_URL,
     QUALITY_MIN_SCORE,
 )
 from lessons_db.db import init_db, insert_lesson
@@ -29,7 +29,7 @@ def score_one_liner(text: str) -> int:
     """Ask Ollama to score one-liner specificity 1-5. Returns 3 on any error."""
     try:
         r = requests.post(
-            f"{OLLAMA_QUEUE_URL}/api/generate",
+            f"{OLLAMA_ANALYSIS_URL}/api/generate",
             json={
                 "model": ANALYSIS_MODEL,
                 "prompt": (
@@ -57,7 +57,7 @@ def capture_from_design_doc(doc_path: Path,
 
     try:
         r = requests.post(
-            f"{OLLAMA_QUEUE_URL}/api/generate",
+            f"{OLLAMA_ANALYSIS_URL}/api/generate",
             json={
                 "model": ANALYSIS_MODEL,
                 "prompt": (
@@ -170,7 +170,7 @@ def capture_from_transcript(transcript: str, conn, polarity: str = "negative") -
 
     try:
         r = requests.post(
-            f"{OLLAMA_QUEUE_URL}/api/generate",
+            f"{OLLAMA_ANALYSIS_URL}/api/generate",
             json={
                 "model": ANALYSIS_MODEL,
                 "prompt": prompt,
@@ -220,7 +220,7 @@ def capture_from_diff(diff_text: str, conn) -> list[dict]:
 
     try:
         r = requests.post(
-            f"{OLLAMA_QUEUE_URL}/api/generate",
+            f"{OLLAMA_ANALYSIS_URL}/api/generate",
             json={
                 "model": ANALYSIS_MODEL,
                 "prompt": (
