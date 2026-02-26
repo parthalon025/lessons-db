@@ -224,3 +224,69 @@ def capture_approve(ctx, draft_id):
         click.echo(f"✓ Draft {draft_id} promoted → lesson #{lesson_id}")
     else:
         click.echo(f"✗ Draft {draft_id} not found or already processed.")
+
+
+@main.group()
+def cluster():
+    """Adaptive cluster discovery and management."""
+    pass
+
+
+@cluster.command("show")
+@click.pass_context
+def cluster_show(ctx):
+    """Show current cluster assignments for all lessons."""
+    conn = ctx.obj["conn"]
+    rows = conn.execute(
+        "SELECT cluster, COUNT(*) as n FROM lessons GROUP BY cluster ORDER BY n DESC"
+    ).fetchall()
+    for r in rows:
+        label = r["cluster"] or "(unassigned)"
+        click.echo(f"  {label}: {r['n']} lessons")
+
+
+@cluster.command("history")
+@click.pass_context
+def cluster_history(ctx):
+    """Show history of past clustering runs."""
+    from lessons_db.cluster import get_cluster_history
+    runs = get_cluster_history(ctx.obj["conn"])
+    if not runs:
+        click.echo("No clustering runs yet. Run: lessons-db cluster discover")
+        return
+    for run in runs:
+        click.echo(f"[{run['run_date']}] {run['proposal_count']} proposals, "
+                   f"{run['confirmed_count']} confirmed")
+
+
+@cluster.command("discover")
+@click.option("--min-size", default=5, type=int, help="Minimum cluster size for HDBSCAN.")
+@click.pass_context
+def cluster_discover(ctx, min_size):
+    """Run HDBSCAN on embeddings and propose new cluster assignments."""
+    from lessons_db.cluster import discover_clusters, apply_cluster_proposals
+    conn = ctx.obj["conn"]
+    click.echo("Running HDBSCAN clustering...")
+    try:
+        proposals = discover_clusters(conn, min_cluster_size=min_size)
+    except RuntimeError as e:
+        click.echo(str(e))
+        return
+    if not proposals:
+        click.echo("Not enough data to cluster (need at least min_size * 2 entries with embeddings).")
+        return
+    confirmed = {}
+    for p in proposals:
+        seed_info = f" (overlaps seed {p['overlaps_seed']})" if p["overlaps_seed"] else ""
+        click.echo(f"\nCluster {p['cluster_id']}: {len(p['lesson_ids'])} lessons{seed_info}")
+        click.echo(f"  Suggested name: {p['suggested_name']}")
+        click.echo(f"  Key terms: {', '.join(p['representative_terms'])}")
+        name = click.prompt("  Accept name? (Enter to accept, or type a new name, or 's' to skip)",
+                            default=p["suggested_name"])
+        if name.lower() != "s":
+            confirmed[p["cluster_id"]] = name
+    if confirmed:
+        count = apply_cluster_proposals(conn, proposals, confirmed)
+        click.echo(f"\n✓ Updated {count} lesson cluster assignments.")
+    else:
+        click.echo("No clusters confirmed.")
