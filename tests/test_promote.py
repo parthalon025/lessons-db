@@ -61,6 +61,20 @@ class TestRecordReuse:
         lesson = get_lesson(conn, lid)
         assert lesson["reuse_count"] == 3
 
+    def test_beyond_standard_stays_standard(self, conn_with_positive):
+        """4th+ reuse: tier stays standard, no new template generated."""
+        conn, lid = conn_with_positive
+        record_reuse(conn, lid)
+        record_reuse(conn, lid)
+        record_reuse(conn, lid)  # → standard
+        tier = record_reuse(conn, lid)  # 4th
+        assert tier == "standard"
+        lesson = get_lesson(conn, lid)
+        assert lesson["reuse_count"] == 4
+        assert lesson["tier"] == "standard"
+        # Only one template row — idempotent guard worked
+        assert len(list_templates(conn)) == 1
+
 
 class TestListTemplates:
     def test_empty_initially(self, db_path):
@@ -89,3 +103,22 @@ class TestApplyTemplate:
         content = apply_template(conn, lid)
         assert content is not None
         assert "Dual-axis" in content
+
+    def test_returns_most_recent_when_multiple_rows(self, conn_with_positive):
+        """apply_template returns most recent (highest id) if duplicates exist."""
+        conn, lid = conn_with_positive
+        # Manually insert two template rows to simulate the duplicate scenario
+        from datetime import date
+        conn.execute(
+            "INSERT INTO templates (lesson_id, template_type, content, created_date) "
+            "VALUES (?, 'approach', 'first content', ?)",
+            [lid, date.today().isoformat()],
+        )
+        conn.execute(
+            "INSERT INTO templates (lesson_id, template_type, content, created_date) "
+            "VALUES (?, 'approach', 'second content', ?)",
+            [lid, date.today().isoformat()],
+        )
+        conn.commit()
+        content = apply_template(conn, lid)
+        assert content == "second content"

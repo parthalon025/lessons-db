@@ -68,7 +68,13 @@ def apply_template(conn, lesson_id: int) -> str | None:
 
 def _generate_template(conn, lesson_id: int, one_liner: str,
                         description: str) -> None:
-    """Auto-generate a scaffold template from a proven positive entry."""
+    """Auto-generate a scaffold template from a proven positive entry.
+    No-ops if a template already exists for this lesson (idempotent)."""
+    if conn.execute(
+        "SELECT id FROM templates WHERE lesson_id = ?", [lesson_id]
+    ).fetchone():
+        return
+
     template_type = "approach"
     lower = one_liner.lower()
     if any(w in lower for w in ("test", "verify", "check", "assert", "coverage")):
