@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,13 @@ from lessons_db.config import (
 from lessons_db.db import init_db, insert_lesson
 
 _log = logging.getLogger(__name__)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_think(text: str) -> str:
+    """Strip deepseek-r1 <think>...</think> blocks before JSON parsing."""
+    return _THINK_RE.sub("", text).strip()
 
 
 def score_one_liner(text: str) -> int:
@@ -33,7 +41,7 @@ def score_one_liner(text: str) -> int:
             },
             timeout=30,
         )
-        score = int(r.json().get("response", "3").strip())
+        score = int(_strip_think(r.json().get("response", "3")))
         return max(1, min(5, score))
     except Exception as e:
         _log.warning("score_one_liner failed: %s", e)
@@ -63,7 +71,7 @@ def capture_from_design_doc(doc_path: Path,
             },
             timeout=60,
         )
-        data = json.loads(r.json().get("response", "{}"))
+        data = json.loads(_strip_think(r.json().get("response", "{}")))
         entries = data.get("entries", [])
     except Exception as e:
         _log.warning("capture_from_design_doc Ollama call failed: %s", e)
@@ -127,8 +135,11 @@ def list_drafts(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def capture_from_transcript(transcript: str, conn) -> list[dict]:
-    """Extract negative lessons from a session transcript. Drafts go to capture_drafts.
+def capture_from_transcript(transcript: str, conn, polarity: str = "negative") -> list[dict]:
+    """Extract lessons from a session transcript. Drafts go to capture_drafts.
+
+    polarity="negative" (default) — extracts bugs, anti-patterns, mistakes.
+    polarity="positive" — extracts effective approaches and good patterns.
 
     Returns list of extracted lesson dicts. Returns [] on failure or empty transcript."""
     if not transcript or len(transcript.strip()) < 100:
@@ -136,25 +147,40 @@ def capture_from_transcript(transcript: str, conn) -> list[dict]:
 
     excerpt = transcript[-6000:]  # last 6000 chars — most recent context
 
+    if polarity == "positive":
+        prompt = (
+            "Analyze this Claude Code session transcript. "
+            "Extract effective approaches, good patterns, and techniques that worked well. "
+            "Focus on what was done RIGHT — design decisions, testing strategies, debugging approaches, "
+            "architectural choices that paid off. "
+            "Return JSON: "
+            '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+            f"Transcript excerpt:\n{excerpt}"
+        )
+        source = "auto_transcript_positive"
+    else:
+        prompt = (
+            "Analyze this Claude Code session transcript. "
+            "Extract any coding mistakes, bugs, or anti-patterns that were discovered and fixed. "
+            "Return JSON: "
+            '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+            f"Transcript excerpt:\n{excerpt}"
+        )
+        source = "auto_transcript"
+
     try:
         r = requests.post(
             f"{OLLAMA_QUEUE_URL}/api/generate",
             json={
                 "model": ANALYSIS_MODEL,
-                "prompt": (
-                    "Analyze this Claude Code session transcript. "
-                    "Extract any coding mistakes, bugs, or anti-patterns that were discovered and fixed. "
-                    "Return JSON: "
-                    '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
-                    f"Transcript excerpt:\n{excerpt}"
-                ),
+                "prompt": prompt,
                 "stream": False,
                 "format": "json",
             },
             timeout=60,
         )
         r.raise_for_status()
-        data = json.loads(r.json().get("response", "{}"))
+        data = json.loads(_strip_think(r.json().get("response", "{}")))
         lessons = data.get("lessons", [])
     except Exception as e:
         _log.warning("capture_from_transcript Ollama call failed: %s", e)
@@ -169,8 +195,8 @@ def capture_from_transcript(transcript: str, conn) -> list[dict]:
             conn.execute(
                 "INSERT INTO capture_drafts "
                 "(raw_content, extracted_data, status, created_date, source) "
-                "VALUES (?, ?, 'pending', ?, 'auto_transcript')",
-                [excerpt[:500], json.dumps(entry), date.today().isoformat()],
+                "VALUES (?, ?, 'pending', ?, ?)",
+                [excerpt[:500], json.dumps(entry), date.today().isoformat(), source],
             )
         conn.commit()
         inserted = lessons
@@ -211,7 +237,7 @@ def capture_from_diff(diff_text: str, conn) -> list[dict]:
             timeout=60,
         )
         r.raise_for_status()
-        data = json.loads(r.json().get("response", "{}"))
+        data = json.loads(_strip_think(r.json().get("response", "{}")))
         lessons = data.get("lessons", [])
     except Exception as e:
         _log.warning("capture_from_diff Ollama call failed: %s", e)

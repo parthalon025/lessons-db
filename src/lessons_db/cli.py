@@ -494,15 +494,21 @@ def capture_approve(ctx, draft_id):
 
 @capture.command("transcript")
 @click.argument("transcript_file", type=click.Path(exists=True))
+@click.option("--positive", is_flag=True, help="Extract positive patterns (what worked well) instead of failures.")
 @click.pass_context
-def capture_transcript(ctx, transcript_file):
-    """Analyze a saved session transcript for new lessons (writes to draft queue)."""
+def capture_transcript(ctx, transcript_file, positive):
+    """Analyze a saved session transcript for new lessons (writes to draft queue).
+
+    Use --positive with a reasoning model (e.g. deepseek-r1) to extract effective
+    approaches and good patterns instead of bugs and anti-patterns.
+    """
     from lessons_db.capture import capture_from_transcript
 
     text = Path(transcript_file).read_text(encoding="utf-8", errors="replace")
     conn = ctx.obj["conn"]
+    polarity = "positive" if positive else "negative"
     try:
-        drafts = capture_from_transcript(text, conn)
+        drafts = capture_from_transcript(text, conn, polarity=polarity)
     except Exception as exc:
         click.echo(f"Capture failed: {exc}", err=True)
         ctx.exit(1)

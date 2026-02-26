@@ -4,11 +4,19 @@
 # Extracts user/assistant text, passes to `lessons-db capture transcript`.
 #
 # Usage:
-#   ./scripts/batch-capture-transcripts.sh [--dry-run] [--since YYYY-MM-DD]
+#   ./scripts/batch-capture-transcripts.sh [--dry-run] [--since YYYY-MM-DD] [--positive]
 #
 # Options:
 #   --dry-run     Print what would be processed without calling lessons-db
 #   --since DATE  Only process sessions modified after DATE (default: all)
+#   --positive    Extract positive patterns (what worked well) — use with deepseek-r1
+#
+# Examples:
+#   # Default: extract failure lessons with current ANALYSIS_MODEL
+#   ./scripts/batch-capture-transcripts.sh
+#
+#   # Positive sweep with deepseek-r1
+#   LESSONS_DB_OLLAMA_ANALYSIS_MODEL=deepseek-r1:8b ./scripts/batch-capture-transcripts.sh --positive
 #
 # Output: progress to stderr, capture results to stdout.
 # Estimated time: ~30-60s per session (Ollama inference). Run in tmux.
@@ -23,11 +31,13 @@ fi
 
 DRY_RUN=false
 SINCE=""
+POSITIVE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run) DRY_RUN=true ;;
-        --since)   SINCE="$2"; shift ;;
+        --dry-run)  DRY_RUN=true ;;
+        --positive) POSITIVE=true ;;
+        --since)    SINCE="$2"; shift ;;
         *) echo "Unknown arg: $1" >&2; exit 1 ;;
     esac
     shift
@@ -109,7 +119,10 @@ for i in "${!SESSIONS[@]}"; do
 
     echo "$TEXT" > "$TMPFILE"
 
-    OUTPUT=$("$LESSONS_DB" capture transcript "$TMPFILE" 2>&1)
+    POSITIVE_FLAG=""
+    [[ "$POSITIVE" == "true" ]] && POSITIVE_FLAG="--positive"
+
+    OUTPUT=$("$LESSONS_DB" capture transcript $POSITIVE_FLAG "$TMPFILE" 2>&1)
     EXIT=$?
 
     if [[ $EXIT -eq 0 ]]; then
