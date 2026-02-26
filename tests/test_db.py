@@ -366,3 +366,17 @@ class TestSchemaExtension:
         })
         row = get_lesson(conn, lid)
         assert row["reuse_count"] == 0
+
+    def test_capture_drafts_table_exists(self, db_path):
+        conn = init_db(db_path)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "capture_drafts" in tables
+
+    def test_cluster_runs_table_exists(self, db_path):
+        conn = init_db(db_path)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "cluster_runs" in tables

@@ -136,8 +136,8 @@ CREATE TABLE IF NOT EXISTS cluster_runs (
     result_json TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_surfacing_lesson ON surfacing_events(lesson_id);
-CREATE INDEX IF NOT EXISTS idx_surfacing_outcome ON surfacing_events(outcome);
+CREATE INDEX IF NOT EXISTS idx_surfacing_lesson_ctx ON surfacing_events(lesson_id, context);
+CREATE INDEX IF NOT EXISTS idx_surfacing_outcome ON surfacing_events(lesson_id, outcome);
 CREATE INDEX IF NOT EXISTS idx_templates_lesson ON templates(lesson_id);
 """
 
