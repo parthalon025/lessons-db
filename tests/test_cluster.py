@@ -1,7 +1,7 @@
 """Tests for adaptive HDBSCAN clustering pipeline."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +10,7 @@ from lessons_db.cluster import (
     apply_cluster_proposals,
     get_cluster_history,
     find_seed_overlap,
+    discover_clusters,
 )
 from lessons_db.db import init_db, insert_lesson
 
@@ -106,3 +107,12 @@ class TestGetClusterHistory:
     def test_returns_empty_initially(self, db_path):
         conn = init_db(db_path)
         assert get_cluster_history(conn) == []
+
+
+class TestDiscoverClusters:
+    def test_raises_runtime_error_when_deps_missing(self, db_path):
+        """RuntimeError with install instructions when optional deps unavailable."""
+        conn = init_db(db_path)
+        with patch.dict("sys.modules", {"umap": None, "hdbscan": None}):
+            with pytest.raises(RuntimeError, match="pip install"):
+                discover_clusters(conn)

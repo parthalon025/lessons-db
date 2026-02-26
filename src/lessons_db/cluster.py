@@ -8,9 +8,12 @@ find_seed_overlap, get_cluster_history) have no extra dependencies.
 """
 
 import json
+import logging
 from collections import Counter
 from datetime import date
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 from lessons_db.config import LANCE_DIR, OLLAMA_QUEUE_URL, ANALYSIS_MODEL
 
@@ -37,7 +40,7 @@ def extract_representative_terms(conn, lesson_ids: list[int],
         text = (row["one_liner"] or "") + " " + (row["keywords"] or "")
         words.extend(text.lower().split())
     counter = Counter(w.strip(".,;:()[]") for w in words if w not in _STOPWORDS and len(w) > 2)
-    return [w for w, _ in counter.most_common(top_n * 2) if w not in _STOPWORDS][:top_n]
+    return [w for w, _ in counter.most_common(top_n)]
 
 
 def find_seed_overlap(conn, lesson_ids: list[int],
@@ -102,7 +105,7 @@ def get_cluster_history(conn) -> list[dict]:
     """Return all past clustering runs in descending date order."""
     rows = conn.execute(
         "SELECT id, run_date, proposal_count, confirmed_count, result_json "
-        "FROM cluster_runs ORDER BY run_date DESC"
+        "FROM cluster_runs ORDER BY run_date DESC, id DESC"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -153,7 +156,8 @@ def discover_clusters(conn, min_cluster_size: int = 5) -> list[dict]:
     db = lancedb.connect(str(LANCE_DIR))
     try:
         table = db.open_table("lessons")
-    except Exception:
+    except Exception as e:
+        _log.debug("discover_clusters: could not open 'lessons' table: %s", e)
         return []
 
     rows = table.to_pandas()
