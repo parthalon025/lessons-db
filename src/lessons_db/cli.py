@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from lessons_db.config import SQLITE_PATH, LANCE_DIR, LESSONS_SOURCE_DIR
+from lessons_db.config import SQLITE_PATH, LANCE_DIR, LESSONS_SOURCE_DIR, RULES_DIR
 from lessons_db.db import (
     init_db,
     get_overdue_actions,
@@ -247,6 +247,83 @@ def index(ctx, seed_only):
             click.echo(f"  {ok + failed}/{len(rows)} indexed...", err=False)
 
     click.echo(f"Indexed: {ok}, Failed: {failed}")
+
+
+@main.group()
+def rule():
+    """Generate and test Semgrep rules from lessons."""
+    pass
+
+
+@rule.command("generate")
+@click.argument("lesson_id", type=int)
+@click.option("--rules-dir", type=click.Path(), default=None,
+              help="Directory to write rules (default: ~/.local/share/lessons-db/rules/)")
+@click.option("--severity", default="WARNING",
+              type=click.Choice(["WARNING", "ERROR", "INFO"]),
+              help="Semgrep rule severity.")
+@click.pass_context
+def rule_generate(ctx, lesson_id, rules_dir, severity):
+    """Generate a Semgrep rule YAML file for a lesson."""
+    from lessons_db.rulegen import generate_rule, slug_from_title
+    from pathlib import Path as _Path
+
+    conn = ctx.obj["conn"]
+    lesson = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+    if not lesson:
+        click.echo(f"Lesson #{lesson_id} not found.")
+        return
+
+    patterns = conn.execute(
+        "SELECT * FROM detection_patterns WHERE lesson_id = ?", (lesson_id,)
+    ).fetchall()
+    if not patterns:
+        click.echo(f"No detection patterns for lesson #{lesson_id}. "
+                   "Add patterns via detection_patterns table first.")
+        return
+
+    out_dir = _Path(rules_dir) if rules_dir else RULES_DIR
+    language = patterns[0]["language"] or "any"
+    lang_dir = out_dir / language
+    lang_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = slug_from_title(lesson["title"])
+    rule_file = lang_dir / f"{slug}-{lesson_id:03d}.yaml"
+
+    rule_yaml = generate_rule(dict(lesson), [dict(p) for p in patterns], severity=severity)
+    rule_file.write_text(rule_yaml, encoding="utf-8")
+    click.echo(f"Generated: {rule_file}")
+
+
+@rule.command("test")
+@click.option("--rules-dir", type=click.Path(), default=None,
+              help="Directory containing rules (default: ~/.local/share/lessons-db/rules/)")
+@click.pass_context
+def rule_test(ctx, rules_dir):
+    """Run semgrep --test against all generated rules."""
+    import shutil
+    import subprocess
+    from pathlib import Path as _Path
+
+    out_dir = _Path(rules_dir) if rules_dir else RULES_DIR
+    if not out_dir.exists() or not any(out_dir.rglob("*.yaml")):
+        click.echo("No rules found. Run: lessons-db rule generate <id>")
+        return
+
+    semgrep = shutil.which("semgrep")
+    if not semgrep:
+        click.echo("semgrep not found on PATH.")
+        return
+
+    result = subprocess.run(
+        [semgrep, "--test", str(out_dir)],
+        capture_output=True, text=True,
+    )
+    click.echo(result.stdout or result.stderr)
+    if result.returncode == 0:
+        click.echo("All rules passed.")
+    else:
+        click.echo(f"Test failures (exit code {result.returncode}).")
 
 
 @main.group()

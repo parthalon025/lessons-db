@@ -133,3 +133,57 @@ def test_index_generates_embeddings(mock_embed, tmp_path, lance_dir):
     assert result.exit_code == 0
     assert "Indexed: 1" in result.output
     assert "Failed: 0" in result.output
+
+
+def test_rule_generate_no_patterns(tmp_path):
+    """rule generate exits cleanly when lesson has no detection patterns."""
+    from lessons_db.db import init_db, insert_lesson
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(conn, {
+        "title": "Log before fallback", "one_liner": "Never swallow",
+        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
+    })
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "rule", "generate", "1"])
+    assert result.exit_code == 0
+    assert "no detection patterns" in result.output.lower()
+
+
+def test_rule_generate_with_patterns(tmp_path):
+    """rule generate writes YAML to rules_dir when patterns exist."""
+    from lessons_db.db import init_db, insert_lesson
+    db_path = tmp_path / "test.db"
+    rules_dir = tmp_path / "rules"
+    conn = init_db(db_path)
+    lid = insert_lesson(conn, {
+        "title": "Bare except swallows failures",
+        "one_liner": "Never use bare except",
+        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
+    })
+    conn.execute(
+        "INSERT INTO detection_patterns "
+        "(lesson_id, pattern_type, regex, description, language) VALUES (?,?,?,?,?)",
+        [lid, "regex", r"except\s*:", "bare except", "python"],
+    )
+    conn.commit()
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["--db", str(db_path), "rule", "generate", str(lid),
+               "--rules-dir", str(rules_dir)],
+    )
+    assert result.exit_code == 0
+    assert "generated" in result.output.lower()
+    yaml_files = list(rules_dir.glob("**/*.yaml"))
+    assert len(yaml_files) == 1
+
+
+def test_rule_test_no_rules(tmp_path):
+    """rule test exits cleanly when no rules exist."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["--db", str(tmp_path / "test.db"), "rule", "test",
+               "--rules-dir", str(tmp_path / "rules")],
+    )
+    assert result.exit_code == 0
+    assert "no rules" in result.output.lower()
