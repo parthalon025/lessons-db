@@ -167,8 +167,9 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
         try:
             conn.execute(f"ALTER TABLE lessons ADD COLUMN {col_name} {col_def}")
             conn.commit()
-        except Exception:
-            pass  # Column already exists — safe to ignore
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
 
 
 LESSON_COLUMNS = {
