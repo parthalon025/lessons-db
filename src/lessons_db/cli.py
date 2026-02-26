@@ -442,12 +442,14 @@ def summary(ctx, output):
 
     lines.extend(["", f"**Total:** {len(rows)} lessons", ""])
 
-    out_path = (
-        Path(output) if output
-        else Path.home() / "Documents" / "docs" / "lessons" / "SUMMARY.md"
-    )
+    out_path = Path(output) if output else LESSONS_SOURCE_DIR / "SUMMARY.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines), encoding="utf-8")
+    try:
+        out_path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError as exc:
+        logger.error("summary: failed to write %s: %s", out_path, exc)
+        click.echo(f"Error: could not write {out_path}: {exc}", err=True)
+        raise SystemExit(1)
     click.echo(f"Written: {out_path} ({len(rows)} lessons)")
 
 
