@@ -154,8 +154,8 @@ class TestCaptureFromTranscript:
 
         mock_post.side_effect = Exception("network error")
         conn = init_db(db_path)
-        result = capture_from_transcript("transcript " * 20, conn)
-        assert result == []
+        with pytest.raises(Exception):
+            capture_from_transcript("transcript " * 20, conn)
 
     def test_returns_empty_on_short_transcript(self, db_path):
         from lessons_db.db import init_db
@@ -208,8 +208,8 @@ class TestCaptureFromDiff:
 
         mock_post.side_effect = Exception("connection refused")
         conn = init_db(db_path)
-        result = capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n+except Exception:", conn)
-        assert result == []
+        with pytest.raises(Exception):
+            capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n+except Exception:", conn)
 
 
 class TestCapturePositiveManual:

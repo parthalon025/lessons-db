@@ -81,7 +81,8 @@ def capture_from_design_doc(doc_path: Path,
                 [content[:500], json.dumps(entry), date.today().isoformat()],
             )
         conn.commit()
-    except Exception:
+    except Exception as exc:
+        _log.warning("capture_from_design_doc: DB insert failed: %s", exc)
         conn.rollback()
         return []
     _log.debug("capture_from_design_doc: created %d drafts from %s", len(entries), doc_path.name)
@@ -157,7 +158,7 @@ def capture_from_transcript(transcript: str, conn) -> list[dict]:
         lessons = data.get("lessons", [])
     except Exception as e:
         _log.warning("capture_from_transcript Ollama call failed: %s", e)
-        return []
+        raise
 
     if not lessons:
         return []
@@ -176,7 +177,7 @@ def capture_from_transcript(transcript: str, conn) -> list[dict]:
     except Exception as e:
         _log.warning("capture_from_transcript DB insert failed: %s", e)
         conn.rollback()
-        return []
+        raise
 
     _log.debug("capture_from_transcript: created %d drafts", len(inserted))
     return inserted
@@ -214,7 +215,7 @@ def capture_from_diff(diff_text: str, conn) -> list[dict]:
         lessons = data.get("lessons", [])
     except Exception as e:
         _log.warning("capture_from_diff Ollama call failed: %s", e)
-        return []
+        raise
 
     if not lessons:
         return []
@@ -233,7 +234,7 @@ def capture_from_diff(diff_text: str, conn) -> list[dict]:
     except Exception as e:
         _log.warning("capture_from_diff DB insert failed: %s", e)
         conn.rollback()
-        return []
+        raise
 
     _log.debug("capture_from_diff: created %d drafts", len(inserted))
     return inserted

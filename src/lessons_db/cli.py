@@ -501,7 +501,12 @@ def capture_transcript(ctx, transcript_file):
 
     text = Path(transcript_file).read_text(encoding="utf-8", errors="replace")
     conn = ctx.obj["conn"]
-    drafts = capture_from_transcript(text, conn)
+    try:
+        drafts = capture_from_transcript(text, conn)
+    except Exception as exc:
+        click.echo(f"Capture failed: {exc}", err=True)
+        ctx.exit(1)
+        return
     if drafts:
         click.echo(f"Created {len(drafts)} draft(s). Review with: lessons-db capture drafts")
     else:
@@ -525,7 +530,12 @@ def capture_diff(ctx, diff_file):
         text = sys.stdin.read()
 
     conn = ctx.obj["conn"]
-    drafts = capture_from_diff(text, conn)
+    try:
+        drafts = capture_from_diff(text, conn)
+    except Exception as exc:
+        click.echo(f"Capture failed: {exc}", err=True)
+        ctx.exit(1)
+        return
     if drafts:
         click.echo(f"Created {len(drafts)} draft(s). Review with: lessons-db capture drafts")
     else:
