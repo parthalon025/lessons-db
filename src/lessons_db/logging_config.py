@@ -20,8 +20,12 @@ def configure_logging(level: int = logging.WARNING, verbose: bool = False) -> No
     """
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+    # Scope lessons_db package to DEBUG — third-party libraries stay at WARNING
+    pkg_log = logging.getLogger("lessons_db")
+    pkg_log.setLevel(logging.DEBUG)
+
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)  # handlers filter individually
+    root.setLevel(logging.WARNING)
 
     # Console handler — respects --verbose flag
     if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)

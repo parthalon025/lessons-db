@@ -355,6 +355,6 @@ def logs(tail, level):
         return
     lines = LOG_FILE.read_text(encoding="utf-8").splitlines()
     if level:
-        lines = [l for l in lines if f" {level} " in l or f" {level}-" in l or f"{level}:" in l]
+        lines = [l for l in lines if f" {level} " in l]
     for line in lines[-tail:]:
         click.echo(line)
