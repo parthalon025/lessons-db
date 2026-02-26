@@ -266,12 +266,13 @@ def rule():
 def rule_generate(ctx, lesson_id, rules_dir, severity):
     """Generate a Semgrep rule YAML file for a lesson."""
     from lessons_db.rulegen import generate_rule, slug_from_title
-    from pathlib import Path as _Path
 
     conn = ctx.obj["conn"]
     lesson = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
     if not lesson:
-        click.echo(f"Lesson #{lesson_id} not found.")
+        logger.error("rule generate: lesson #%d not found", lesson_id)
+        click.echo(f"Lesson #{lesson_id} not found.", err=True)
+        ctx.exit(1)
         return
 
     patterns = conn.execute(
@@ -282,7 +283,7 @@ def rule_generate(ctx, lesson_id, rules_dir, severity):
                    "Add patterns via detection_patterns table first.")
         return
 
-    out_dir = _Path(rules_dir) if rules_dir else RULES_DIR
+    out_dir = Path(rules_dir) if rules_dir else RULES_DIR
     language = patterns[0]["language"] or "any"
     lang_dir = out_dir / language
     lang_dir.mkdir(parents=True, exist_ok=True)
@@ -303,9 +304,8 @@ def rule_test(ctx, rules_dir):
     """Run semgrep --test against all generated rules."""
     import shutil
     import subprocess
-    from pathlib import Path as _Path
 
-    out_dir = _Path(rules_dir) if rules_dir else RULES_DIR
+    out_dir = Path(rules_dir) if rules_dir else RULES_DIR
     if not out_dir.exists() or not any(out_dir.rglob("*.yaml")):
         click.echo("No rules found. Run: lessons-db rule generate <id>")
         return
@@ -324,6 +324,7 @@ def rule_test(ctx, rules_dir):
         click.echo("All rules passed.")
     else:
         click.echo(f"Test failures (exit code {result.returncode}).")
+        ctx.exit(result.returncode)
 
 
 @main.group()
