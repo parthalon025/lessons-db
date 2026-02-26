@@ -27,10 +27,8 @@ logger = logging.getLogger(__name__)
 @click.pass_context
 def main(ctx, db, verbose):
     """lessons-learned prevention system — capture, search, and enforce coding lessons."""
-    if verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.WARNING)
+    from lessons_db.logging_config import configure_logging
+    configure_logging(level=logging.DEBUG if verbose else logging.WARNING)
 
     ctx.ensure_object(dict)
     db_path = Path(db) if db else SQLITE_PATH
@@ -344,3 +342,19 @@ def template_show(ctx, lesson_id):
         click.echo(content)
     else:
         click.echo(f"No template for lesson #{lesson_id}. Entry must reach 'proven' tier first.")
+
+
+@main.command()
+@click.option("--tail", "-n", default=50, type=int, help="Number of lines from end to show.")
+@click.option("--level", default=None, type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), help="Filter by log level.")
+def logs(tail, level):
+    """Show recent log entries from ~/.local/share/lessons-db/lessons-db.log."""
+    from lessons_db.logging_config import LOG_FILE
+    if not LOG_FILE.exists():
+        click.echo("No log file yet. Run some commands first.")
+        return
+    lines = LOG_FILE.read_text(encoding="utf-8").splitlines()
+    if level:
+        lines = [l for l in lines if f" {level} " in l or f" {level}-" in l or f"{level}:" in l]
+    for line in lines[-tail:]:
+        click.echo(line)

@@ -1,9 +1,12 @@
 """Enforcement escalation ladder — recurrence tracking and tier promotion."""
 
+import logging
 import sqlite3
 from datetime import date
 
 from lessons_db.db import get_lesson, update_lesson
+
+_log = logging.getLogger(__name__)
 
 # Escalation tiers indexed by recurrence count (after increment).
 # recurrence 1 → documentation/emerging

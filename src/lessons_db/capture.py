@@ -1,6 +1,7 @@
 """Positive knowledge capture — manual interactive and auto-detect from artifacts."""
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from lessons_db.config import (
     QUALITY_MIN_SCORE,
 )
 from lessons_db.db import init_db, insert_lesson
+
+_log = logging.getLogger(__name__)
 
 
 def score_one_liner(text: str) -> int:
@@ -32,7 +35,8 @@ def score_one_liner(text: str) -> int:
         )
         score = int(r.json().get("response", "3").strip())
         return max(1, min(5, score))
-    except Exception:
+    except Exception as e:
+        _log.warning("score_one_liner failed: %s", e)
         return 3
 
 
@@ -61,7 +65,8 @@ def capture_from_design_doc(doc_path: Path,
         )
         data = json.loads(r.json().get("response", "{}"))
         entries = data.get("entries", [])
-    except Exception:
+    except Exception as e:
+        _log.warning("capture_from_design_doc Ollama call failed: %s", e)
         return []
 
     if not entries:
@@ -79,6 +84,7 @@ def capture_from_design_doc(doc_path: Path,
     except Exception:
         conn.rollback()
         return []
+    _log.debug("capture_from_design_doc: created %d drafts from %s", len(entries), doc_path.name)
     return entries
 
 
@@ -127,6 +133,7 @@ def capture_positive_manual(conn, one_liner: str, why: str, category: str,
     Returns lesson_id if quality passes, None if rejected."""
     score = score_one_liner(one_liner)
     if score < QUALITY_MIN_SCORE:
+        _log.warning("capture_positive_manual: score %d below threshold %d", score, QUALITY_MIN_SCORE)
         return None
 
     return insert_lesson(conn, {

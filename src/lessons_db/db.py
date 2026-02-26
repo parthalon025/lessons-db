@@ -1,8 +1,11 @@
 """SQLite schema, migrations, and CRUD for lessons-db."""
 
+import logging
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS lessons (
@@ -150,6 +153,7 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_SQL)
     _add_extension_columns(conn)
+    _log.debug("init_db: opened %s", db_path)
     return conn
 
 

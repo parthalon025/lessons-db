@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 import yaml
+
+_log = logging.getLogger(__name__)
 
 
 def slug_from_title(title: str) -> str:
@@ -37,6 +40,7 @@ def generate_rule(
     Returns:
         YAML string with top-level ``rules:`` key.
     """
+    _log.debug("generate_semgrep_rule: lesson=%d", lesson["id"])
     if not patterns:
         raise ValueError(f"Cannot generate rule for lesson {lesson['id']}: no patterns provided")
 

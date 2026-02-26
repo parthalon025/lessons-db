@@ -1,5 +1,9 @@
 """Generate markdown from DB records."""
 
+import logging
+
+_log = logging.getLogger(__name__)
+
 
 def format_lesson_markdown(lesson: dict) -> str:
     """Format a lesson dict as markdown matching FRAMEWORK.md template."""

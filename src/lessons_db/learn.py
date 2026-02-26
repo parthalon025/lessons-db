@@ -1,6 +1,9 @@
 """Learning pipeline: surfacing event recording and composite relevance scoring."""
 
+import logging
 from datetime import datetime, timezone
+
+_log = logging.getLogger(__name__)
 
 
 def record_surfacing(conn, lesson_id: int, hook_point: str,
@@ -26,6 +29,7 @@ def record_outcome(conn, event_id: int, outcome: str) -> None:
     )
     conn.commit()
     if cursor.rowcount == 0:
+        _log.warning("record_outcome: no event found with id=%d", event_id)
         raise ValueError(f"No surfacing event found with id={event_id}.")
 
 
@@ -94,6 +98,7 @@ def _recurrence_score(conn, lesson_id: int) -> float:
         [lesson_id],
     ).fetchone()
     if not row:
+        _log.warning("_recurrence_score: lesson %d not found", lesson_id)
         return 0.0
     raw = (row["recurrence_count"] or 0) + (row["nm"] or 0)
     return min(raw / 10.0, 1.0)

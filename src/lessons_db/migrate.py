@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 
 def extract_lesson_number(title_line: str) -> int | None:
@@ -106,7 +109,7 @@ def parse_lesson_file(path: Path) -> dict:
     desc_parts = [p for p in (obs, analysis) if p]
     description = "\n\n".join(desc_parts)
 
-    return {
+    result = {
         "title": title,
         "lesson_number": lesson_number,
         "date": _extract_metadata(lines, "Date"),
@@ -122,3 +125,7 @@ def parse_lesson_file(path: Path) -> dict:
         "description": description,
         "markdown_path": str(path),
     }
+    if not result["title"] or not result["date"]:
+        _log.warning("parse_lesson_file: missing required field in %s", path.name)
+    _log.debug("parse_lesson_file: parsed %s", path.name)
+    return result

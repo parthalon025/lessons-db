@@ -5,6 +5,7 @@ reuse_count >= 2 → proven  (template generated)
 reuse_count >= 3 → standard
 """
 
+import logging
 from datetime import date
 
 from lessons_db.config import (
@@ -12,6 +13,8 @@ from lessons_db.config import (
     PROMOTION_TEMPLATE_THRESHOLD,
     PROMOTION_TESTED_THRESHOLD,
 )
+
+_log = logging.getLogger(__name__)
 
 
 def record_reuse(conn, lesson_id: int) -> str:
@@ -23,6 +26,7 @@ def record_reuse(conn, lesson_id: int) -> str:
         [lesson_id],
     ).fetchone()
     if not row:
+        _log.warning("record_reuse: lesson %d not found", lesson_id)
         raise ValueError(f"Lesson {lesson_id} not found")
 
     reuse_count = (row["reuse_count"] or 0) + 1
@@ -38,6 +42,7 @@ def record_reuse(conn, lesson_id: int) -> str:
     elif reuse_count >= PROMOTION_TESTED_THRESHOLD and tier == "noticed":
         tier = "tested"
 
+    _log.debug("record_reuse: lesson=%d promoted to %s (reuse_count=%d)", lesson_id, tier, reuse_count)
     conn.execute(
         "UPDATE lessons SET reuse_count = ?, tier = ? WHERE id = ?",
         [reuse_count, tier, lesson_id],
