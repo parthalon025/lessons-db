@@ -370,8 +370,8 @@ def scan(ctx, rules_dir, target, baseline):
                 "line_number": f.get("line_number"),
                 "snippet": f.get("message", ""),
             })
-        except Exception:
-            logger.warning("scan: failed to insert finding %s", rule_id)
+        except Exception as exc:
+            logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
     click.echo(f"\nTotal findings: {len(findings)} (saved to DB)")
 

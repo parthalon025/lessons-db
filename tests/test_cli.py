@@ -193,6 +193,9 @@ def test_rule_test_no_rules(tmp_path):
 def test_scan_command_runs(mock_run, tmp_path):
     """scan command calls semgrep and reports findings."""
     import json
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "test-rule.yaml").write_text("rules: []")
     mock_run.return_value = MagicMock(
         returncode=0,
         stdout=json.dumps({"version": "2.1.0", "runs": [{"results": []}]}),
@@ -201,7 +204,7 @@ def test_scan_command_runs(mock_run, tmp_path):
     runner = CliRunner()
     result = runner.invoke(
         main, ["--db", str(tmp_path / "test.db"), "scan",
-               "--rules-dir", str(tmp_path / "rules"),
+               "--rules-dir", str(rules_dir),
                "--target", str(tmp_path)],
     )
     assert result.exit_code == 0
