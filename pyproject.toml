@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lessons-db"
+version = "0.1.0"
+description = "Automated lessons-learned prevention system with semantic search and Semgrep rule generation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+authors = [
+    {name = "Justin McFarland", email = "parthalon025@gmail.com"},
+]
+dependencies = [
+    "click>=8.1.0",
+    "lancedb>=0.20.0",
+    "pyarrow>=15.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "pytest-xdist>=3.5.0", "pytest-timeout>=2.4.0"]
+
+[project.scripts]
+lessons-db = "lessons_db.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
