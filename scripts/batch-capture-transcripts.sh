@@ -81,7 +81,9 @@ PYEOF
 mapfile -t SESSIONS < <(find "$PROJ_DIR" -maxdepth 2 -name "*.jsonl" | sort)
 
 if [[ -n "$SINCE" ]]; then
-    mapfile -t SESSIONS < <(find "$PROJ_DIR" -maxdepth 2 -name "*.jsonl" -newer <(touch -d "$SINCE" /tmp/since-ref && echo /tmp/since-ref) | sort)
+    touch -d "$SINCE" /tmp/lessons-db-since-ref
+    mapfile -t SESSIONS < <(find "$PROJ_DIR" -maxdepth 2 -name "*.jsonl" -newer /tmp/lessons-db-since-ref | sort)
+    rm -f /tmp/lessons-db-since-ref
 fi
 
 TOTAL=${#SESSIONS[@]}
