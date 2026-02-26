@@ -143,6 +143,9 @@ class TestCaptureFromTranscript:
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["one_liner"] == "Always log before fallback"
+        rows = conn.execute("SELECT * FROM capture_drafts").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source"] == "auto_transcript"
 
     @patch("lessons_db.capture.requests.post")
     def test_returns_empty_on_ollama_failure(self, mock_post, db_path):
@@ -177,6 +180,9 @@ class TestCaptureFromDiff:
         result = capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n-    pass\n+except Exception as e:\n+    log(e)", conn)
         assert isinstance(result, list)
         assert len(result) == 1
+        rows = conn.execute("SELECT * FROM capture_drafts").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source"] == "auto_diff"
 
     @patch("lessons_db.capture.requests.post")
     def test_returns_empty_on_empty_diff(self, mock_post, db_path):
@@ -185,6 +191,14 @@ class TestCaptureFromDiff:
 
         conn = init_db(db_path)
         result = capture_from_diff("", conn)
+        assert result == []
+
+    def test_returns_empty_on_short_diff(self, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_diff
+
+        conn = init_db(db_path)
+        result = capture_from_diff("short diff txt", conn)
         assert result == []
 
     @patch("lessons_db.capture.requests.post")
