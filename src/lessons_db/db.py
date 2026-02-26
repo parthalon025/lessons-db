@@ -60,8 +60,9 @@ CREATE TABLE IF NOT EXISTS detection_patterns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     lesson_id INTEGER NOT NULL,
     pattern_type TEXT NOT NULL,
-    pattern TEXT NOT NULL,
+    regex TEXT NOT NULL,
     description TEXT,
+    language TEXT NOT NULL DEFAULT 'any',
     FOREIGN KEY (lesson_id) REFERENCES lessons(id)
 );
 
