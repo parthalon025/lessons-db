@@ -136,7 +136,7 @@ def migrate(ctx, source, db_override, dry_run):
         conn = init_db(db_path)
 
     source_dir = Path(source) if source else LESSONS_SOURCE_DIR
-    md_files = sorted(source_dir.glob("*.md"))
+    md_files = sorted(f for f in source_dir.glob("2026-*.md") if f.is_file())
 
     if dry_run:
         click.echo(f"Found {len(md_files)} lesson file(s):")
