@@ -128,6 +128,76 @@ class TestListDrafts:
         assert drafts[0]["status"] == "pending"
 
 
+class TestCaptureFromTranscript:
+    @patch("lessons_db.capture.requests.post")
+    def test_extracts_lessons_from_transcript(self, mock_post, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_transcript
+
+        mock_post.return_value = MagicMock(
+            json=lambda: {"response": '{"lessons": [{"one_liner": "Always log before fallback", "cluster": "A", "tier": "lesson"}]}'},
+            raise_for_status=lambda: None,
+        )
+        conn = init_db(db_path)
+        result = capture_from_transcript("Session transcript text here. " * 10, conn)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["one_liner"] == "Always log before fallback"
+
+    @patch("lessons_db.capture.requests.post")
+    def test_returns_empty_on_ollama_failure(self, mock_post, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_transcript
+
+        mock_post.side_effect = Exception("network error")
+        conn = init_db(db_path)
+        result = capture_from_transcript("transcript " * 20, conn)
+        assert result == []
+
+    def test_returns_empty_on_short_transcript(self, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_transcript
+
+        conn = init_db(db_path)
+        result = capture_from_transcript("too short", conn)
+        assert result == []
+
+
+class TestCaptureFromDiff:
+    @patch("lessons_db.capture.requests.post")
+    def test_extracts_lessons_from_diff(self, mock_post, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_diff
+
+        mock_post.return_value = MagicMock(
+            json=lambda: {"response": '{"lessons": [{"one_liner": "Never use bare except", "cluster": "A", "tier": "lesson"}]}'},
+            raise_for_status=lambda: None,
+        )
+        conn = init_db(db_path)
+        result = capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n-    pass\n+except Exception as e:\n+    log(e)", conn)
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    @patch("lessons_db.capture.requests.post")
+    def test_returns_empty_on_empty_diff(self, mock_post, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_diff
+
+        conn = init_db(db_path)
+        result = capture_from_diff("", conn)
+        assert result == []
+
+    @patch("lessons_db.capture.requests.post")
+    def test_returns_empty_on_ollama_failure(self, mock_post, db_path):
+        from lessons_db.db import init_db
+        from lessons_db.capture import capture_from_diff
+
+        mock_post.side_effect = Exception("connection refused")
+        conn = init_db(db_path)
+        result = capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n+except Exception:", conn)
+        assert result == []
+
+
 class TestCapturePositiveManual:
     """Quality gate and lesson creation for manual capture."""
 

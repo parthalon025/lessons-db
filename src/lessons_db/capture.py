@@ -126,6 +126,119 @@ def list_drafts(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def capture_from_transcript(transcript: str, conn) -> list[dict]:
+    """Extract negative lessons from a session transcript. Drafts go to capture_drafts.
+
+    Returns list of extracted lesson dicts. Returns [] on failure or empty transcript."""
+    if not transcript or len(transcript.strip()) < 100:
+        return []
+
+    excerpt = transcript[-6000:]  # last 6000 chars — most recent context
+
+    try:
+        r = requests.post(
+            f"{OLLAMA_QUEUE_URL}/api/generate",
+            json={
+                "model": ANALYSIS_MODEL,
+                "prompt": (
+                    "Analyze this Claude Code session transcript. "
+                    "Extract any coding mistakes, bugs, or anti-patterns that were discovered and fixed. "
+                    "Return JSON: "
+                    '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+                    f"Transcript excerpt:\n{excerpt}"
+                ),
+                "stream": False,
+                "format": "json",
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = json.loads(r.json().get("response", "{}"))
+        lessons = data.get("lessons", [])
+    except Exception as e:
+        _log.warning("capture_from_transcript Ollama call failed: %s", e)
+        return []
+
+    if not lessons:
+        return []
+
+    inserted = []
+    try:
+        for entry in lessons:
+            conn.execute(
+                "INSERT INTO capture_drafts "
+                "(raw_content, extracted_data, status, created_date, source) "
+                "VALUES (?, ?, 'pending', ?, 'auto_transcript')",
+                [excerpt[:500], json.dumps(entry), date.today().isoformat()],
+            )
+        conn.commit()
+        inserted = lessons
+    except Exception as e:
+        _log.warning("capture_from_transcript DB insert failed: %s", e)
+        conn.rollback()
+        return []
+
+    _log.debug("capture_from_transcript: created %d drafts", len(inserted))
+    return inserted
+
+
+def capture_from_diff(diff_text: str, conn) -> list[dict]:
+    """Extract negative lessons from a git diff. Drafts go to capture_drafts.
+
+    Returns list of extracted lesson dicts. Returns [] on empty diff."""
+    if not diff_text or len(diff_text.strip()) < 20:
+        return []
+
+    excerpt = diff_text[:4000]
+
+    try:
+        r = requests.post(
+            f"{OLLAMA_QUEUE_URL}/api/generate",
+            json={
+                "model": ANALYSIS_MODEL,
+                "prompt": (
+                    "Analyze this git diff. Look for anti-patterns in REMOVED lines (prefixed with -) "
+                    "that were fixed in ADDED lines (prefixed with +). "
+                    "Extract any coding lessons. "
+                    "Return JSON: "
+                    '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+                    f"Diff:\n{excerpt}"
+                ),
+                "stream": False,
+                "format": "json",
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = json.loads(r.json().get("response", "{}"))
+        lessons = data.get("lessons", [])
+    except Exception as e:
+        _log.warning("capture_from_diff Ollama call failed: %s", e)
+        return []
+
+    if not lessons:
+        return []
+
+    inserted = []
+    try:
+        for entry in lessons:
+            conn.execute(
+                "INSERT INTO capture_drafts "
+                "(raw_content, extracted_data, status, created_date, source) "
+                "VALUES (?, ?, 'pending', ?, 'auto_diff')",
+                [excerpt[:500], json.dumps(entry), date.today().isoformat()],
+            )
+        conn.commit()
+        inserted = lessons
+    except Exception as e:
+        _log.warning("capture_from_diff DB insert failed: %s", e)
+        conn.rollback()
+        return []
+
+    _log.debug("capture_from_diff: created %d drafts", len(inserted))
+    return inserted
+
+
 def capture_positive_manual(conn, one_liner: str, why: str, category: str,
                               when_to_apply: str = "", when_not_to_apply: str = "") -> int | None:
     """Capture a positive knowledge entry manually. Runs quality gate first.

@@ -492,6 +492,46 @@ def capture_approve(ctx, draft_id):
         click.echo(f"✗ Draft {draft_id} not found or already processed.")
 
 
+@capture.command("transcript")
+@click.argument("transcript_file", type=click.Path(exists=True))
+@click.pass_context
+def capture_transcript(ctx, transcript_file):
+    """Analyze a saved session transcript for new lessons (writes to draft queue)."""
+    from lessons_db.capture import capture_from_transcript
+
+    text = Path(transcript_file).read_text(encoding="utf-8", errors="replace")
+    conn = ctx.obj["conn"]
+    drafts = capture_from_transcript(text, conn)
+    if drafts:
+        click.echo(f"Created {len(drafts)} draft(s). Review with: lessons-db capture drafts")
+    else:
+        click.echo("No lessons extracted.")
+
+
+@capture.command("diff")
+@click.argument("diff_file", type=click.Path(exists=True), required=False)
+@click.pass_context
+def capture_diff(ctx, diff_file):
+    """Analyze a git diff for new lessons (writes to draft queue).
+
+    If DIFF_FILE not provided, reads from stdin.
+    """
+    import sys
+    from lessons_db.capture import capture_from_diff
+
+    if diff_file:
+        text = Path(diff_file).read_text(encoding="utf-8", errors="replace")
+    else:
+        text = sys.stdin.read()
+
+    conn = ctx.obj["conn"]
+    drafts = capture_from_diff(text, conn)
+    if drafts:
+        click.echo(f"Created {len(drafts)} draft(s). Review with: lessons-db capture drafts")
+    else:
+        click.echo("No lessons extracted.")
+
+
 @main.group()
 def cluster():
     """Adaptive cluster discovery and management."""
