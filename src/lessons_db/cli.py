@@ -359,21 +359,36 @@ def scan(ctx, rules_dir, target, baseline):
         click.echo("No findings.")
         return
 
+    saved = 0
     for f in findings:
         rule_id = f.get("rule_id", "")
         click.echo(f"  [{rule_id}] {f.get('file_path')}:{f.get('line_number')}")
+
+        # Parse lesson_id from rule_id suffix (format: lessons-db.<lang>.<slug>-NNN)
+        lesson_id = None
+        try:
+            suffix = rule_id.rsplit("-", 1)[-1]
+            lesson_id = int(suffix)
+        except (ValueError, IndexError):
+            pass
+
+        if lesson_id is None:
+            logger.warning("scan: could not parse lesson_id from rule_id %r, skipping DB insert", rule_id)
+            continue
+
         try:
             insert_scan_finding(conn, {
-                "lesson_id": 0,
+                "lesson_id": lesson_id,
                 "rule_id": rule_id,
                 "file_path": f.get("file_path", ""),
                 "line_number": f.get("line_number"),
                 "snippet": f.get("message", ""),
             })
+            saved += 1
         except Exception as exc:
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
-    click.echo(f"\nTotal findings: {len(findings)} (saved to DB)")
+    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved to DB")
 
 
 @main.group()

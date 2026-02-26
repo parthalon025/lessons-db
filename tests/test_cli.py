@@ -191,23 +191,56 @@ def test_rule_test_no_rules(tmp_path):
 
 @patch("lessons_db.scan.subprocess.run")
 def test_scan_command_runs(mock_run, tmp_path):
-    """scan command calls semgrep and reports findings."""
+    """scan command parses SARIF findings and saves them to DB."""
     import json
-    rules_dir = tmp_path / "rules"
-    rules_dir.mkdir()
-    (rules_dir / "test-rule.yaml").write_text("rules: []")
+    from lessons_db.db import init_db, insert_lesson
+
+    rules_dir = tmp_path / "rules" / "python"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "bare-except-001.yaml").write_text("rules: []")
+
+    sarif = {
+        "version": "2.1.0",
+        "runs": [{
+            "results": [{
+                "ruleId": "lessons-db.python.bare-except-001",
+                "message": {"text": "bare except"},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": "src/foo.py"},
+                        "region": {"startLine": 42},
+                    }
+                }],
+            }]
+        }]
+    }
     mock_run.return_value = MagicMock(
-        returncode=0,
-        stdout=json.dumps({"version": "2.1.0", "runs": [{"results": []}]}),
+        returncode=1,  # semgrep exits 1 when findings exist
+        stdout=json.dumps(sarif),
         stderr="",
     )
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(conn, {
+        "title": "Bare except swallows errors",
+        "one_liner": "Never use bare except",
+        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
+    })
+
     runner = CliRunner()
     result = runner.invoke(
-        main, ["--db", str(tmp_path / "test.db"), "scan",
-               "--rules-dir", str(rules_dir),
+        main, ["--db", str(db_path), "scan",
+               "--rules-dir", str(tmp_path / "rules"),
                "--target", str(tmp_path)],
     )
     assert result.exit_code == 0
+    assert "1 saved to DB" in result.output
+
+    # Verify the finding was actually written
+    row = conn.execute("SELECT * FROM scan_findings WHERE lesson_id = 1").fetchone()
+    assert row is not None
+    assert row["rule_id"] == "lessons-db.python.bare-except-001"
 
 
 def test_scan_command_no_rules(tmp_path):
