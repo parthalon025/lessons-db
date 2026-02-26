@@ -1,6 +1,6 @@
 """Learning pipeline: surfacing event recording and composite relevance scoring."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def record_surfacing(conn, lesson_id: int, hook_point: str,
@@ -10,7 +10,7 @@ def record_surfacing(conn, lesson_id: int, hook_point: str,
         "INSERT INTO surfacing_events "
         "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
         "VALUES (?, ?, ?, 'unknown', ?, ?)",
-        [lesson_id, hook_point, context, datetime.now().isoformat(), session_id],
+        [lesson_id, hook_point, context, datetime.now(timezone.utc).isoformat(), session_id],
     )
     conn.commit()
     return cursor.lastrowid
@@ -20,11 +20,13 @@ def record_outcome(conn, event_id: int, outcome: str) -> None:
     """Update outcome for a surfacing event. outcome must be 'heeded' or 'dismissed'."""
     if outcome not in ("heeded", "dismissed"):
         raise ValueError(f"Invalid outcome '{outcome}'. Must be 'heeded' or 'dismissed'.")
-    conn.execute(
+    cursor = conn.execute(
         "UPDATE surfacing_events SET outcome = ? WHERE id = ?",
         [outcome, event_id],
     )
     conn.commit()
+    if cursor.rowcount == 0:
+        raise ValueError(f"No surfacing event found with id={event_id}.")
 
 
 def relevance_score(conn, lesson_id: int, context: str,
@@ -65,7 +67,12 @@ def surfacing_stats(conn) -> dict:
 
 def _outcome_rate(conn, lesson_id: int, context: str) -> float:
     """Ratio of heeded outcomes for this lesson in similar contexts.
-    Returns 0.5 (neutral) if no outcome data exists."""
+    Returns 0.5 (neutral) if no outcome data exists.
+
+    Note: uses LIKE '%{context[:50]}%' matching. Short or common context strings
+    (e.g. 'hub', 'db') may match unrelated events — scores in those cases are
+    contaminated by false positives. Acceptable for local tooling; revisit if
+    context strings become high-cardinality."""
     ctx_prefix = context[:50] if context else ""
     rows = conn.execute(
         "SELECT outcome FROM surfacing_events "

@@ -63,6 +63,11 @@ class TestRecordOutcome:
         with pytest.raises(ValueError):
             record_outcome(conn, event_id, "ignored")
 
+    def test_raises_on_nonexistent_event_id(self, conn_with_lesson):
+        conn, _ = conn_with_lesson
+        with pytest.raises(ValueError, match="No surfacing event found"):
+            record_outcome(conn, event_id=9999, outcome="heeded")
+
 
 class TestRelevanceScore:
     def test_cold_start_returns_half_semantic(self, conn_with_lesson):
