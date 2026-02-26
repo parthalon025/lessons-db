@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from lessons_db.config import SEMGREP_RULES_DIR
 
 logger = logging.getLogger(__name__)
 
-SEMGREP_BIN = "/home/justin/.local/bin/semgrep"
+SEMGREP_BIN = shutil.which("semgrep") or str(Path.home() / ".local" / "bin" / "semgrep")
 
 
 def parse_sarif(sarif: dict) -> list[dict]:
@@ -65,9 +66,18 @@ def run_scan(
             timeout=300,
         )
 
+        # Semgrep exits 0 (clean) or 1 (findings exist); other codes are errors
+        if result.returncode not in (0, 1):
+            logger.error("Semgrep exited %d. stderr: %s", result.returncode, result.stderr[:500])
+            return []
+
         if sarif_output and result.stdout:
-            sarif = json.loads(result.stdout)
-            return parse_sarif(sarif)
+            try:
+                sarif = json.loads(result.stdout)
+                return parse_sarif(sarif)
+            except json.JSONDecodeError:
+                logger.error("Semgrep SARIF parse failed. stdout: %s", result.stdout[:200])
+                return []
 
         return []
 

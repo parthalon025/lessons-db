@@ -108,6 +108,14 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+LESSON_COLUMNS = {
+    "title", "one_liner", "description", "cluster", "tier", "category",
+    "severity", "confidence", "scope", "keywords", "enforcement",
+    "recurrence_count", "last_hit_date", "created_date", "source",
+    "parent_lesson_id", "markdown_path",
+}
+
+
 def insert_lesson(conn: sqlite3.Connection, data: dict) -> int:
     """Insert a lesson with defaults. Returns the new row id."""
     defaults = {
@@ -155,6 +163,9 @@ def update_lesson(conn: sqlite3.Connection, lesson_id: int, data: dict) -> None:
     """Update arbitrary fields on a lesson."""
     if not data:
         return
+    invalid = set(data.keys()) - LESSON_COLUMNS
+    if invalid:
+        raise ValueError(f"Invalid column names: {invalid}")
     set_clause = ", ".join(f"{k} = ?" for k in data)
     values = list(data.values()) + [lesson_id]
     conn.execute(

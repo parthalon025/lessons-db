@@ -34,7 +34,9 @@ def main(ctx, db, verbose):
     ctx.ensure_object(dict)
     db_path = Path(db) if db else SQLITE_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    ctx.obj["conn"] = init_db(db_path)
+    conn = init_db(db_path)
+    ctx.obj["conn"] = conn
+    ctx.call_on_close(conn.close)
 
 
 @main.command()
@@ -136,7 +138,7 @@ def migrate(ctx, source, db_override, dry_run):
         conn = init_db(db_path)
 
     source_dir = Path(source) if source else LESSONS_SOURCE_DIR
-    md_files = sorted(f for f in source_dir.glob("2026-*.md") if f.is_file())
+    md_files = sorted(f for f in source_dir.glob("[0-9][0-9][0-9][0-9]-*.md") if f.is_file())
 
     if dry_run:
         click.echo(f"Found {len(md_files)} lesson file(s):")

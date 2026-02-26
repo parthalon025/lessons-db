@@ -37,6 +37,9 @@ def generate_rule(
     Returns:
         YAML string with top-level ``rules:`` key.
     """
+    if not patterns:
+        raise ValueError(f"Cannot generate rule for lesson {lesson['id']}: no patterns provided")
+
     slug = slug_from_title(lesson["title"])
     lesson_id = lesson["id"]
     language = patterns[0]["language"]

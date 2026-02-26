@@ -73,7 +73,7 @@ def upsert_lesson(db: lancedb.DBConnection, data: dict) -> bool:
     existing = db.list_tables().tables
     if TABLE_NAME in existing:
         table = db.open_table(TABLE_NAME)
-        table.delete(f"lesson_id = {data['lesson_id']}")
+        table.delete(f"lesson_id = {int(data['lesson_id'])}")
         table.add([record])
     else:
         db.create_table(TABLE_NAME, [record], schema=SCHEMA)
