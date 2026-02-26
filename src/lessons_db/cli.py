@@ -1,5 +1,6 @@
 """Click CLI for lessons-db: status, search, migrate."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -184,3 +185,42 @@ def migrate(ctx, source, db_override, dry_run):
             errors += 1
 
     click.echo(f"Migrated: {migrated}, Errors: {errors}")
+
+
+@main.group()
+def capture():
+    """Capture new lessons and manage draft queue."""
+    pass
+
+
+@capture.command("drafts")
+@click.pass_context
+def capture_drafts_cmd(ctx):
+    """List pending auto-captured drafts awaiting approval."""
+    from lessons_db.capture import list_drafts
+    conn = ctx.obj["conn"]
+    drafts = list_drafts(conn)
+    if not drafts:
+        click.echo("No pending drafts.")
+        return
+    for d in drafts:
+        click.echo(f"[{d['id']}] {d['source']} | {d['created_date']}")
+        try:
+            data = json.loads(d["extracted_data"])
+            click.echo(f"    {data.get('one_liner', '(no one-liner)')}")
+        except Exception:
+            pass
+
+
+@capture.command("approve")
+@click.argument("draft_id", type=int)
+@click.pass_context
+def capture_approve(ctx, draft_id):
+    """Promote a pending draft to a live positive lesson."""
+    from lessons_db.capture import promote_draft
+    conn = ctx.obj["conn"]
+    lesson_id = promote_draft(conn, draft_id)
+    if lesson_id:
+        click.echo(f"✓ Draft {draft_id} promoted → lesson #{lesson_id}")
+    else:
+        click.echo(f"✗ Draft {draft_id} not found or already processed.")
