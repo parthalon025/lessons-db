@@ -311,3 +311,36 @@ def stats_surfacing(ctx):
     if s["heed_rate"] is not None:
         click.echo(f"  Heed rate            : {s['heed_rate']:.0%}")
     click.echo(f"Avg per session        : {s['avg_per_session']}")
+
+
+@main.group()
+def template():
+    """View and apply templates from proven positive patterns."""
+    pass
+
+
+@template.command("list")
+@click.pass_context
+def template_list(ctx):
+    """List all generated templates."""
+    from lessons_db.promote import list_templates
+    templates = list_templates(ctx.obj["conn"])
+    if not templates:
+        click.echo("No templates yet. Positive entries reach 'proven' tier after 2 reuses.")
+        return
+    for t in templates:
+        click.echo(f"[#{t['lesson_id']}] ({t['tier']}) {t['one_liner']}")
+        click.echo(f"      type={t['template_type']} | created={t['created_date']}")
+
+
+@template.command("show")
+@click.argument("lesson_id", type=int)
+@click.pass_context
+def template_show(ctx, lesson_id):
+    """Show template content for a lesson."""
+    from lessons_db.promote import apply_template
+    content = apply_template(ctx.obj["conn"], lesson_id)
+    if content:
+        click.echo(content)
+    else:
+        click.echo(f"No template for lesson #{lesson_id}. Entry must reach 'proven' tier first.")
