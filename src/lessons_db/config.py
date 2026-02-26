@@ -11,8 +11,12 @@ RULES_DIR = DATA_DIR / "rules"
 # Source lesson files (for migration)
 LESSONS_SOURCE_DIR = Path.home() / "Documents" / "docs" / "lessons"
 
-# Ollama queue API (embeddings + analysis)
+# Ollama queue API (generation / analysis tasks)
 OLLAMA_QUEUE_URL = "http://127.0.0.1:7683"
+
+# Ollama direct API (embeddings — synchronous, bypasses queue)
+OLLAMA_EMBED_URL = "http://127.0.0.1:11434"
+
 EMBED_MODEL = "nomic-embed-text"
 EMBED_DIMS = 768
 ANALYSIS_MODEL = "qwen2.5:7b"

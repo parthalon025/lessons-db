@@ -185,6 +185,70 @@ def migrate(ctx, source, db_override, dry_run):
     click.echo(f"Migrated: {migrated}, Errors: {errors}")
 
 
+@main.command()
+@click.option("--seed-only", is_flag=True, help="Only backfill cluster_seed, skip embedding generation.")
+@click.pass_context
+def index(ctx, seed_only):
+    """Backfill cluster_seed and generate LanceDB embeddings for all lessons.
+
+    Run once after initial migrate, or after adding new lessons without embeddings.
+    cluster_seed: copies cluster → cluster_seed for A-F historical labels.
+    Embeddings: calls Ollama nomic-embed-text for each lesson's title + one_liner.
+    """
+    import lancedb
+    from lessons_db.vectors import init_lance, upsert_lesson
+
+    conn = ctx.obj["conn"]
+
+    # Step 1: backfill cluster_seed from cluster for lessons that have cluster but no seed
+    updated = conn.execute(
+        "UPDATE lessons SET cluster_seed = cluster WHERE cluster IS NOT NULL AND cluster != '' AND cluster_seed IS NULL"
+    ).rowcount
+    conn.commit()
+    click.echo(f"cluster_seed backfill: {updated} rows updated")
+
+    if seed_only:
+        return
+
+    # Step 2: generate embeddings for all lessons
+    lance_db = init_lance(str(LANCE_DIR))
+    LANCE_DIR.mkdir(parents=True, exist_ok=True)
+
+    rows = conn.execute(
+        "SELECT id, title, one_liner, keywords, cluster, tier, scope, enforcement, recurrence_count FROM lessons"
+    ).fetchall()
+
+    ok = 0
+    failed = 0
+    for row in rows:
+        title = row["title"] or ""
+        one_liner = row["one_liner"] or ""
+        keywords = row["keywords"] or ""
+        text = f"{title}. {one_liner}"
+        if keywords:
+            text += f". Keywords: {keywords}"
+
+        data = {
+            "lesson_id": row["id"],
+            "text": text,
+            "cluster": row["cluster"] or "",
+            "tier": row["tier"] or "",
+            "scope": row["scope"] or "",
+            "enforcement": row["enforcement"] or "",
+            "recurrence_count": row["recurrence_count"] or 0,
+        }
+        if upsert_lesson(lance_db, data):
+            ok += 1
+        else:
+            failed += 1
+            logger.warning("index: embedding failed for lesson #%d", row["id"])
+
+        if (ok + failed) % 10 == 0:
+            click.echo(f"  {ok + failed}/{len(rows)} indexed...", err=False)
+
+    click.echo(f"Indexed: {ok}, Failed: {failed}")
+
+
 @main.group()
 def capture():
     """Capture new lessons and manage draft queue."""

@@ -6,7 +6,7 @@ import lancedb
 import pyarrow as pa
 import requests
 
-from lessons_db.config import EMBED_DIMS, EMBED_MODEL, OLLAMA_QUEUE_URL
+from lessons_db.config import EMBED_DIMS, EMBED_MODEL, OLLAMA_EMBED_URL
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def get_embedding(text: str) -> list[float] | None:
     """
     try:
         resp = requests.post(
-            f"{OLLAMA_QUEUE_URL}/api/embed",
+            f"{OLLAMA_EMBED_URL}/api/embed",
             json={"model": EMBED_MODEL, "input": text},
             timeout=30,
         )
