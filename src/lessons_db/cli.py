@@ -374,6 +374,7 @@ def scan(ctx, rules_dir, target, baseline):
 
         if lesson_id is None:
             logger.warning("scan: could not parse lesson_id from rule_id %r, skipping DB insert", rule_id)
+            click.echo(f"  [WARN] skipped {rule_id!r} — could not parse lesson_id", err=True)
             continue
 
         try:
