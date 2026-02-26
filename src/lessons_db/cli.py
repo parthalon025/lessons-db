@@ -209,7 +209,7 @@ def capture_drafts_cmd(ctx):
             data = json.loads(d["extracted_data"])
             click.echo(f"    {data.get('one_liner', '(no one-liner)')}")
         except Exception:
-            pass
+            click.echo("    (unparseable data)")
 
 
 @capture.command("approve")

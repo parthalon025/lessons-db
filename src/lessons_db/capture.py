@@ -30,7 +30,8 @@ def score_one_liner(text: str) -> int:
             },
             timeout=30,
         )
-        return int(r.json().get("response", "3").strip())
+        score = int(r.json().get("response", "3").strip())
+        return max(1, min(5, score))
     except Exception:
         return 3
 
@@ -66,14 +67,18 @@ def capture_from_design_doc(doc_path: Path,
     if not entries:
         return []
 
-    for entry in entries:
-        conn.execute(
-            "INSERT INTO capture_drafts "
-            "(raw_content, extracted_data, status, created_date, source) "
-            "VALUES (?, ?, 'pending', ?, 'auto_design_doc')",
-            [content[:500], json.dumps(entry), date.today().isoformat()],
-        )
-    conn.commit()
+    try:
+        for entry in entries:
+            conn.execute(
+                "INSERT INTO capture_drafts "
+                "(raw_content, extracted_data, status, created_date, source) "
+                "VALUES (?, ?, 'pending', ?, 'auto_design_doc')",
+                [content[:500], json.dumps(entry), date.today().isoformat()],
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        return []
     return entries
 
 

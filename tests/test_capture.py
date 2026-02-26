@@ -126,3 +126,37 @@ class TestListDrafts:
         drafts = list_drafts(conn)
         assert len(drafts) == 1
         assert drafts[0]["status"] == "pending"
+
+
+class TestCapturePositiveManual:
+    """Quality gate and lesson creation for manual capture."""
+
+    def test_rejects_below_quality_threshold(self, db_path):
+        conn = init_db(db_path)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "2"}
+        with patch("lessons_db.capture.requests.post", return_value=mock_resp):
+            result = capture_positive_manual(conn, "vague insight", "unclear", "testing-pattern")
+        assert result is None
+
+    def test_accepts_at_quality_threshold(self, db_path):
+        conn = init_db(db_path)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "3"}
+        with patch("lessons_db.capture.requests.post", return_value=mock_resp):
+            lesson_id = capture_positive_manual(
+                conn, "Dual-axis testing catches integration bugs", "Tests both axes", "testing-pattern"
+            )
+        assert lesson_id is not None
+
+    def test_lesson_has_correct_polarity_and_tier(self, db_path):
+        conn = init_db(db_path)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "4"}
+        with patch("lessons_db.capture.requests.post", return_value=mock_resp):
+            lesson_id = capture_positive_manual(
+                conn, "Thompson Sampling beats round-robin routing", "Adapts to observed performance", "architecture-pattern"
+            )
+        lesson = get_lesson(conn, lesson_id)
+        assert lesson["polarity"] == "positive"
+        assert lesson["tier"] == "noticed"
