@@ -253,3 +253,48 @@ def test_scan_command_no_rules(tmp_path):
     )
     assert result.exit_code == 0
     assert "no rules" in result.output.lower()
+
+
+def test_export_command(tmp_path):
+    """export outputs lesson markdown."""
+    from lessons_db.db import init_db, insert_lesson
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    lid = insert_lesson(conn, {
+        "title": "Log every external failure",
+        "one_liner": "Never swallow exceptions silently",
+        "cluster": "A", "tier": "lesson_learned", "created_date": "2026-01-01",
+    })
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "export", str(lid)])
+    assert result.exit_code == 0
+    assert "Log every external failure" in result.output
+    assert "Key Takeaway" in result.output
+
+
+def test_export_missing_lesson(tmp_path):
+    """export exits cleanly for unknown lesson ID."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "export", "999"])
+    assert result.exit_code == 0
+    assert "not found" in result.output.lower()
+
+
+def test_summary_command(tmp_path):
+    """summary writes SUMMARY.md to the output path."""
+    from lessons_db.db import init_db, insert_lesson
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(conn, {
+        "title": "Log every failure", "one_liner": "Always log",
+        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
+    })
+    out_file = tmp_path / "SUMMARY.md"
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["--db", str(db_path), "summary", "--output", str(out_file)]
+    )
+    assert result.exit_code == 0
+    assert out_file.exists()
+    content = out_file.read_text()
+    assert "Always log" in content
