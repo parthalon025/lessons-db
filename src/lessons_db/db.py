@@ -95,6 +95,50 @@ CREATE INDEX IF NOT EXISTS idx_corrective_status ON corrective_actions(status);
 CREATE INDEX IF NOT EXISTS idx_near_misses_lesson ON near_misses(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_detection_patterns_type ON detection_patterns(pattern_type);
 CREATE INDEX IF NOT EXISTS idx_scan_findings_status ON scan_findings(status);
+
+-- Extension tables (created fresh; new columns added via _add_extension_columns)
+
+CREATE TABLE IF NOT EXISTS surfacing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    hook_point TEXT NOT NULL,
+    context TEXT,
+    outcome TEXT NOT NULL DEFAULT 'unknown',
+    timestamp TEXT NOT NULL,
+    session_id TEXT,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+);
+
+CREATE TABLE IF NOT EXISTS templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    template_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    applicable_contexts TEXT,
+    created_date TEXT NOT NULL,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+);
+
+CREATE TABLE IF NOT EXISTS capture_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    raw_content TEXT NOT NULL,
+    extracted_data TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_date TEXT NOT NULL,
+    source TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cluster_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date TEXT NOT NULL,
+    proposal_count INTEGER,
+    confirmed_count INTEGER,
+    result_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_surfacing_lesson ON surfacing_events(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_surfacing_outcome ON surfacing_events(outcome);
+CREATE INDEX IF NOT EXISTS idx_templates_lesson ON templates(lesson_id);
 """
 
 
@@ -105,14 +149,33 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_SQL)
+    _add_extension_columns(conn)
     return conn
 
 
+def _add_extension_columns(conn: sqlite3.Connection) -> None:
+    """Add v2 extension columns to lessons table (idempotent).
+
+    SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS — catch OperationalError instead."""
+    new_columns = [
+        ("entry_type",   "TEXT NOT NULL DEFAULT 'lesson'"),
+        ("polarity",     "TEXT NOT NULL DEFAULT 'negative'"),
+        ("cluster_seed", "TEXT"),
+        ("reuse_count",  "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for col_name, col_def in new_columns:
+        try:
+            conn.execute(f"ALTER TABLE lessons ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists — safe to ignore
+
+
 LESSON_COLUMNS = {
-    "title", "one_liner", "description", "cluster", "tier", "category",
-    "severity", "confidence", "scope", "keywords", "enforcement",
-    "recurrence_count", "last_hit_date", "created_date", "source",
-    "parent_lesson_id", "markdown_path",
+    "title", "one_liner", "description", "cluster", "cluster_seed",
+    "tier", "entry_type", "polarity", "category", "severity", "confidence",
+    "scope", "keywords", "enforcement", "recurrence_count", "reuse_count",
+    "last_hit_date", "created_date", "source", "parent_lesson_id", "markdown_path",
 }
 
 

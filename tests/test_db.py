@@ -307,3 +307,62 @@ class TestScanFindings:
         assert open_findings[0]["title"] == "async discipline"
         assert open_findings[0]["one_liner"] == "no async without IO"
         conn.close()
+
+
+class TestSchemaExtension:
+    """Tests for v2 schema extension columns and tables."""
+
+    def test_lessons_has_entry_type_column(self, db_path):
+        conn = init_db(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        assert "entry_type" in cols
+
+    def test_lessons_has_polarity_column(self, db_path):
+        conn = init_db(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        assert "polarity" in cols
+
+    def test_lessons_has_cluster_seed_column(self, db_path):
+        conn = init_db(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        assert "cluster_seed" in cols
+
+    def test_lessons_has_reuse_count_column(self, db_path):
+        conn = init_db(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        assert "reuse_count" in cols
+
+    def test_surfacing_events_table_exists(self, db_path):
+        conn = init_db(db_path)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "surfacing_events" in tables
+
+    def test_templates_table_exists(self, db_path):
+        conn = init_db(db_path)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "templates" in tables
+
+    def test_insert_lesson_with_polarity(self, db_path):
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {
+            "title": "Test positive entry",
+            "one_liner": "Dual-axis testing catches integration bugs",
+            "created_date": "2026-02-26",
+            "polarity": "positive",
+            "entry_type": "pattern",
+        })
+        row = get_lesson(conn, lid)
+        assert row["polarity"] == "positive"
+        assert row["entry_type"] == "pattern"
+
+    def test_reuse_count_defaults_to_zero(self, db_path):
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {
+            "title": "T", "one_liner": "X", "created_date": "2026-02-26",
+        })
+        row = get_lesson(conn, lid)
+        assert row["reuse_count"] == 0

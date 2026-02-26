@@ -25,16 +25,38 @@ NEAR_MISS_TOP_N = 10
 # Semgrep
 SEMGREP_RULES_DIR = DATA_DIR / "rules"
 
-# Valid enums (from FRAMEWORK.md)
-VALID_TIERS = ("observation", "insight", "lesson", "lesson_learned")
-VALID_CATEGORIES = (
+# Positive promotion thresholds
+PROMOTION_TESTED_THRESHOLD = 1    # reuse_count >= 1 → tested
+PROMOTION_TEMPLATE_THRESHOLD = 2  # reuse_count >= 2 → proven, template generated
+PROMOTION_STANDARD_THRESHOLD = 3  # reuse_count >= 3 → standard
+
+# Valid enums (negative OIL ladder)
+VALID_TIERS_NEGATIVE = ("observation", "insight", "lesson", "lesson_learned")
+
+# Valid enums (positive ladder)
+VALID_TIERS_POSITIVE = ("noticed", "tested", "proven", "standard")
+
+# Combined
+VALID_TIERS = VALID_TIERS_NEGATIVE + VALID_TIERS_POSITIVE
+
+VALID_CATEGORIES_NEGATIVE = (
     "data-model", "registration", "cold-start", "integration",
     "deployment", "monitoring", "ui", "testing", "performance", "security",
 )
-VALID_CLUSTERS = ("A", "B", "C", "D", "E", "F")
+VALID_CATEGORIES_POSITIVE = (
+    "architecture-pattern", "planning-technique", "workflow-optimization",
+    "value-multiplier", "debugging-strategy", "testing-pattern",
+    "integration-approach", "tooling-innovation",
+)
+VALID_CATEGORIES = VALID_CATEGORIES_NEGATIVE + VALID_CATEGORIES_POSITIVE
+
+VALID_CLUSTERS = ("A", "B", "C", "D", "E", "F")  # Historical seeds only
+VALID_POLARITIES = ("negative", "positive")
+VALID_ENTRY_TYPES = ("lesson", "insight", "pattern", "innovation")
 VALID_ENFORCEMENT = (
     "documentation", "semgrep_warning", "semgrep_error", "semgrep_autofix",
 )
 VALID_SOURCES = (
-    "manual", "auto_diff", "auto_transcript", "auto_test", "community", "migrated",
+    "manual", "auto_diff", "auto_transcript", "auto_test",
+    "community", "migrated", "auto_design_doc", "auto_plan",
 )
