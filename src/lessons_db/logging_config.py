@@ -4,7 +4,6 @@ import logging
 import logging.handlers
 from pathlib import Path
 
-
 LOG_FILE = Path.home() / ".local" / "share" / "lessons-db" / "lessons-db.log"
 LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -28,8 +27,7 @@ def configure_logging(level: int = logging.WARNING, verbose: bool = False) -> No
     root.setLevel(logging.WARNING)
 
     # Console handler — respects --verbose flag
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-               for h in root.handlers):
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
         console = logging.StreamHandler()
         console.setLevel(level)
         console.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))

@@ -11,22 +11,46 @@ import json
 import logging
 from collections import Counter
 from datetime import date
-from typing import Optional
 
 _log = logging.getLogger(__name__)
 
-from lessons_db.config import LANCE_DIR, OLLAMA_QUEUE_URL, ANALYSIS_MODEL
+from lessons_db.config import ANALYSIS_MODEL, LANCE_DIR, OLLAMA_QUEUE_URL
 
 # Words to ignore when extracting representative terms
 _STOPWORDS = {
-    "the", "a", "an", "and", "or", "in", "on", "of", "to", "is", "are",
-    "was", "be", "with", "for", "it", "this", "that", "not", "no",
-    "from", "by", "at", "as", "but", "if", "so", "do", "use",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "in",
+    "on",
+    "of",
+    "to",
+    "is",
+    "are",
+    "was",
+    "be",
+    "with",
+    "for",
+    "it",
+    "this",
+    "that",
+    "not",
+    "no",
+    "from",
+    "by",
+    "at",
+    "as",
+    "but",
+    "if",
+    "so",
+    "do",
+    "use",
 }
 
 
-def extract_representative_terms(conn, lesson_ids: list[int],
-                                  top_n: int = 5) -> list[str]:
+def extract_representative_terms(conn, lesson_ids: list[int], top_n: int = 5) -> list[str]:
     """Extract the most frequent non-stopword terms from one-liners + keywords."""
     if not lesson_ids:
         return []
@@ -43,8 +67,7 @@ def extract_representative_terms(conn, lesson_ids: list[int],
     return [w for w, _ in counter.most_common(top_n)]
 
 
-def find_seed_overlap(conn, lesson_ids: list[int],
-                      threshold: float = 0.6) -> Optional[str]:
+def find_seed_overlap(conn, lesson_ids: list[int], threshold: float = 0.6) -> str | None:
     """Return the dominant cluster_seed if >= threshold fraction of lessons share it."""
     if not lesson_ids:
         return None
@@ -62,8 +85,7 @@ def find_seed_overlap(conn, lesson_ids: list[int],
     return None
 
 
-def apply_cluster_proposals(conn, proposals: list[dict],
-                              confirmed: dict[int, str]) -> int:
+def apply_cluster_proposals(conn, proposals: list[dict], confirmed: dict[int, str]) -> int:
     """Write confirmed cluster names to lessons.cluster. Records the run.
 
     proposals: list of {"cluster_id": int, "lesson_ids": [...], "suggested_name": str}
@@ -83,18 +105,17 @@ def apply_cluster_proposals(conn, proposals: list[dict],
             updated += 1
 
     conn.execute(
-        "INSERT INTO cluster_runs (run_date, proposal_count, confirmed_count, result_json) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO cluster_runs (run_date, proposal_count, confirmed_count, result_json) " "VALUES (?, ?, ?, ?)",
         [
             date.today().isoformat(),
             len(proposals),
             len(confirmed),
-            json.dumps([
-                {"id": p["cluster_id"],
-                 "name": confirmed.get(p["cluster_id"]),
-                 "size": len(p["lesson_ids"])}
-                for p in proposals
-            ]),
+            json.dumps(
+                [
+                    {"id": p["cluster_id"], "name": confirmed.get(p["cluster_id"]), "size": len(p["lesson_ids"])}
+                    for p in proposals
+                ]
+            ),
         ],
     )
     conn.commit()
@@ -114,6 +135,7 @@ def generate_cluster_name(terms: list[str]) -> str:
     """Ask Ollama to generate a human-readable cluster name from terms.
     Falls back to joining the top 2 terms if Ollama unavailable."""
     import requests
+
     try:
         r = requests.post(
             f"{OLLAMA_QUEUE_URL}/api/generate",
@@ -143,14 +165,13 @@ def discover_clusters(conn, min_cluster_size: int = 5) -> list[dict]:
        "representative_terms": [...], "overlaps_seed": str | None}
     """
     try:
-        import umap
         import hdbscan
-        import numpy as np
         import lancedb
+        import numpy as np
+        import umap
     except ImportError as e:
         raise RuntimeError(
-            f"Clustering dependencies not installed ({e}). Run:\n"
-            "pip install 'lessons-db[clustering]'"
+            f"Clustering dependencies not installed ({e}). Run:\n" "pip install 'lessons-db[clustering]'"
         ) from e
 
     db = lancedb.connect(str(LANCE_DIR))
@@ -184,11 +205,13 @@ def discover_clusters(conn, min_cluster_size: int = 5) -> list[dict]:
         terms = extract_representative_terms(conn, ids)
         name = generate_cluster_name(terms)
         seed = find_seed_overlap(conn, ids)
-        proposals.append({
-            "cluster_id": label,
-            "lesson_ids": ids,
-            "suggested_name": name,
-            "representative_terms": terms,
-            "overlaps_seed": seed,
-        })
+        proposals.append(
+            {
+                "cluster_id": label,
+                "lesson_ids": ids,
+                "suggested_name": name,
+                "representative_terms": terms,
+                "overlaps_seed": seed,
+            }
+        )
     return proposals

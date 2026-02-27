@@ -1,29 +1,23 @@
 """Tests for cross-project pattern extraction (Stage 1)."""
 
 import json
-import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from lessons_db.db import init_db
 from lessons_db.pattern_extract import (
-    CandidatePattern,
-    list_active_repos,
-    build_semgrep_patterns,
     BOOTSTRAP_PATTERNS,
+    CandidatePattern,
     _sliding_window,
-    extract_python_candidates,
+    build_semgrep_patterns,
     extract_nonpython_candidates,
+    extract_python_candidates,
+    list_active_repos,
 )
 
 
 class TestListActiveRepos:
     def test_returns_repos_with_recent_commits(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "lessons_db.pattern_extract.PROJECTS_DIR", tmp_path
-        )
+        monkeypatch.setattr("lessons_db.pattern_extract.PROJECTS_DIR", tmp_path)
         repo = tmp_path / "my-repo"
         repo.mkdir()
         (repo / ".git").mkdir()
@@ -35,9 +29,7 @@ class TestListActiveRepos:
         assert repo in repos
 
     def test_skips_repos_with_no_recent_commits(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "lessons_db.pattern_extract.PROJECTS_DIR", tmp_path
-        )
+        monkeypatch.setattr("lessons_db.pattern_extract.PROJECTS_DIR", tmp_path)
         repo = tmp_path / "stale-repo"
         repo.mkdir()
         (repo / ".git").mkdir()
@@ -58,16 +50,13 @@ class TestBuildSemgrepPatterns:
                 "INSERT INTO lessons "
                 "(title, one_liner, corrective_action, tier, created_date) "
                 "VALUES (?, ?, ?, 'lesson_learned', '2026-02-26')",
-                [f"Test {i}", f"one-liner {i}", "Wrap sqlite3.connect with contextlib.closing"]
+                [f"Test {i}", f"one-liner {i}", "Wrap sqlite3.connect with contextlib.closing"],
             )
         conn.commit()
 
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "response": "pattern: with closing($CONN): ..."
-        }
-        with patch("lessons_db.pattern_extract.requests.post",
-                   return_value=mock_resp):
+        mock_resp.json.return_value = {"response": "pattern: with closing($CONN): ..."}
+        with patch("lessons_db.pattern_extract.requests.post", return_value=mock_resp):
             patterns = build_semgrep_patterns(conn)
 
         assert any(p["source_lesson_id"] is not None for p in patterns)
@@ -86,7 +75,7 @@ class TestBuildSemgrepPatterns:
                 "INSERT INTO lessons "
                 "(title, one_liner, corrective_action, tier, created_date) "
                 "VALUES (?, ?, ?, 'lesson_learned', '2026-02-26')",
-                [f"Lesson {i}", f"one-liner {i}", f"corrective action {i}"]
+                [f"Lesson {i}", f"one-liner {i}", f"corrective action {i}"],
             )
         conn.commit()
         # No Ollama mock needed — should return BOOTSTRAP_PATTERNS without calling Ollama
@@ -114,18 +103,10 @@ class TestExtractPythonCandidates:
         repo_a = tmp_path / "repo-a"
         repo_a.mkdir()
 
-        semgrep_output = {
-            "results": [
-                {"path": str(repo_a / "mod.py"), "extra": {"lines": "with closing(conn):"}}
-            ]
-        }
+        semgrep_output = {"results": [{"path": str(repo_a / "mod.py"), "extra": {"lines": "with closing(conn):"}}]}
         with patch("lessons_db.pattern_extract.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout=json.dumps(semgrep_output)
-            )
-            candidates = extract_python_candidates(
-                repos=[repo_a], patterns=BOOTSTRAP_PATTERNS, conn=conn
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(semgrep_output))
+            candidates = extract_python_candidates(repos=[repo_a], patterns=BOOTSTRAP_PATTERNS, conn=conn)
 
         assert candidates == []
 
@@ -141,20 +122,15 @@ class TestExtractPythonCandidates:
         def semgrep_side_effect(cmd, **kwargs):
             target = cmd[-1]  # last arg is the target directory
             if "repo-a" in target:
-                data = {"results": [{"path": str(repo_a / "a.py"),
-                                      "extra": {"lines": "with closing(conn):"}}]}
+                data = {"results": [{"path": str(repo_a / "a.py"), "extra": {"lines": "with closing(conn):"}}]}
             elif "repo-b" in target:
-                data = {"results": [{"path": str(repo_b / "b.py"),
-                                      "extra": {"lines": "with closing(conn):"}}]}
+                data = {"results": [{"path": str(repo_b / "b.py"), "extra": {"lines": "with closing(conn):"}}]}
             else:
                 data = {"results": []}
             return MagicMock(returncode=0, stdout=json.dumps(data))
 
-        with patch("lessons_db.pattern_extract.subprocess.run",
-                   side_effect=semgrep_side_effect):
-            candidates = extract_python_candidates(
-                repos=[repo_a, repo_b], patterns=BOOTSTRAP_PATTERNS, conn=conn
-            )
+        with patch("lessons_db.pattern_extract.subprocess.run", side_effect=semgrep_side_effect):
+            candidates = extract_python_candidates(repos=[repo_a, repo_b], patterns=BOOTSTRAP_PATTERNS, conn=conn)
 
         assert len(candidates) >= 1
         assert isinstance(candidates[0], CandidatePattern)
@@ -174,11 +150,8 @@ class TestExtractNonpythonCandidates:
         (repo_b / "scripts" / "deploy.sh").write_text(block)
 
         same_vector = [0.1] * 768
-        with patch("lessons_db.pattern_extract.get_embedding",
-                   return_value=same_vector):
-            candidates = extract_nonpython_candidates(
-                repos=[repo_a, repo_b], conn=conn
-            )
+        with patch("lessons_db.pattern_extract.get_embedding", return_value=same_vector):
+            candidates = extract_nonpython_candidates(repos=[repo_a, repo_b], conn=conn)
 
         assert len(candidates) >= 1
         assert len(candidates[0].source_repos) >= 2

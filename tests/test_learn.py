@@ -1,28 +1,29 @@
 """Tests for learning pipeline — outcome tracking and relevance scoring."""
 
 import pytest
-from datetime import datetime
-
 from click.testing import CliRunner
 
+from lessons_db.cli import main
+from lessons_db.db import init_db, insert_lesson
 from lessons_db.learn import (
-    record_surfacing,
     record_outcome,
+    record_surfacing,
     relevance_score,
     surfacing_stats,
 )
-from lessons_db.db import init_db, insert_lesson
-from lessons_db.cli import main
 
 
 @pytest.fixture
 def conn_with_lesson(db_path):
     conn = init_db(db_path)
-    lid = insert_lesson(conn, {
-        "title": "Test lesson",
-        "one_liner": "Always log before swallowing exceptions",
-        "created_date": "2026-02-26",
-    })
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Test lesson",
+            "one_liner": "Always log before swallowing exceptions",
+            "created_date": "2026-02-26",
+        },
+    )
     return conn, lid
 
 
@@ -31,9 +32,7 @@ class TestRecordSurfacing:
         conn, lid = conn_with_lesson
         event_id = record_surfacing(conn, lid, hook_point="read", context="src/hub.py")
         assert event_id is not None
-        row = conn.execute(
-            "SELECT * FROM surfacing_events WHERE id=?", [event_id]
-        ).fetchone()
+        row = conn.execute("SELECT * FROM surfacing_events WHERE id=?", [event_id]).fetchone()
         assert row["lesson_id"] == lid
         assert row["hook_point"] == "read"
         assert row["outcome"] == "unknown"
@@ -105,7 +104,7 @@ class TestRelevanceScore:
             conn.execute(
                 "INSERT INTO near_misses (lesson_id, file_path, event_type, timestamp) "
                 "VALUES (?, 'hub.py', 'hookify_warn', '2026-02-26T10:00:00')",
-                [lid]
+                [lid],
             )
         conn.commit()
         score = relevance_score(conn, lid, context="other.py", semantic_sim=0.5)
@@ -123,12 +122,19 @@ class TestLearnRecordCLI:
         lid = insert_lesson(conn, {"title": "T", "one_liner": "X", "created_date": "2026-01-01"})
         conn.close()
 
-        result = runner.invoke(main, [
-            "--db", str(db_path),
-            "learn", "record",
-            "--lesson-id", str(lid),
-            "--hook", "plan",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "--db",
+                str(db_path),
+                "learn",
+                "record",
+                "--lesson-id",
+                str(lid),
+                "--hook",
+                "plan",
+            ],
+        )
         assert result.exit_code == 0, result.output
         assert "Recorded" in result.output
 
@@ -145,13 +151,21 @@ class TestLearnRecordCLI:
         lid = insert_lesson(conn, {"title": "T", "one_liner": "X", "created_date": "2026-01-01"})
         conn.close()
 
-        result = runner.invoke(main, [
-            "--db", str(db_path),
-            "learn", "record",
-            "--lesson-id", str(lid),
-            "--hook", "bash",
-            "--context", "test failure in hub.py",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "--db",
+                str(db_path),
+                "learn",
+                "record",
+                "--lesson-id",
+                str(lid),
+                "--hook",
+                "bash",
+                "--context",
+                "test failure in hub.py",
+            ],
+        )
         assert result.exit_code == 0, result.output
 
         # Verify the event was stored

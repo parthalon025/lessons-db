@@ -14,9 +14,9 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from collections.abc import Generator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
 
 import requests
 
@@ -32,6 +32,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class CandidatePattern:
@@ -196,9 +197,13 @@ def list_active_repos(since_timestamp: str) -> list[Path]:
         try:
             result = subprocess.run(
                 [
-                    "git", "-C", str(candidate),
-                    "log", f"--since={since_timestamp}",
-                    "--oneline", "--quiet",
+                    "git",
+                    "-C",
+                    str(candidate),
+                    "log",
+                    f"--since={since_timestamp}",
+                    "--oneline",
+                    "--quiet",
                 ],
                 capture_output=True,
                 text=True,
@@ -252,11 +257,13 @@ def build_semgrep_patterns(conn) -> list[dict]:
             )
             yaml_text = resp.json().get("response", "").strip()
             if yaml_text and yaml_text.upper() != "SKIP":
-                patterns.append({
-                    "id": f"lesson-{lesson_id}",
-                    "source_lesson_id": lesson_id,
-                    "yaml": yaml_text,
-                })
+                patterns.append(
+                    {
+                        "id": f"lesson-{lesson_id}",
+                        "source_lesson_id": lesson_id,
+                        "yaml": yaml_text,
+                    }
+                )
         except Exception as exc:
             _log.warning("Ollama pattern generation failed for lesson %d: %s", lesson_id, exc)
 
@@ -283,9 +290,7 @@ def _run_semgrep_pattern(yaml_text: str, target_dir: Path) -> list[dict]:
 
     tmp_path = None  # initialize before try so finally can safely reference it
     try:
-        with tempfile.NamedTemporaryFile(
-            suffix=".yaml", mode="w", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
             tmp.write(yaml_text)
             tmp_path = Path(tmp.name)
 
@@ -323,7 +328,7 @@ def _sliding_window(lines: list[str], size: int = 15) -> Generator:
     Windows where every line is blank are skipped.
     """
     for i in range(len(lines) - size + 1):
-        window = lines[i: i + size]
+        window = lines[i : i + size]
         if any(line.strip() for line in window):
             yield window
 
@@ -360,9 +365,7 @@ def extract_python_candidates(
 
         for repo in repos:
             results = _run_semgrep_pattern(yaml_text, repo)
-            snippets = [
-                r.get("extra", {}).get("lines", "") for r in results
-            ]
+            snippets = [r.get("extra", {}).get("lines", "") for r in results]
             non_empty = [s for s in snippets if s]
             if non_empty:
                 repo_hits[str(repo)] = non_empty
@@ -374,13 +377,15 @@ def extract_python_candidates(
         first_repo = next(iter(repo_hits))
         snippet = repo_hits[first_repo][0]
 
-        candidates.append(CandidatePattern(
-            snippet=snippet,
-            source_repos=list(repo_hits.keys()),
-            source_lesson_id=source_lesson_id,
-            pattern_id=pattern_id,
-            detection_method="semgrep",
-        ))
+        candidates.append(
+            CandidatePattern(
+                snippet=snippet,
+                source_repos=list(repo_hits.keys()),
+                source_lesson_id=source_lesson_id,
+                pattern_id=pattern_id,
+                detection_method="semgrep",
+            )
+        )
 
     return candidates
 
@@ -453,14 +458,14 @@ def extract_nonpython_candidates(
         if len(cluster_repos) >= 2:
             for idx in cluster_indices:
                 used.add(idx)
-            candidates.append(CandidatePattern(
-                snippet=snippet_i,
-                source_repos=list(cluster_repos),
-                source_lesson_id=None,
-                pattern_id="",
-                detection_method="embedding",
-            ))
+            candidates.append(
+                CandidatePattern(
+                    snippet=snippet_i,
+                    source_repos=list(cluster_repos),
+                    source_lesson_id=None,
+                    pattern_id="",
+                    detection_method="embedding",
+                )
+            )
 
     return candidates
-
-

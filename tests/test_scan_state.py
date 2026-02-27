@@ -1,7 +1,6 @@
 """Tests for scan_state table and capture_drafts v3 columns."""
 
-import pytest
-from lessons_db.db import init_db, get_scan_state, set_scan_state
+from lessons_db.db import get_scan_state, init_db, set_scan_state
 
 
 class TestScanState:
@@ -21,11 +20,9 @@ class TestScanState:
             "INSERT INTO capture_drafts "
             "(raw_content, status, created_date, source, detection_source, confidence) "
             "VALUES (?, 'pending', '2026-02-26', 'test', 'cross_project_scan', 0.88)",
-            ["snippet"]
+            ["snippet"],
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT detection_source, confidence FROM capture_drafts"
-        ).fetchone()
+        row = conn.execute("SELECT detection_source, confidence FROM capture_drafts").fetchone()
         assert row["detection_source"] == "cross_project_scan"
         assert abs(row["confidence"] - 0.88) < 0.001

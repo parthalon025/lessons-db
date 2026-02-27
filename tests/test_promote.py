@@ -2,22 +2,25 @@
 
 import pytest
 
-from lessons_db.promote import record_reuse, list_templates, apply_template
-from lessons_db.db import init_db, insert_lesson, get_lesson
+from lessons_db.db import get_lesson, init_db, insert_lesson
+from lessons_db.promote import apply_template, list_templates, record_reuse
 
 
 @pytest.fixture
 def conn_with_positive(db_path):
     conn = init_db(db_path)
-    lid = insert_lesson(conn, {
-        "title": "Dual-axis pipeline testing",
-        "one_liner": "Dual-axis testing catches integration bugs missed by unit tests",
-        "polarity": "positive",
-        "entry_type": "pattern",
-        "tier": "noticed",
-        "category": "testing-pattern",
-        "created_date": "2026-02-26",
-    })
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Dual-axis pipeline testing",
+            "one_liner": "Dual-axis testing catches integration bugs missed by unit tests",
+            "polarity": "positive",
+            "entry_type": "pattern",
+            "tier": "noticed",
+            "category": "testing-pattern",
+            "created_date": "2026-02-26",
+        },
+    )
     return conn, lid
 
 
@@ -109,6 +112,7 @@ class TestApplyTemplate:
         conn, lid = conn_with_positive
         # Manually insert two template rows to simulate the duplicate scenario
         from datetime import date
+
         conn.execute(
             "INSERT INTO templates (lesson_id, template_type, content, created_date) "
             "VALUES (?, 'approach', 'first content', ?)",

@@ -7,7 +7,6 @@ from lessons_db.search import (
     search_by_content,
     search_combined,
     search_for_file,
-    search_semantic,
 )
 
 
@@ -15,13 +14,16 @@ from lessons_db.search import (
 def populated_db(db_path):
     """DB with one lesson, an affected file, and a detection pattern."""
     conn = init_db(db_path)
-    lid = insert_lesson(conn, {
-        "title": "bare-except swallowing",
-        "one_liner": "Never use bare except without logging",
-        "cluster": "A",
-        "severity": 5,
-        "enforcement": "semgrep_error",
-    })
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "bare-except swallowing",
+            "one_liner": "Never use bare except without logging",
+            "cluster": "A",
+            "severity": 5,
+            "enforcement": "semgrep_error",
+        },
+    )
     # Affected file
     conn.execute(
         "INSERT INTO affected_files (lesson_id, file_path, project) VALUES (?, ?, ?)",
@@ -101,18 +103,24 @@ class TestCombinedSearch:
     def test_polarity_filter_returns_only_positive(self, db_path):
         """search_combined with polarity='positive' excludes negative entries."""
         conn = init_db(db_path)
-        neg_id = insert_lesson(conn, {
-            "title": "negative lesson",
-            "one_liner": "never swallow exceptions",
-            "created_date": "2026-01-01",
-            "polarity": "negative",
-        })
-        pos_id = insert_lesson(conn, {
-            "title": "positive pattern",
-            "one_liner": "dual-axis testing catches integration bugs",
-            "created_date": "2026-01-01",
-            "polarity": "positive",
-        })
+        neg_id = insert_lesson(
+            conn,
+            {
+                "title": "negative lesson",
+                "one_liner": "never swallow exceptions",
+                "created_date": "2026-01-01",
+                "polarity": "negative",
+            },
+        )
+        pos_id = insert_lesson(
+            conn,
+            {
+                "title": "positive pattern",
+                "one_liner": "dual-axis testing catches integration bugs",
+                "created_date": "2026-01-01",
+                "polarity": "positive",
+            },
+        )
         # Use file path search to avoid needing LanceDB
         conn.execute(
             "INSERT INTO affected_files (lesson_id, file_path, project) VALUES (?, ?, ?)",
@@ -132,18 +140,24 @@ class TestCombinedSearch:
     def test_polarity_filter_returns_only_negative(self, db_path):
         """search_combined with polarity='negative' excludes positive entries."""
         conn = init_db(db_path)
-        neg_id = insert_lesson(conn, {
-            "title": "negative lesson",
-            "one_liner": "never swallow exceptions",
-            "created_date": "2026-01-01",
-            "polarity": "negative",
-        })
-        pos_id = insert_lesson(conn, {
-            "title": "positive pattern",
-            "one_liner": "dual-axis testing catches integration bugs",
-            "created_date": "2026-01-01",
-            "polarity": "positive",
-        })
+        neg_id = insert_lesson(
+            conn,
+            {
+                "title": "negative lesson",
+                "one_liner": "never swallow exceptions",
+                "created_date": "2026-01-01",
+                "polarity": "negative",
+            },
+        )
+        pos_id = insert_lesson(
+            conn,
+            {
+                "title": "positive pattern",
+                "one_liner": "dual-axis testing catches integration bugs",
+                "created_date": "2026-01-01",
+                "polarity": "positive",
+            },
+        )
         conn.execute(
             "INSERT INTO affected_files (lesson_id, file_path, project) VALUES (?, ?, ?)",
             (neg_id, "src/hub.py", "ha-aria"),
@@ -162,14 +176,24 @@ class TestCombinedSearch:
     def test_no_polarity_filter_returns_all(self, db_path):
         """search_combined without polarity returns both polarities."""
         conn = init_db(db_path)
-        neg_id = insert_lesson(conn, {
-            "title": "negative lesson", "one_liner": "X",
-            "created_date": "2026-01-01", "polarity": "negative",
-        })
-        pos_id = insert_lesson(conn, {
-            "title": "positive pattern", "one_liner": "Y",
-            "created_date": "2026-01-01", "polarity": "positive",
-        })
+        neg_id = insert_lesson(
+            conn,
+            {
+                "title": "negative lesson",
+                "one_liner": "X",
+                "created_date": "2026-01-01",
+                "polarity": "negative",
+            },
+        )
+        pos_id = insert_lesson(
+            conn,
+            {
+                "title": "positive pattern",
+                "one_liner": "Y",
+                "created_date": "2026-01-01",
+                "polarity": "positive",
+            },
+        )
         conn.execute(
             "INSERT INTO affected_files (lesson_id, file_path, project) VALUES (?, ?, ?)",
             (neg_id, "src/hub.py", "ha-aria"),

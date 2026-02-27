@@ -13,7 +13,7 @@ Returns a VerifiedCandidate on success, None if any gate rejects.
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import requests
 
@@ -27,14 +27,15 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEDUP_DISTANCE_THRESHOLD = 0.15   # LanceDB L2 distance; lower = more similar
-SUPPRESSION_SIMILARITY = 0.85     # cosine similarity; above = suppressed
-SPECIFICITY_MIN = 0.4             # reject before generality if below this
+DEDUP_DISTANCE_THRESHOLD = 0.15  # LanceDB L2 distance; lower = more similar
+SUPPRESSION_SIMILARITY = 0.85  # cosine similarity; above = suppressed
+SPECIFICITY_MIN = 0.4  # reject before generality if below this
 
 
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class VerifiedCandidate:
@@ -48,6 +49,7 @@ class VerifiedCandidate:
 # ---------------------------------------------------------------------------
 # LanceDB helper
 # ---------------------------------------------------------------------------
+
 
 def nearest_lessons(snippet: str, lance_dir: str, k: int = 3) -> list[dict]:
     """Return top-k nearest lessons from LanceDB.
@@ -66,6 +68,7 @@ def nearest_lessons(snippet: str, lance_dir: str, k: int = 3) -> list[dict]:
 # Suppression helpers
 # ---------------------------------------------------------------------------
 
+
 def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
     """Return max cosine similarity between snippet and all rejected snippets.
 
@@ -76,9 +79,7 @@ def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
     Exposed as a separate function so tests can patch it independently.
     """
     try:
-        rows = conn.execute(
-            "SELECT rejected_snippet FROM suppression_vectors LIMIT 500"
-        ).fetchall()
+        rows = conn.execute("SELECT rejected_snippet FROM suppression_vectors LIMIT 500").fetchall()
     except sqlite3.OperationalError as exc:
         _log.warning("suppression_vectors query failed: %s", exc)
         return 0.0
@@ -92,13 +93,12 @@ def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
 
     max_sim = 0.0
     for row in rows:
-        rejected = row[0] if isinstance(row, (tuple, list)) else row["rejected_snippet"]
+        rejected = row[0] if isinstance(row, tuple | list) else row["rejected_snippet"]
         rejected_vec = get_embedding(rejected)
         if rejected_vec is None:
             continue
         sim = cosine_similarity(snippet_vec, rejected_vec)
-        if sim > max_sim:
-            max_sim = sim
+        max_sim = max(max_sim, sim)
 
     return max_sim
 
@@ -111,6 +111,7 @@ def is_suppressed(snippet: str, conn, lance_dir: str) -> bool:
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_float(text: str, default: float = 0.5) -> float:
     """Extract first probability float from text. Returns default on failure.
@@ -136,6 +137,7 @@ def _parse_score_and_rationale(text: str) -> tuple[float, str]:
 # Prompt builders
 # ---------------------------------------------------------------------------
 
+
 def _specificity_prompt(snippet: str, neighbors: list[dict]) -> str:
     context_lines = []
     for n in neighbors:
@@ -157,9 +159,7 @@ def _specificity_prompt(snippet: str, neighbors: list[dict]) -> str:
     )
 
 
-def _generality_prompt_with_lesson(
-    snippet: str, lesson_id: int, one_liner: str
-) -> str:
+def _generality_prompt_with_lesson(snippet: str, lesson_id: int, one_liner: str) -> str:
     return (
         f"This was found while searching for correct implementations of "
         f"lesson #{lesson_id}: {one_liner}.\n"
@@ -192,6 +192,7 @@ def _generality_prompt_no_lesson(snippet: str, source_repos: list[str]) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def verify_candidate(
     candidate: CandidatePattern,
     conn,
@@ -213,8 +214,7 @@ def verify_candidate(
     # Gate 1: LanceDB dedup
     neighbors = nearest_lessons(snippet, lance_dir)
     if neighbors and neighbors[0]["score"] < DEDUP_DISTANCE_THRESHOLD:
-        _log.debug("verify_candidate: dedup match (score=%.3f), skipping",
-                   neighbors[0]["score"])
+        _log.debug("verify_candidate: dedup match (score=%.3f), skipping", neighbors[0]["score"])
         return None
 
     # Gate 2: Suppression
@@ -238,8 +238,7 @@ def verify_candidate(
         return None
 
     if specificity < SPECIFICITY_MIN:
-        _log.debug("verify_candidate: specificity %.2f below threshold, skipping",
-                   specificity)
+        _log.debug("verify_candidate: specificity %.2f below threshold, skipping", specificity)
         return None
 
     # Gate 4: Generality via Ollama
@@ -253,9 +252,7 @@ def verify_candidate(
         except sqlite3.OperationalError as exc:
             _log.warning("verify_candidate: lessons lookup failed: %s", exc)
             one_liner = ""
-        gen_prompt = _generality_prompt_with_lesson(
-            snippet, candidate.source_lesson_id, one_liner
-        )
+        gen_prompt = _generality_prompt_with_lesson(snippet, candidate.source_lesson_id, one_liner)
     else:
         gen_prompt = _generality_prompt_no_lesson(snippet, candidate.source_repos)
 

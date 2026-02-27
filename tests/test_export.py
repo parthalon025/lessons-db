@@ -1,7 +1,5 @@
 """Tests for markdown export from DB records."""
 
-import pytest
-
 from lessons_db.export import format_lesson_markdown, format_status_line
 
 

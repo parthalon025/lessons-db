@@ -21,7 +21,7 @@ def _extract_metadata(lines: list[str], key: str) -> str:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith(prefix):
-            return stripped[len(prefix):].strip()
+            return stripped[len(prefix) :].strip()
     return ""
 
 
@@ -60,10 +60,12 @@ def _parse_corrective_actions(lines: list[str]) -> list[dict]:
         # Skip header row and separator row
         if cells[0] == "#" or set(cells[0]) <= {"-"}:
             continue
-        actions.append({
-            "description": cells[1],
-            "status": cells[2].lower(),
-        })
+        actions.append(
+            {
+                "description": cells[1],
+                "status": cells[2].lower(),
+            }
+        )
     return actions
 
 
@@ -88,13 +90,10 @@ def parse_lesson_file(path: Path) -> dict:
     title = title_line
     m = re.match(r"^#\s+Lesson\s+#\d+:\s*", title_line)
     if m:
-        title = title_line[m.end():]
+        title = title_line[m.end() :]
     else:
         m2 = re.match(r"^#\s+Lesson:\s*", title_line)
-        if m2:
-            title = title_line[m2.end():]
-        else:
-            title = re.sub(r"^#\s+", "", title_line)
+        title = title_line[m2.end() :] if m2 else re.sub(r"^#\s+", "", title_line)
 
     # Metadata
     cluster_raw = _extract_metadata(lines, "Cluster")

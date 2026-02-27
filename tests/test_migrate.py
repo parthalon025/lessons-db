@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from lessons_db.migrate import extract_lesson_number, parse_lesson_file
+from lessons_db.migrate import parse_lesson_file
 
 SAMPLE_LESSON = """\
 # Lesson #88: `contextlib.suppress` in Finally Blocks Is a Silent Failure Trap

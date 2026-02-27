@@ -4,16 +4,16 @@ from unittest.mock import patch
 
 import pytest
 
-from lessons_db.db import init_db, get_lesson, get_scan_state, set_scan_state
-from lessons_db.pattern_verify import VerifiedCandidate
+from lessons_db.db import get_lesson, init_db
 from lessons_db.pattern_triage import (
-    triage_candidate,
-    reject_draft,
     calibration_bands,
-    should_adjust_threshold,
+    reject_draft,
     seed_reuse_count,
+    should_adjust_threshold,
     tier_from_reuse,
+    triage_candidate,
 )
+from lessons_db.pattern_verify import VerifiedCandidate
 
 
 @pytest.fixture
@@ -67,7 +67,8 @@ class TestTriageCandidate:
     def test_auto_approves_above_threshold(self, verified, db_path, tmp_path):
         conn = init_db(db_path)
         lesson_id = triage_candidate(
-            verified, conn,
+            verified,
+            conn,
             lance_dir=str(tmp_path / "lance"),
         )
         assert lesson_id is not None
@@ -76,21 +77,15 @@ class TestTriageCandidate:
         assert lesson["tier"] == "tested"  # 2 repos → reuse_count=1 → tested
         assert lesson["reuse_count"] == 1
 
-    def test_why_it_works_populated_from_rationale(
-        self, verified, db_path, tmp_path
-    ):
+    def test_why_it_works_populated_from_rationale(self, verified, db_path, tmp_path):
         conn = init_db(db_path)
-        lesson_id = triage_candidate(verified, conn,
-                                     lance_dir=str(tmp_path / "lance"))
+        lesson_id = triage_candidate(verified, conn, lance_dir=str(tmp_path / "lance"))
         lesson = get_lesson(conn, lesson_id)
         assert "SQLite" in lesson.get("description", "")
 
-    def test_three_repos_gives_proven_tier(
-        self, verified_3repos, db_path, tmp_path
-    ):
+    def test_three_repos_gives_proven_tier(self, verified_3repos, db_path, tmp_path):
         conn = init_db(db_path)
-        lesson_id = triage_candidate(verified_3repos, conn,
-                                     lance_dir=str(tmp_path / "lance"))
+        lesson_id = triage_candidate(verified_3repos, conn, lance_dir=str(tmp_path / "lance"))
         lesson = get_lesson(conn, lesson_id)
         assert lesson["tier"] == "proven"
         assert lesson["reuse_count"] == 2
@@ -104,24 +99,16 @@ class TestTriageCandidate:
             confidence=0.70,
             rationale="Maybe useful.",
         )
-        lesson_id = triage_candidate(low_confidence, conn,
-                                     lance_dir=str(tmp_path / "lance"))
+        lesson_id = triage_candidate(low_confidence, conn, lance_dir=str(tmp_path / "lance"))
         assert lesson_id is None
-        draft = conn.execute(
-            "SELECT * FROM capture_drafts WHERE detection_source='cross_project_scan'"
-        ).fetchone()
+        draft = conn.execute("SELECT * FROM capture_drafts WHERE detection_source='cross_project_scan'").fetchone()
         assert draft is not None
         assert abs(draft["confidence"] - 0.70) < 0.01
 
-    def test_surfacing_event_recorded_on_auto_approve(
-        self, verified, db_path, tmp_path
-    ):
+    def test_surfacing_event_recorded_on_auto_approve(self, verified, db_path, tmp_path):
         conn = init_db(db_path)
-        lesson_id = triage_candidate(verified, conn,
-                                     lance_dir=str(tmp_path / "lance"))
-        event = conn.execute(
-            "SELECT * FROM surfacing_events WHERE hook_point='cross_project_scan'"
-        ).fetchone()
+        lesson_id = triage_candidate(verified, conn, lance_dir=str(tmp_path / "lance"))
+        event = conn.execute("SELECT * FROM surfacing_events WHERE hook_point='cross_project_scan'").fetchone()
         assert event is not None
         assert event["lesson_id"] == lesson_id
 
@@ -136,25 +123,16 @@ class TestRejectDraft:
             "VALUES ('snippet', 'pending', '2026-02-26', 'test', 'cross_project_scan', 0.75)"
         )
         conn.commit()
-        draft_id = conn.execute(
-            "SELECT id FROM capture_drafts"
-        ).fetchone()["id"]
+        draft_id = conn.execute("SELECT id FROM capture_drafts").fetchone()["id"]
 
-        with patch("lessons_db.pattern_triage.get_embedding",
-                   return_value=[0.1] * 768):
-            reject_draft(draft_id, conn,
-                         lance_dir=str(tmp_path / "lance"),
-                         reason="Too project-specific")
+        with patch("lessons_db.pattern_triage.get_embedding", return_value=[0.1] * 768):
+            reject_draft(draft_id, conn, lance_dir=str(tmp_path / "lance"), reason="Too project-specific")
 
-        sv = conn.execute(
-            "SELECT * FROM suppression_vectors"
-        ).fetchone()
+        sv = conn.execute("SELECT * FROM suppression_vectors").fetchone()
         assert sv is not None
         assert sv["rejection_reason"] == "Too project-specific"
 
-        draft = conn.execute(
-            "SELECT status FROM capture_drafts WHERE id = ?", [draft_id]
-        ).fetchone()
+        draft = conn.execute("SELECT status FROM capture_drafts WHERE id = ?", [draft_id]).fetchone()
         assert draft["status"] == "rejected"
 
 
@@ -168,18 +146,14 @@ class TestCalibration:
                 "(raw_content, status, created_date, source, "
                 " detection_source, confidence) "
                 "VALUES (?, ?, '2026-02-26', 'test', 'cross_project_scan', ?)",
-                [f"snippet-{conf}",
-                 "approved" if promoted else "rejected",
-                 conf]
+                [f"snippet-{conf}", "approved" if promoted else "rejected", conf],
             )
         conn.commit()
         bands = calibration_bands(conn)
         # Bands are keyed by ROUND(confidence, 1)
         assert isinstance(bands, dict)
 
-    def test_should_adjust_threshold_returns_none_when_insufficient_data(
-        self, db_path
-    ):
+    def test_should_adjust_threshold_returns_none_when_insufficient_data(self, db_path):
         conn = init_db(db_path)
         result = should_adjust_threshold(conn)
         assert result is None

@@ -21,7 +21,7 @@ from lessons_db.db import (
     insert_lesson,
 )
 from lessons_db.pattern_verify import VerifiedCandidate
-from lessons_db.vectors import get_embedding, init_lance, upsert_lesson
+from lessons_db.vectors import init_lance, upsert_lesson
 
 logger = logging.getLogger(__name__)
 
@@ -71,18 +71,21 @@ def triage_candidate(
         tier = tier_from_reuse(reuse)
 
         try:
-            lesson_id = insert_lesson(conn, {
-                "title": candidate.snippet[:80],
-                "one_liner": candidate.snippet[:120],
-                "description": candidate.rationale,
-                "polarity": "positive",
-                "entry_type": "pattern",
-                "tier": tier,
-                "reuse_count": reuse,
-                "category": "architecture-pattern",
-                "created_date": today,
-                "source": "cross_project_scan",
-            })
+            lesson_id = insert_lesson(
+                conn,
+                {
+                    "title": candidate.snippet[:80],
+                    "one_liner": candidate.snippet[:120],
+                    "description": candidate.rationale,
+                    "polarity": "positive",
+                    "entry_type": "pattern",
+                    "tier": tier,
+                    "reuse_count": reuse,
+                    "category": "architecture-pattern",
+                    "created_date": today,
+                    "source": "cross_project_scan",
+                },
+            )
         except Exception as e:
             logger.error("triage: insert_lesson failed: %s", e)
             return None
@@ -92,7 +95,7 @@ def triage_candidate(
             "INSERT INTO surfacing_events "
             "(lesson_id, hook_point, context, outcome, timestamp) "
             "VALUES (?, 'cross_project_scan', ?, 'heeded', datetime('now'))",
-            [lesson_id, ",".join(candidate.source_repos)]
+            [lesson_id, ",".join(candidate.source_repos)],
         )
         conn.commit()
 
@@ -100,21 +103,27 @@ def triage_candidate(
         if lance_dir:
             try:
                 lance_db = init_lance(lance_dir)
-                upsert_lesson(lance_db, {
-                    "lesson_id": lesson_id,
-                    "text": candidate.snippet,
-                    "tier": tier,
-                    "cluster": "",
-                    "scope": "",
-                    "enforcement": "documentation",
-                    "recurrence_count": 0,
-                })
+                upsert_lesson(
+                    lance_db,
+                    {
+                        "lesson_id": lesson_id,
+                        "text": candidate.snippet,
+                        "tier": tier,
+                        "cluster": "",
+                        "scope": "",
+                        "enforcement": "documentation",
+                        "recurrence_count": 0,
+                    },
+                )
             except Exception as e:
                 logger.warning("triage: LanceDB upsert failed for lesson %d: %s", lesson_id, e)
 
         logger.info(
             "triage: auto-approved lesson %d (tier=%s, reuse=%d, conf=%.2f)",
-            lesson_id, tier, reuse, candidate.confidence
+            lesson_id,
+            tier,
+            reuse,
+            candidate.confidence,
         )
         return lesson_id
 
@@ -130,7 +139,7 @@ def triage_candidate(
                 candidate.rationale,
                 today,
                 candidate.confidence,
-            ]
+            ],
         )
         conn.commit()
         logger.debug("triage: queued draft (conf=%.2f)", candidate.confidence)
@@ -148,9 +157,7 @@ def reject_draft(
     Rejected snippets suppress future candidates with >0.85 similarity,
     preventing the scanner from repeating the same false positive nightly.
     """
-    row = conn.execute(
-        "SELECT raw_content FROM capture_drafts WHERE id = ?", [draft_id]
-    ).fetchone()
+    row = conn.execute("SELECT raw_content FROM capture_drafts WHERE id = ?", [draft_id]).fetchone()
     if not row:
         logger.warning("reject_draft: draft %d not found", draft_id)
         return
@@ -162,13 +169,10 @@ def reject_draft(
         "INSERT INTO suppression_vectors "
         "(embedding_id, rejected_snippet, rejection_date, rejection_reason) "
         "VALUES (?, ?, date('now'), ?)",
-        [embedding_id, snippet, reason]
+        [embedding_id, snippet, reason],
     )
 
-    conn.execute(
-        "UPDATE capture_drafts SET status = 'rejected' WHERE id = ?",
-        [draft_id]
-    )
+    conn.execute("UPDATE capture_drafts SET status = 'rejected' WHERE id = ?", [draft_id])
     conn.commit()
 
     logger.info("reject_draft: draft %d rejected, suppression vector stored", draft_id)

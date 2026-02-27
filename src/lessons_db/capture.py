@@ -13,7 +13,7 @@ from lessons_db.config import (
     OLLAMA_ANALYSIS_URL,
     QUALITY_MIN_SCORE,
 )
-from lessons_db.db import init_db, insert_lesson
+from lessons_db.db import insert_lesson
 
 _log = logging.getLogger(__name__)
 
@@ -48,8 +48,7 @@ def score_one_liner(text: str) -> int:
         return 3
 
 
-def capture_from_design_doc(doc_path: Path,
-                             conn) -> list[dict]:
+def capture_from_design_doc(doc_path: Path, conn) -> list[dict]:
     """Extract positive patterns from a design doc. Sends to capture_drafts (quarantine).
 
     Returns list of extracted entry dicts. Does NOT create live lessons."""
@@ -107,17 +106,20 @@ def promote_draft(conn, draft_id: int) -> int | None:
         return None
 
     data = json.loads(row["extracted_data"])
-    lesson_id = insert_lesson(conn, {
-        "title": data.get("one_liner", "Untitled pattern"),
-        "one_liner": data.get("one_liner", ""),
-        "description": data.get("why", ""),
-        "polarity": "positive",
-        "entry_type": "pattern",
-        "category": data.get("category", "architecture-pattern"),
-        "tier": "noticed",
-        "source": "auto_design_doc",
-        "created_date": date.today().isoformat(),
-    })
+    lesson_id = insert_lesson(
+        conn,
+        {
+            "title": data.get("one_liner", "Untitled pattern"),
+            "one_liner": data.get("one_liner", ""),
+            "description": data.get("why", ""),
+            "polarity": "positive",
+            "entry_type": "pattern",
+            "category": data.get("category", "architecture-pattern"),
+            "tier": "noticed",
+            "source": "auto_design_doc",
+            "created_date": date.today().isoformat(),
+        },
+    )
     conn.execute(
         "UPDATE capture_drafts SET status = 'approved' WHERE id = ?",
         [draft_id],
@@ -266,8 +268,9 @@ def capture_from_diff(diff_text: str, conn) -> list[dict]:
     return inserted
 
 
-def capture_positive_manual(conn, one_liner: str, why: str, category: str,
-                              when_to_apply: str = "", when_not_to_apply: str = "") -> int | None:
+def capture_positive_manual(
+    conn, one_liner: str, why: str, category: str, when_to_apply: str = "", when_not_to_apply: str = ""
+) -> int | None:
     """Capture a positive knowledge entry manually. Runs quality gate first.
 
     Returns lesson_id if quality passes, None if rejected."""
@@ -276,14 +279,17 @@ def capture_positive_manual(conn, one_liner: str, why: str, category: str,
         _log.warning("capture_positive_manual: score %d below threshold %d", score, QUALITY_MIN_SCORE)
         return None
 
-    return insert_lesson(conn, {
-        "title": one_liner,
-        "one_liner": one_liner,
-        "description": why,
-        "polarity": "positive",
-        "entry_type": "pattern",
-        "category": category,
-        "tier": "noticed",
-        "source": "manual",
-        "created_date": date.today().isoformat(),
-    })
+    return insert_lesson(
+        conn,
+        {
+            "title": one_liner,
+            "one_liner": one_liner,
+            "description": why,
+            "polarity": "positive",
+            "entry_type": "pattern",
+            "category": category,
+            "tier": "noticed",
+            "source": "manual",
+            "created_date": date.today().isoformat(),
+        },
+    )

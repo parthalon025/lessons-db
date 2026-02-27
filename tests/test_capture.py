@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lessons_db.capture import (
-    capture_positive_manual,
     capture_from_design_doc,
-    score_one_liner,
-    promote_draft,
+    capture_positive_manual,
     list_drafts,
+    promote_draft,
+    score_one_liner,
 )
-from lessons_db.db import init_db, get_lesson
+from lessons_db.db import get_lesson, init_db
 
 
 class TestScoreOneLiner:
@@ -49,9 +49,17 @@ class TestCaptureFromDesignDoc:
 
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
-            "response": json.dumps({
-                "entries": [{"one_liner": "Dual-axis testing catches integration bugs", "why": "Tests both horizontal and vertical", "category": "testing-pattern"}]
-            })
+            "response": json.dumps(
+                {
+                    "entries": [
+                        {
+                            "one_liner": "Dual-axis testing catches integration bugs",
+                            "why": "Tests both horizontal and vertical",
+                            "category": "testing-pattern",
+                        }
+                    ]
+                }
+            )
         }
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
             drafts = capture_from_design_doc(doc, conn)
@@ -74,7 +82,17 @@ class TestCaptureFromDesignDoc:
         conn = init_db(db_path)
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
-            "response": json.dumps({"entries": [{"one_liner": "Thompson Sampling beats round-robin", "why": "Adapts to observed performance", "category": "architecture-pattern"}]})
+            "response": json.dumps(
+                {
+                    "entries": [
+                        {
+                            "one_liner": "Thompson Sampling beats round-robin",
+                            "why": "Adapts to observed performance",
+                            "category": "architecture-pattern",
+                        }
+                    ]
+                }
+            )
         }
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
             capture_from_design_doc(doc, conn)
@@ -90,7 +108,11 @@ class TestPromoteDraft:
         conn.execute(
             "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
             "VALUES (?, ?, 'pending', ?, 'auto_design_doc')",
-            ["raw", json.dumps({"one_liner": "Test pattern", "why": "Because", "category": "testing-pattern"}), date.today().isoformat()]
+            [
+                "raw",
+                json.dumps({"one_liner": "Test pattern", "why": "Because", "category": "testing-pattern"}),
+                date.today().isoformat(),
+            ],
         )
         conn.commit()
         draft_id = conn.execute("SELECT id FROM capture_drafts LIMIT 1").fetchone()["id"]
@@ -106,7 +128,11 @@ class TestPromoteDraft:
         conn.execute(
             "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
             "VALUES (?, ?, 'pending', ?, 'auto_design_doc')",
-            ["raw", json.dumps({"one_liner": "X", "why": "Y", "category": "architecture-pattern"}), date.today().isoformat()]
+            [
+                "raw",
+                json.dumps({"one_liner": "X", "why": "Y", "category": "architecture-pattern"}),
+                date.today().isoformat(),
+            ],
         )
         conn.commit()
         draft_id = conn.execute("SELECT id FROM capture_drafts LIMIT 1").fetchone()["id"]
@@ -131,11 +157,13 @@ class TestListDrafts:
 class TestCaptureFromTranscript:
     @patch("lessons_db.capture.requests.post")
     def test_extracts_lessons_from_transcript(self, mock_post, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_transcript
+        from lessons_db.db import init_db
 
         mock_post.return_value = MagicMock(
-            json=lambda: {"response": '{"lessons": [{"one_liner": "Always log before fallback", "cluster": "A", "tier": "lesson"}]}'},
+            json=lambda: {
+                "response": '{"lessons": [{"one_liner": "Always log before fallback", "cluster": "A", "tier": "lesson"}]}'
+            },
             raise_for_status=lambda: None,
         )
         conn = init_db(db_path)
@@ -149,8 +177,8 @@ class TestCaptureFromTranscript:
 
     @patch("lessons_db.capture.requests.post")
     def test_returns_empty_on_ollama_failure(self, mock_post, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_transcript
+        from lessons_db.db import init_db
 
         mock_post.side_effect = Exception("network error")
         conn = init_db(db_path)
@@ -158,8 +186,8 @@ class TestCaptureFromTranscript:
             capture_from_transcript("transcript " * 20, conn)
 
     def test_returns_empty_on_short_transcript(self, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_transcript
+        from lessons_db.db import init_db
 
         conn = init_db(db_path)
         result = capture_from_transcript("too short", conn)
@@ -169,15 +197,19 @@ class TestCaptureFromTranscript:
 class TestCaptureFromDiff:
     @patch("lessons_db.capture.requests.post")
     def test_extracts_lessons_from_diff(self, mock_post, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_diff
+        from lessons_db.db import init_db
 
         mock_post.return_value = MagicMock(
-            json=lambda: {"response": '{"lessons": [{"one_liner": "Never use bare except", "cluster": "A", "tier": "lesson"}]}'},
+            json=lambda: {
+                "response": '{"lessons": [{"one_liner": "Never use bare except", "cluster": "A", "tier": "lesson"}]}'
+            },
             raise_for_status=lambda: None,
         )
         conn = init_db(db_path)
-        result = capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n-    pass\n+except Exception as e:\n+    log(e)", conn)
+        result = capture_from_diff(
+            "diff --git a/foo.py b/foo.py\n-except:\n-    pass\n+except Exception as e:\n+    log(e)", conn
+        )
         assert isinstance(result, list)
         assert len(result) == 1
         rows = conn.execute("SELECT * FROM capture_drafts").fetchall()
@@ -186,16 +218,16 @@ class TestCaptureFromDiff:
 
     @patch("lessons_db.capture.requests.post")
     def test_returns_empty_on_empty_diff(self, mock_post, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_diff
+        from lessons_db.db import init_db
 
         conn = init_db(db_path)
         result = capture_from_diff("", conn)
         assert result == []
 
     def test_returns_empty_on_short_diff(self, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_diff
+        from lessons_db.db import init_db
 
         conn = init_db(db_path)
         result = capture_from_diff("short diff txt", conn)
@@ -203,8 +235,8 @@ class TestCaptureFromDiff:
 
     @patch("lessons_db.capture.requests.post")
     def test_returns_empty_on_ollama_failure(self, mock_post, db_path):
-        from lessons_db.db import init_db
         from lessons_db.capture import capture_from_diff
+        from lessons_db.db import init_db
 
         mock_post.side_effect = Exception("connection refused")
         conn = init_db(db_path)
@@ -239,7 +271,10 @@ class TestCapturePositiveManual:
         mock_resp.json.return_value = {"response": "4"}
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
             lesson_id = capture_positive_manual(
-                conn, "Thompson Sampling beats round-robin routing", "Adapts to observed performance", "architecture-pattern"
+                conn,
+                "Thompson Sampling beats round-robin routing",
+                "Adapts to observed performance",
+                "architecture-pattern",
             )
         lesson = get_lesson(conn, lesson_id)
         assert lesson["polarity"] == "positive"
@@ -251,6 +286,7 @@ class TestCapturePositiveCLI:
 
     def test_capture_positive_subcommand_exists(self):
         from click.testing import CliRunner
+
         from lessons_db.cli import main
 
         runner = CliRunner()
@@ -260,20 +296,27 @@ class TestCapturePositiveCLI:
 
     def test_capture_positive_prompts_and_creates_lesson(self, db_path):
         from click.testing import CliRunner
+
         from lessons_db.cli import main
 
         runner = CliRunner()
         # Trailing \n ensures Click's CliRunner correctly terminates the last prompt
-        user_input = "\n".join([
-            "Dual-axis testing catches integration seam bugs",  # one_liner
-            "Tests both horizontal (surface) and vertical (depth) paths",  # why
-            "testing-pattern",  # category
-        ]) + "\n"
+        user_input = (
+            "\n".join(
+                [
+                    "Dual-axis testing catches integration seam bugs",  # one_liner
+                    "Tests both horizontal (surface) and vertical (depth) paths",  # why
+                    "testing-pattern",  # category
+                ]
+            )
+            + "\n"
+        )
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"response": "4"}  # quality score passes
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
             result = runner.invoke(
-                main, ["--db", str(db_path), "capture", "positive"],
+                main,
+                ["--db", str(db_path), "capture", "positive"],
                 input=user_input,
             )
         assert result.exit_code == 0, result.output
@@ -281,6 +324,7 @@ class TestCapturePositiveCLI:
 
     def test_capture_positive_aborts_on_low_quality(self, db_path):
         from click.testing import CliRunner
+
         from lessons_db.cli import main
 
         runner = CliRunner()
@@ -290,7 +334,8 @@ class TestCapturePositiveCLI:
         mock_resp.json.return_value = {"response": "2"}  # score below threshold
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
             result = runner.invoke(
-                main, ["--db", str(db_path), "capture", "positive"],
+                main,
+                ["--db", str(db_path), "capture", "positive"],
                 input=user_input,
             )
         assert result.exit_code == 0, result.output
@@ -302,6 +347,7 @@ class TestCaptureDesignDocCLI:
 
     def test_capture_design_doc_cli_success(self, db_path, tmp_path):
         from click.testing import CliRunner
+
         from lessons_db.cli import main
 
         doc = tmp_path / "test-design.md"
@@ -310,9 +356,17 @@ class TestCaptureDesignDocCLI:
         runner = CliRunner()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
-            "response": json.dumps({
-                "entries": [{"one_liner": "Dual-axis testing finds integration bugs", "why": "Tests both axes", "category": "testing-pattern"}]
-            })
+            "response": json.dumps(
+                {
+                    "entries": [
+                        {
+                            "one_liner": "Dual-axis testing finds integration bugs",
+                            "why": "Tests both axes",
+                            "category": "testing-pattern",
+                        }
+                    ]
+                }
+            )
         }
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
             result = runner.invoke(main, ["--db", str(db_path), "capture", "design-doc", str(doc)])
@@ -324,6 +378,7 @@ class TestCaptureDesignDocCLI:
     def test_capture_design_doc_cli_ollama_unavailable(self, db_path, tmp_path):
         """Exits 0 even when Ollama is unavailable (non-blocking)."""
         from click.testing import CliRunner
+
         from lessons_db.cli import main
 
         doc = tmp_path / "test-design.md"

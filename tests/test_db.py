@@ -1,9 +1,6 @@
 """Tests for SQLite schema and CRUD operations."""
 
-import sqlite3
 from datetime import date, timedelta
-
-import pytest
 
 from lessons_db.db import (
     get_lesson,
@@ -46,9 +43,7 @@ class TestSchemaCreation:
 
     def test_init_creates_all_tables(self, db_path):
         conn = init_db(db_path)
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row["name"] for row in cursor.fetchall()]
         for t in EXPECTED_TABLES:
             assert t in tables, f"Missing table: {t}"
@@ -56,9 +51,7 @@ class TestSchemaCreation:
 
     def test_init_creates_indexes(self, db_path):
         conn = init_db(db_path)
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
-        )
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
         indexes = [row["name"] for row in cursor.fetchall()]
         for idx in EXPECTED_INDEXES:
             assert idx in indexes, f"Missing index: {idx}"
@@ -74,9 +67,7 @@ class TestSchemaCreation:
         conn1 = init_db(db_path)
         conn1.close()
         conn2 = init_db(db_path)
-        cursor = conn2.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = conn2.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row["name"] for row in cursor.fetchall()]
         for t in EXPECTED_TABLES:
             assert t in tables
@@ -119,10 +110,13 @@ class TestLessonCRUD:
 
     def test_update_enforcement(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "test lesson",
-            "one_liner": "a test",
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "test lesson",
+                "one_liner": "a test",
+            },
+        )
         update_lesson(conn, lid, {"enforcement": "semgrep_warning", "severity": 5})
         lesson = get_lesson(conn, lid)
         assert lesson["enforcement"] == "semgrep_warning"
@@ -131,17 +125,19 @@ class TestLessonCRUD:
 
     def test_search_by_file(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "subscriber lifecycle",
-            "one_liner": "Store callback ref on self",
-            "cluster": "B",
-            "enforcement": "semgrep_error",
-            "severity": 4,
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "subscriber lifecycle",
+                "one_liner": "Store callback ref on self",
+                "cluster": "B",
+                "enforcement": "semgrep_error",
+                "severity": 4,
+            },
+        )
         # Insert an affected file
         conn.execute(
-            "INSERT INTO affected_files (lesson_id, file_path, project) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO affected_files (lesson_id, file_path, project) " "VALUES (?, ?, ?)",
             (lid, "src/aria/hub/presence.py", "ha-aria"),
         )
         conn.commit()
@@ -161,21 +157,30 @@ class TestLessonCRUD:
 
     def test_search_by_enforcement(self, db_path):
         conn = init_db(db_path)
-        insert_lesson(conn, {
-            "title": "doc only",
-            "one_liner": "low severity",
-            "enforcement": "documentation",
-        })
-        insert_lesson(conn, {
-            "title": "warning level",
-            "one_liner": "medium severity",
-            "enforcement": "semgrep_warning",
-        })
-        insert_lesson(conn, {
-            "title": "also warning",
-            "one_liner": "another medium",
-            "enforcement": "semgrep_warning",
-        })
+        insert_lesson(
+            conn,
+            {
+                "title": "doc only",
+                "one_liner": "low severity",
+                "enforcement": "documentation",
+            },
+        )
+        insert_lesson(
+            conn,
+            {
+                "title": "warning level",
+                "one_liner": "medium severity",
+                "enforcement": "semgrep_warning",
+            },
+        )
+        insert_lesson(
+            conn,
+            {
+                "title": "also warning",
+                "one_liner": "another medium",
+                "enforcement": "semgrep_warning",
+            },
+        )
 
         results = search_by_enforcement(conn, "semgrep_warning")
         assert len(results) == 2
@@ -189,51 +194,64 @@ class TestCorrectiveActions:
 
     def test_insert_and_get_overdue(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "test lesson",
-            "one_liner": "for corrective",
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "test lesson",
+                "one_liner": "for corrective",
+            },
+        )
 
         # Overdue action (due yesterday, no explicit due_date — auto +7 days won't
         # be overdue, so set explicitly)
         past = (date.today() - timedelta(days=1)).isoformat()
-        insert_corrective_action(conn, {
-            "lesson_id": lid,
-            "action": "Add logging to exception handler",
-            "status": "proposed",
-            "due_date": past,
-        })
+        insert_corrective_action(
+            conn,
+            {
+                "lesson_id": lid,
+                "action": "Add logging to exception handler",
+                "status": "proposed",
+                "due_date": past,
+            },
+        )
 
         # Not overdue (future date)
         future = (date.today() + timedelta(days=30)).isoformat()
-        insert_corrective_action(conn, {
-            "lesson_id": lid,
-            "action": "Write semgrep rule",
-            "status": "in_progress",
-            "due_date": future,
-        })
+        insert_corrective_action(
+            conn,
+            {
+                "lesson_id": lid,
+                "action": "Write semgrep rule",
+                "status": "in_progress",
+                "due_date": future,
+            },
+        )
 
         # Completed (should not appear even if overdue)
-        insert_corrective_action(conn, {
-            "lesson_id": lid,
-            "action": "Deploy rule",
-            "status": "completed",
-            "due_date": past,
-        })
+        insert_corrective_action(
+            conn,
+            {
+                "lesson_id": lid,
+                "action": "Deploy rule",
+                "status": "completed",
+                "due_date": past,
+            },
+        )
 
         overdue = get_overdue_actions(conn)
         assert len(overdue) == 1
         assert overdue[0]["action"] == "Add logging to exception handler"
 
         # Test auto due_date default (+7 days)
-        aid = insert_corrective_action(conn, {
-            "lesson_id": lid,
-            "action": "Auto-dated action",
-            "status": "proposed",
-        })
-        row = conn.execute(
-            "SELECT due_date FROM corrective_actions WHERE id = ?", (aid,)
-        ).fetchone()
+        aid = insert_corrective_action(
+            conn,
+            {
+                "lesson_id": lid,
+                "action": "Auto-dated action",
+                "status": "proposed",
+            },
+        )
+        row = conn.execute("SELECT due_date FROM corrective_actions WHERE id = ?", (aid,)).fetchone()
         expected_due = (date.today() + timedelta(days=7)).isoformat()
         assert row["due_date"] == expected_due
         conn.close()
@@ -244,25 +262,34 @@ class TestNearMisses:
 
     def test_insert_and_hotspots(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "bare except",
-            "one_liner": "no bare except",
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "bare except",
+                "one_liner": "no bare except",
+            },
+        )
 
         # 3 hits on file A, 1 hit on file B
         for _ in range(3):
-            insert_near_miss(conn, {
+            insert_near_miss(
+                conn,
+                {
+                    "lesson_id": lid,
+                    "file_path": "src/engine/core.py",
+                    "event_type": "block",
+                    "rule_id": "bare-except",
+                },
+            )
+        insert_near_miss(
+            conn,
+            {
                 "lesson_id": lid,
-                "file_path": "src/engine/core.py",
-                "event_type": "block",
+                "file_path": "src/hub/main.py",
+                "event_type": "warn",
                 "rule_id": "bare-except",
-            })
-        insert_near_miss(conn, {
-            "lesson_id": lid,
-            "file_path": "src/hub/main.py",
-            "event_type": "warn",
-            "rule_id": "bare-except",
-        })
+            },
+        )
 
         hotspots = get_near_miss_hotspots(conn, limit=10)
         assert len(hotspots) == 2
@@ -278,27 +305,36 @@ class TestScanFindings:
 
     def test_insert_and_get_open(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "async discipline",
-            "one_liner": "no async without IO",
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "async discipline",
+                "one_liner": "no async without IO",
+            },
+        )
 
-        insert_scan_finding(conn, {
-            "lesson_id": lid,
-            "rule_id": "async-no-io",
-            "file_path": "src/capture.py",
-            "line_number": 42,
-            "snippet": "async def pure_func():",
-            "status": "open",
-        })
-        insert_scan_finding(conn, {
-            "lesson_id": lid,
-            "rule_id": "async-no-io",
-            "file_path": "src/export.py",
-            "line_number": 10,
-            "snippet": "async def format():",
-            "status": "resolved",
-        })
+        insert_scan_finding(
+            conn,
+            {
+                "lesson_id": lid,
+                "rule_id": "async-no-io",
+                "file_path": "src/capture.py",
+                "line_number": 42,
+                "snippet": "async def pure_func():",
+                "status": "open",
+            },
+        )
+        insert_scan_finding(
+            conn,
+            {
+                "lesson_id": lid,
+                "rule_id": "async-no-io",
+                "file_path": "src/export.py",
+                "line_number": 10,
+                "snippet": "async def format():",
+                "status": "resolved",
+            },
+        )
 
         open_findings = get_open_findings(conn)
         assert len(open_findings) == 1
@@ -334,49 +370,49 @@ class TestSchemaExtension:
 
     def test_surfacing_events_table_exists(self, db_path):
         conn = init_db(db_path)
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "surfacing_events" in tables
 
     def test_templates_table_exists(self, db_path):
         conn = init_db(db_path)
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "templates" in tables
 
     def test_insert_lesson_with_polarity(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "Test positive entry",
-            "one_liner": "Dual-axis testing catches integration bugs",
-            "created_date": "2026-02-26",
-            "polarity": "positive",
-            "entry_type": "pattern",
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test positive entry",
+                "one_liner": "Dual-axis testing catches integration bugs",
+                "created_date": "2026-02-26",
+                "polarity": "positive",
+                "entry_type": "pattern",
+            },
+        )
         row = get_lesson(conn, lid)
         assert row["polarity"] == "positive"
         assert row["entry_type"] == "pattern"
 
     def test_reuse_count_defaults_to_zero(self, db_path):
         conn = init_db(db_path)
-        lid = insert_lesson(conn, {
-            "title": "T", "one_liner": "X", "created_date": "2026-02-26",
-        })
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "T",
+                "one_liner": "X",
+                "created_date": "2026-02-26",
+            },
+        )
         row = get_lesson(conn, lid)
         assert row["reuse_count"] == 0
 
     def test_capture_drafts_table_exists(self, db_path):
         conn = init_db(db_path)
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "capture_drafts" in tables
 
     def test_cluster_runs_table_exists(self, db_path):
         conn = init_db(db_path)
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "cluster_runs" in tables

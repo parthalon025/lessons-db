@@ -1,31 +1,31 @@
 """Tests for Semgrep scanning and SARIF parsing."""
 
 import json
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from lessons_db.scan import parse_sarif, run_scan
 
-
 SAMPLE_SARIF = {
     "version": "2.1.0",
-    "runs": [{
-        "results": [
-            {
-                "ruleId": "lessons-db.python.bare-except-007",
-                "message": {"text": "Never use bare except:pass"},
-                "locations": [{
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": "src/bad.py"},
-                        "region": {"startLine": 42},
-                    }
-                }],
-                "properties": {"metadata": {"lesson_id": 7}},
-            }
-        ]
-    }],
+    "runs": [
+        {
+            "results": [
+                {
+                    "ruleId": "lessons-db.python.bare-except-007",
+                    "message": {"text": "Never use bare except:pass"},
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {"uri": "src/bad.py"},
+                                "region": {"startLine": 42},
+                            }
+                        }
+                    ],
+                    "properties": {"metadata": {"lesson_id": 7}},
+                }
+            ]
+        }
+    ],
 }
 
 

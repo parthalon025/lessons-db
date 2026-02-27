@@ -1,9 +1,5 @@
 """Shared test fixtures for lessons-db."""
 
-import sqlite3
-import tempfile
-from pathlib import Path
-
 import pytest
 
 

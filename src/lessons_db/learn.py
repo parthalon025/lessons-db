@@ -1,19 +1,18 @@
 """Learning pipeline: surfacing event recording and composite relevance scoring."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _log = logging.getLogger(__name__)
 
 
-def record_surfacing(conn, lesson_id: int, hook_point: str,
-                     context: str = "", session_id: str | None = None) -> int:
+def record_surfacing(conn, lesson_id: int, hook_point: str, context: str = "", session_id: str | None = None) -> int:
     """Record a surfacing event. Returns event ID for later outcome update."""
     cursor = conn.execute(
         "INSERT INTO surfacing_events "
         "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
         "VALUES (?, ?, ?, 'unknown', ?, ?)",
-        [lesson_id, hook_point, context, datetime.now(timezone.utc).isoformat(), session_id],
+        [lesson_id, hook_point, context, datetime.now(UTC).isoformat(), session_id],
     )
     conn.commit()
     return cursor.lastrowid
@@ -33,8 +32,7 @@ def record_outcome(conn, event_id: int, outcome: str) -> None:
         raise ValueError(f"No surfacing event found with id={event_id}.")
 
 
-def relevance_score(conn, lesson_id: int, context: str,
-                    semantic_sim: float) -> float:
+def relevance_score(conn, lesson_id: int, context: str, semantic_sim: float) -> float:
     """Composite relevance score.
 
     score = 0.5 * semantic_sim
@@ -49,12 +47,8 @@ def relevance_score(conn, lesson_id: int, context: str,
 def surfacing_stats(conn) -> dict:
     """Summary stats for the status command and efficiency tracking."""
     total = conn.execute("SELECT COUNT(*) FROM surfacing_events").fetchone()[0]
-    heeded = conn.execute(
-        "SELECT COUNT(*) FROM surfacing_events WHERE outcome='heeded'"
-    ).fetchone()[0]
-    dismissed = conn.execute(
-        "SELECT COUNT(*) FROM surfacing_events WHERE outcome='dismissed'"
-    ).fetchone()[0]
+    heeded = conn.execute("SELECT COUNT(*) FROM surfacing_events WHERE outcome='heeded'").fetchone()[0]
+    dismissed = conn.execute("SELECT COUNT(*) FROM surfacing_events WHERE outcome='dismissed'").fetchone()[0]
     avg_row = conn.execute(
         "SELECT AVG(cnt) FROM (SELECT COUNT(*) as cnt FROM surfacing_events GROUP BY session_id)"
     ).fetchone()[0]
@@ -79,8 +73,7 @@ def _outcome_rate(conn, lesson_id: int, context: str) -> float:
     context strings become high-cardinality."""
     ctx_prefix = context[:50] if context else ""
     rows = conn.execute(
-        "SELECT outcome FROM surfacing_events "
-        "WHERE lesson_id = ? AND context LIKE ? AND outcome != 'unknown'",
+        "SELECT outcome FROM surfacing_events " "WHERE lesson_id = ? AND context LIKE ? AND outcome != 'unknown'",
         [lesson_id, f"%{ctx_prefix}%"],
     ).fetchall()
     if not rows:

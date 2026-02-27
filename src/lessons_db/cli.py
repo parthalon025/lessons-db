@@ -6,20 +6,20 @@ from pathlib import Path
 
 import click
 
-from lessons_db.config import SQLITE_PATH, LANCE_DIR, LESSONS_SOURCE_DIR, RULES_DIR
+from lessons_db import pattern_extract, pattern_triage, pattern_verify
+from lessons_db.config import LANCE_DIR, LESSONS_SOURCE_DIR, RULES_DIR, SQLITE_PATH
 from lessons_db.db import (
-    init_db,
-    get_overdue_actions,
-    get_open_findings,
     get_near_miss_hotspots,
-    insert_lesson,
-    insert_corrective_action,
+    get_open_findings,
+    get_overdue_actions,
     get_scan_state,
+    init_db,
+    insert_corrective_action,
+    insert_lesson,
     set_scan_state,
 )
-from lessons_db import pattern_extract, pattern_verify, pattern_triage
-from lessons_db.search import search_combined
 from lessons_db.migrate import parse_lesson_file
+from lessons_db.search import search_combined
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 def main(ctx, db, verbose):
     """lessons-learned prevention system — capture, search, and enforce coding lessons."""
     from lessons_db.logging_config import configure_logging
+
     configure_logging(level=logging.DEBUG if verbose else logging.WARNING)
 
     ctx.ensure_object(dict)
@@ -88,8 +89,12 @@ def status(ctx):
 @click.option("--file", "-f", default=None, help="File path to search for.")
 @click.option("--content", "-c", default=None, help="Code content to match against patterns.")
 @click.option("--top", "-k", default=5, type=int, help="Max results to return.")
-@click.option("--polarity", default=None, type=click.Choice(["positive", "negative"]),
-              help="Filter by polarity: 'positive' for what works, 'negative' for anti-patterns.")
+@click.option(
+    "--polarity",
+    default=None,
+    type=click.Choice(["positive", "negative"]),
+    help="Filter by polarity: 'positive' for what works, 'negative' for anti-patterns.",
+)
 @click.pass_context
 def search(ctx, query, file, content, top, polarity):
     """Search lessons by text, file path, or content pattern."""
@@ -129,7 +134,9 @@ def search(ctx, query, file, content, top, polarity):
 
 
 @main.command()
-@click.option("--source", type=click.Path(exists=True), default=None, help="Source directory for lesson markdown files.")
+@click.option(
+    "--source", type=click.Path(exists=True), default=None, help="Source directory for lesson markdown files."
+)
 @click.option("--db", "db_override", type=click.Path(), default=None, help="Override DB path for migration.")
 @click.option("--dry-run", is_flag=True, help="List files without inserting.")
 @click.pass_context
@@ -178,11 +185,14 @@ def migrate(ctx, source, db_override, dry_run):
 
             # Insert corrective actions
             for action in parsed.get("corrective_actions", []):
-                insert_corrective_action(conn, {
-                    "lesson_id": lesson_id,
-                    "action": action.get("description", ""),
-                    "status": action.get("status", "proposed"),
-                })
+                insert_corrective_action(
+                    conn,
+                    {
+                        "lesson_id": lesson_id,
+                        "action": action.get("description", ""),
+                        "status": action.get("status", "proposed"),
+                    },
+                )
 
             migrated += 1
         except Exception as exc:
@@ -202,7 +212,6 @@ def index(ctx, seed_only):
     cluster_seed: copies cluster → cluster_seed for A-F historical labels.
     Embeddings: calls Ollama nomic-embed-text for each lesson's title + one_liner.
     """
-    import lancedb
     from lessons_db.vectors import init_lance, upsert_lesson
 
     conn = ctx.obj["conn"]
@@ -264,11 +273,15 @@ def rule():
 
 @rule.command("generate")
 @click.argument("lesson_id", type=int)
-@click.option("--rules-dir", type=click.Path(), default=None,
-              help="Directory to write rules (default: ~/.local/share/lessons-db/rules/)")
-@click.option("--severity", default="WARNING",
-              type=click.Choice(["WARNING", "ERROR", "INFO"]),
-              help="Semgrep rule severity.")
+@click.option(
+    "--rules-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory to write rules (default: ~/.local/share/lessons-db/rules/)",
+)
+@click.option(
+    "--severity", default="WARNING", type=click.Choice(["WARNING", "ERROR", "INFO"]), help="Semgrep rule severity."
+)
 @click.pass_context
 def rule_generate(ctx, lesson_id, rules_dir, severity):
     """Generate a Semgrep rule YAML file for a lesson."""
@@ -282,12 +295,11 @@ def rule_generate(ctx, lesson_id, rules_dir, severity):
         ctx.exit(1)
         return
 
-    patterns = conn.execute(
-        "SELECT * FROM detection_patterns WHERE lesson_id = ?", (lesson_id,)
-    ).fetchall()
+    patterns = conn.execute("SELECT * FROM detection_patterns WHERE lesson_id = ?", (lesson_id,)).fetchall()
     if not patterns:
-        click.echo(f"No detection patterns for lesson #{lesson_id}. "
-                   "Add patterns via detection_patterns table first.")
+        click.echo(
+            f"No detection patterns for lesson #{lesson_id}. " "Add patterns via detection_patterns table first."
+        )
         return
 
     out_dir = Path(rules_dir) if rules_dir else RULES_DIR
@@ -304,8 +316,12 @@ def rule_generate(ctx, lesson_id, rules_dir, severity):
 
 
 @rule.command("test")
-@click.option("--rules-dir", type=click.Path(), default=None,
-              help="Directory containing rules (default: ~/.local/share/lessons-db/rules/)")
+@click.option(
+    "--rules-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory containing rules (default: ~/.local/share/lessons-db/rules/)",
+)
 @click.pass_context
 def rule_test(ctx, rules_dir):
     """Run semgrep --test against all generated rules."""
@@ -324,7 +340,8 @@ def rule_test(ctx, rules_dir):
 
     result = subprocess.run(
         [semgrep, "--test", str(out_dir)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     click.echo(result.stdout or result.stderr)
     if result.returncode == 0:
@@ -335,17 +352,18 @@ def rule_test(ctx, rules_dir):
 
 
 @main.command()
-@click.option("--rules-dir", type=click.Path(), default=None,
-              help="Rules directory (default: ~/.local/share/lessons-db/rules/)")
-@click.option("--target", type=click.Path(), default=None,
-              help="Target directory to scan (default: ~/Documents/projects/)")
-@click.option("--baseline", default=None,
-              help="Git commit hash for diff-aware scanning.")
+@click.option(
+    "--rules-dir", type=click.Path(), default=None, help="Rules directory (default: ~/.local/share/lessons-db/rules/)"
+)
+@click.option(
+    "--target", type=click.Path(), default=None, help="Target directory to scan (default: ~/Documents/projects/)"
+)
+@click.option("--baseline", default=None, help="Git commit hash for diff-aware scanning.")
 @click.pass_context
 def scan(ctx, rules_dir, target, baseline):
     """Run Semgrep scan against all lessons rules and record findings."""
-    from lessons_db.scan import run_scan
     from lessons_db.db import insert_scan_finding
+    from lessons_db.scan import run_scan
 
     rules = Path(rules_dir) if rules_dir else RULES_DIR
     if not rules.exists() or not any(rules.rglob("*.yaml")):
@@ -385,13 +403,16 @@ def scan(ctx, rules_dir, target, baseline):
             continue
 
         try:
-            insert_scan_finding(conn, {
-                "lesson_id": lesson_id,
-                "rule_id": rule_id,
-                "file_path": f.get("file_path", ""),
-                "line_number": f.get("line_number"),
-                "snippet": f.get("message", ""),
-            })
+            insert_scan_finding(
+                conn,
+                {
+                    "lesson_id": lesson_id,
+                    "rule_id": rule_id,
+                    "file_path": f.get("file_path", ""),
+                    "line_number": f.get("line_number"),
+                    "snippet": f.get("message", ""),
+                },
+            )
             saved += 1
         except Exception as exc:
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
@@ -404,8 +425,8 @@ def scan(ctx, rules_dir, target, baseline):
 @click.pass_context
 def export(ctx, lesson_id):
     """Print a lesson as formatted markdown."""
-    from lessons_db.export import format_lesson_markdown
     from lessons_db.db import get_lesson
+    from lessons_db.export import format_lesson_markdown
 
     lesson = get_lesson(ctx.obj["conn"], lesson_id)
     if not lesson:
@@ -415,8 +436,9 @@ def export(ctx, lesson_id):
 
 
 @main.command()
-@click.option("--output", type=click.Path(), default=None,
-              help="Output path (default: ~/Documents/docs/lessons/SUMMARY.md)")
+@click.option(
+    "--output", type=click.Path(), default=None, help="Output path (default: ~/Documents/docs/lessons/SUMMARY.md)"
+)
 @click.pass_context
 def summary(ctx, output):
     """Auto-generate SUMMARY.md from DB records.
@@ -426,8 +448,7 @@ def summary(ctx, output):
     conn = ctx.obj["conn"]
 
     rows = conn.execute(
-        "SELECT id, title, one_liner, cluster, tier, created_date "
-        "FROM lessons ORDER BY id"
+        "SELECT id, title, one_liner, cluster, tier, created_date " "FROM lessons ORDER BY id"
     ).fetchall()
 
     lines = [
@@ -471,6 +492,7 @@ def capture():
 def capture_drafts_cmd(ctx):
     """List pending auto-captured drafts awaiting approval."""
     from lessons_db.capture import list_drafts
+
     conn = ctx.obj["conn"]
     drafts = list_drafts(conn)
     if not drafts:
@@ -491,6 +513,7 @@ def capture_drafts_cmd(ctx):
 def capture_approve(ctx, draft_id):
     """Promote a pending draft to a live positive lesson."""
     from lessons_db.capture import promote_draft
+
     conn = ctx.obj["conn"]
     lesson_id = promote_draft(conn, draft_id)
     if lesson_id:
@@ -509,6 +532,7 @@ def capture_positive_cmd(ctx):
     Entry must score >= 3/5 to pass the quality gate.
     """
     from lessons_db.capture import capture_positive_manual
+
     conn = ctx.obj["conn"]
 
     one_liner = click.prompt("What worked well (one-liner, be specific)")
@@ -532,6 +556,7 @@ def capture_design_doc_cmd(ctx, doc_path):
     run 'lessons-db capture drafts' to inspect, then 'capture approve <id>'.
     """
     from lessons_db.capture import capture_from_design_doc
+
     conn = ctx.obj["conn"]
     drafts = capture_from_design_doc(doc_path, conn)
     if drafts:
@@ -578,6 +603,7 @@ def capture_diff(ctx, diff_file):
     If DIFF_FILE not provided, reads from stdin.
     """
     import sys
+
     from lessons_db.capture import capture_from_diff
 
     if diff_file:
@@ -610,9 +636,7 @@ def cluster():
 def cluster_show(ctx):
     """Show current cluster assignments for all lessons."""
     conn = ctx.obj["conn"]
-    rows = conn.execute(
-        "SELECT cluster, COUNT(*) as n FROM lessons GROUP BY cluster ORDER BY n DESC"
-    ).fetchall()
+    rows = conn.execute("SELECT cluster, COUNT(*) as n FROM lessons GROUP BY cluster ORDER BY n DESC").fetchall()
     for r in rows:
         label = r["cluster"] or "(unassigned)"
         click.echo(f"  {label}: {r['n']} lessons")
@@ -623,13 +647,13 @@ def cluster_show(ctx):
 def cluster_history(ctx):
     """Show history of past clustering runs."""
     from lessons_db.cluster import get_cluster_history
+
     runs = get_cluster_history(ctx.obj["conn"])
     if not runs:
         click.echo("No clustering runs yet. Run: lessons-db cluster discover")
         return
     for run in runs:
-        click.echo(f"[{run['run_date']}] {run['proposal_count']} proposals, "
-                   f"{run['confirmed_count']} confirmed")
+        click.echo(f"[{run['run_date']}] {run['proposal_count']} proposals, " f"{run['confirmed_count']} confirmed")
 
 
 @cluster.command("discover")
@@ -637,7 +661,8 @@ def cluster_history(ctx):
 @click.pass_context
 def cluster_discover(ctx, min_size):
     """Run HDBSCAN on embeddings and propose new cluster assignments."""
-    from lessons_db.cluster import discover_clusters, apply_cluster_proposals
+    from lessons_db.cluster import apply_cluster_proposals, discover_clusters
+
     conn = ctx.obj["conn"]
     click.echo("Running HDBSCAN clustering...")
     try:
@@ -654,8 +679,9 @@ def cluster_discover(ctx, min_size):
         click.echo(f"\nCluster {p['cluster_id']}: {len(p['lesson_ids'])} lessons{seed_info}")
         click.echo(f"  Suggested name: {p['suggested_name']}")
         click.echo(f"  Key terms: {', '.join(p['representative_terms'])}")
-        name = click.prompt("  Accept name? (Enter to accept, or type a new name, or 's' to skip)",
-                            default=p["suggested_name"])
+        name = click.prompt(
+            "  Accept name? (Enter to accept, or type a new name, or 's' to skip)", default=p["suggested_name"]
+        )
         if name.lower() != "s":
             confirmed[p["cluster_id"]] = name
     if confirmed:
@@ -673,13 +699,15 @@ def learn():
 
 @learn.command("record")
 @click.option("--lesson-id", required=True, type=int)
-@click.option("--hook", "hook_point", required=True,
-              type=click.Choice(["read", "edit", "plan", "bash", "session_start"]))
+@click.option(
+    "--hook", "hook_point", required=True, type=click.Choice(["read", "edit", "plan", "bash", "session_start"])
+)
 @click.option("--context", "hook_context", default="", help="File path, query, or error text.")
 @click.pass_context
 def learn_record(click_ctx, lesson_id, hook_point, hook_context):
     """Record that a lesson was surfaced at a hook point."""
     from lessons_db.learn import record_surfacing
+
     conn = click_ctx.obj["conn"]
     event_id = record_surfacing(conn, lesson_id, hook_point, hook_context)
     click.echo(f"Recorded surfacing event {event_id}")
@@ -696,6 +724,7 @@ def stats():
 def stats_surfacing(ctx):
     """Show outcome rates and surfacing event counts."""
     from lessons_db.learn import surfacing_stats
+
     s = surfacing_stats(ctx.obj["conn"])
     click.echo(f"Total surfacing events : {s['total_surfacing_events']}")
     click.echo(f"  Heeded               : {s['heeded']}")
@@ -717,6 +746,7 @@ def template():
 def template_list(ctx):
     """List all generated templates."""
     from lessons_db.promote import list_templates
+
     templates = list_templates(ctx.obj["conn"])
     if not templates:
         click.echo("No templates yet. Positive entries reach 'proven' tier after 2 reuses.")
@@ -732,6 +762,7 @@ def template_list(ctx):
 def template_show(ctx, lesson_id):
     """Show template content for a lesson."""
     from lessons_db.promote import apply_template
+
     content = apply_template(ctx.obj["conn"], lesson_id)
     if content:
         click.echo(content)
@@ -761,10 +792,9 @@ def pattern_scan(ctx):
         click.echo(f"Active repos: {[r.name for r in repos]}")
         patterns = pattern_extract.build_semgrep_patterns(conn)
         try:
-            candidates = (
-                pattern_extract.extract_python_candidates(repos, patterns, conn)
-                + pattern_extract.extract_nonpython_candidates(repos, conn)
-            )
+            candidates = pattern_extract.extract_python_candidates(
+                repos, patterns, conn
+            ) + pattern_extract.extract_nonpython_candidates(repos, conn)
             click.echo(f"Found {len(candidates)} raw candidates.")
 
             auto_approved = 0
@@ -779,16 +809,14 @@ def pattern_scan(ctx):
                 else:
                     queued += 1
 
-            click.echo(
-                f"Done: {auto_approved} auto-captured, {queued} queued for review."
-            )
+            click.echo(f"Done: {auto_approved} auto-captured, {queued} queued for review.")
         except Exception as exc:
             click.echo(f"Scan error: {exc}", err=True)
 
     # Always update scan timestamp
     from datetime import datetime
-    set_scan_state(conn, "last_scan_timestamp",
-                   datetime.now().isoformat(timespec="seconds"))
+
+    set_scan_state(conn, "last_scan_timestamp", datetime.now().isoformat(timespec="seconds"))
 
 
 @pattern.command("review")
@@ -818,24 +846,15 @@ def pattern_review(ctx):
         if row["extracted_data"]:
             click.echo(f"Rationale: {row['extracted_data'][:200]}")
 
-        action = click.prompt(
-            "[a]pprove / [r]eject / [s]kip",
-            default="s"
-        ).strip().lower()
+        action = click.prompt("[a]pprove / [r]eject / [s]kip", default="s").strip().lower()
 
         if action == "a":
-            conn.execute(
-                "UPDATE capture_drafts SET status='approved' WHERE id=?",
-                [row["id"]]
-            )
+            conn.execute("UPDATE capture_drafts SET status='approved' WHERE id=?", [row["id"]])
             conn.commit()
             click.echo("Approved.")
         elif action == "r":
             reason = click.prompt("Rejection reason (optional)", default="")
-            pattern_triage.reject_draft(
-                row["id"], conn, lance_dir=lance_dir,
-                reason=reason or None
-            )
+            pattern_triage.reject_draft(row["id"], conn, lance_dir=lance_dir, reason=reason or None)
             click.echo("Rejected and suppression vector stored.")
 
     click.echo("\nReview complete.")
@@ -848,16 +867,12 @@ def pattern_status(ctx):
     conn = ctx.obj["conn"]
 
     auto = conn.execute(
-        "SELECT COUNT(*) FROM lessons "
-        "WHERE source='cross_project_scan' AND polarity='positive'"
+        "SELECT COUNT(*) FROM lessons " "WHERE source='cross_project_scan' AND polarity='positive'"
     ).fetchone()[0]
     pending = conn.execute(
-        "SELECT COUNT(*) FROM capture_drafts "
-        "WHERE detection_source='cross_project_scan' AND status='pending'"
+        "SELECT COUNT(*) FROM capture_drafts " "WHERE detection_source='cross_project_scan' AND status='pending'"
     ).fetchone()[0]
-    rejected = conn.execute(
-        "SELECT COUNT(*) FROM suppression_vectors"
-    ).fetchone()[0]
+    rejected = conn.execute("SELECT COUNT(*) FROM suppression_vectors").fetchone()[0]
     threshold = get_scan_state(conn, "auto_approve_threshold") or "0.85"
     last_scan = get_scan_state(conn, "last_scan_timestamp") or "never"
 
@@ -878,47 +893,36 @@ def pattern_calibrate(ctx, apply):
     if not bands:
         click.echo("No outcome data yet. Run the scanner and review drafts first.")
         if apply:
-            click.echo(
-                "\nInsufficient data for threshold adjustment "
-                "(need 20+ outcomes across bands)."
-            )
+            click.echo("\nInsufficient data for threshold adjustment " "(need 20+ outcomes across bands).")
         return
 
     click.echo(f"{'Band':>6}  {'Total':>5}  {'Approved':>8}  {'Rate':>6}")
     for band, data in sorted(bands.items()):
-        click.echo(
-            f"{band:>6.1f}  {data['total']:>5}  "
-            f"{data['approved']:>8}  {data['promotion_rate']:>6.0%}"
-        )
+        click.echo(f"{band:>6.1f}  {data['total']:>5}  " f"{data['approved']:>8}  {data['promotion_rate']:>6.0%}")
 
     if apply:
         suggestion = pattern_triage.should_adjust_threshold(conn)
         if suggestion is None:
-            click.echo(
-                "\nInsufficient data for threshold adjustment "
-                "(need 20+ outcomes across bands)."
-            )
+            click.echo("\nInsufficient data for threshold adjustment " "(need 20+ outcomes across bands).")
         else:
             click.echo(f"\n{suggestion['rationale']}")
             if click.confirm(
                 f"Adjust threshold from {suggestion['current_threshold']:.2f} "
                 f"to {suggestion['proposed_threshold']:.2f}?"
             ):
-                set_scan_state(
-                    conn, "auto_approve_threshold",
-                    str(suggestion["proposed_threshold"])
-                )
-                click.echo(
-                    f"Threshold updated to {suggestion['proposed_threshold']:.2f}."
-                )
+                set_scan_state(conn, "auto_approve_threshold", str(suggestion["proposed_threshold"]))
+                click.echo(f"Threshold updated to {suggestion['proposed_threshold']:.2f}.")
 
 
 @main.command()
 @click.option("--tail", "-n", default=50, type=int, help="Number of lines from end to show.")
-@click.option("--level", default=None, type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), help="Filter by log level.")
+@click.option(
+    "--level", default=None, type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), help="Filter by log level."
+)
 def logs(tail, level):
     """Show recent log entries from ~/.local/share/lessons-db/lessons-db.log."""
     from lessons_db.logging_config import LOG_FILE
+
     if not LOG_FILE.exists():
         click.echo("No log file yet. Run some commands first.")
         return

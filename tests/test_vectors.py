@@ -2,9 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 FAKE_VECTOR = [0.1] * 768
 
 

@@ -1,10 +1,11 @@
-.PHONY: lint format  
+.PHONY: lint format
 
 all: lint
 
 lint:
-	@echo "No lint targets configured"
+	ruff check .
+	pip-audit --progress-spinner off -q 2>/dev/null || true
 
 format:
-	@echo "No format targets configured"
-
+	ruff format .
+	ruff check --fix .

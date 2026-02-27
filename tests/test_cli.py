@@ -1,7 +1,6 @@
 """Tests for CLI commands using Click CliRunner."""
 
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -27,9 +26,7 @@ def test_status_command(tmp_path):
 def test_search_command(tmp_path):
     """Search command runs (returns 0 results on empty DB)."""
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["--db", str(tmp_path / "test.db"), "search", "subscriber lifecycle"]
-    )
+    result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "search", "subscriber lifecycle"])
     assert result.exit_code == 0
 
 
@@ -50,9 +47,11 @@ def test_migrate_dry_run(tmp_path):
     result = runner.invoke(
         main,
         [
-            "--db", str(tmp_path / "test.db"),
+            "--db",
+            str(tmp_path / "test.db"),
             "migrate",
-            "--source", str(lesson_dir),
+            "--source",
+            str(lesson_dir),
             "--dry-run",
         ],
     )
@@ -66,13 +65,16 @@ def test_index_seed_only_backfills_cluster_seed(tmp_path):
 
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    insert_lesson(conn, {
-        "title": "Log before returning fallback",
-        "one_liner": "Never swallow exceptions silently",
-        "cluster": "A",
-        "tier": "lesson_learned",
-        "created_date": "2026-01-01",
-    })
+    insert_lesson(
+        conn,
+        {
+            "title": "Log before returning fallback",
+            "one_liner": "Never swallow exceptions silently",
+            "cluster": "A",
+            "tier": "lesson_learned",
+            "created_date": "2026-01-01",
+        },
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["--db", str(db_path), "index", "--seed-only"])
@@ -90,13 +92,16 @@ def test_index_seed_only_skips_already_seeded(tmp_path):
 
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    insert_lesson(conn, {
-        "title": "Already seeded lesson",
-        "cluster": "B",
-        "cluster_seed": "existing",
-        "tier": "observation",
-        "created_date": "2026-01-01",
-    })
+    insert_lesson(
+        conn,
+        {
+            "title": "Already seeded lesson",
+            "cluster": "B",
+            "cluster_seed": "existing",
+            "tier": "observation",
+            "created_date": "2026-01-01",
+        },
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["--db", str(db_path), "index", "--seed-only"])
@@ -117,14 +122,17 @@ def test_index_generates_embeddings(mock_embed, tmp_path, lance_dir):
 
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    insert_lesson(conn, {
-        "title": "Test lesson",
-        "one_liner": "A lesson summary",
-        "keywords": "testing, fixtures",
-        "cluster": "A",
-        "tier": "lesson",
-        "created_date": "2026-01-01",
-    })
+    insert_lesson(
+        conn,
+        {
+            "title": "Test lesson",
+            "one_liner": "A lesson summary",
+            "keywords": "testing, fixtures",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
 
     runner = CliRunner()
     with patch("lessons_db.cli.LANCE_DIR", lance_dir):
@@ -138,12 +146,19 @@ def test_index_generates_embeddings(mock_embed, tmp_path, lance_dir):
 def test_rule_generate_no_patterns(tmp_path):
     """rule generate exits cleanly when lesson has no detection patterns."""
     from lessons_db.db import init_db, insert_lesson
+
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    insert_lesson(conn, {
-        "title": "Log before fallback", "one_liner": "Never swallow",
-        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
-    })
+    insert_lesson(
+        conn,
+        {
+            "title": "Log before fallback",
+            "one_liner": "Never swallow",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
     runner = CliRunner()
     result = runner.invoke(main, ["--db", str(db_path), "rule", "generate", "1"])
     assert result.exit_code == 0
@@ -153,24 +168,29 @@ def test_rule_generate_no_patterns(tmp_path):
 def test_rule_generate_with_patterns(tmp_path):
     """rule generate writes YAML to rules_dir when patterns exist."""
     from lessons_db.db import init_db, insert_lesson
+
     db_path = tmp_path / "test.db"
     rules_dir = tmp_path / "rules"
     conn = init_db(db_path)
-    lid = insert_lesson(conn, {
-        "title": "Bare except swallows failures",
-        "one_liner": "Never use bare except",
-        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
-    })
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Bare except swallows failures",
+            "one_liner": "Never use bare except",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
     conn.execute(
-        "INSERT INTO detection_patterns "
-        "(lesson_id, pattern_type, regex, description, language) VALUES (?,?,?,?,?)",
+        "INSERT INTO detection_patterns " "(lesson_id, pattern_type, regex, description, language) VALUES (?,?,?,?,?)",
         [lid, "regex", r"except\s*:", "bare except", "python"],
     )
     conn.commit()
     runner = CliRunner()
     result = runner.invoke(
-        main, ["--db", str(db_path), "rule", "generate", str(lid),
-               "--rules-dir", str(rules_dir)],
+        main,
+        ["--db", str(db_path), "rule", "generate", str(lid), "--rules-dir", str(rules_dir)],
     )
     assert result.exit_code == 0
     assert "generated" in result.output.lower()
@@ -182,8 +202,8 @@ def test_rule_test_no_rules(tmp_path):
     """rule test exits cleanly when no rules exist."""
     runner = CliRunner()
     result = runner.invoke(
-        main, ["--db", str(tmp_path / "test.db"), "rule", "test",
-               "--rules-dir", str(tmp_path / "rules")],
+        main,
+        ["--db", str(tmp_path / "test.db"), "rule", "test", "--rules-dir", str(tmp_path / "rules")],
     )
     assert result.exit_code == 0
     assert "no rules" in result.output.lower()
@@ -193,6 +213,7 @@ def test_rule_test_no_rules(tmp_path):
 def test_scan_command_runs(mock_run, tmp_path):
     """scan command parses SARIF findings and saves them to DB."""
     import json
+
     from lessons_db.db import init_db, insert_lesson
 
     rules_dir = tmp_path / "rules" / "python"
@@ -201,18 +222,24 @@ def test_scan_command_runs(mock_run, tmp_path):
 
     sarif = {
         "version": "2.1.0",
-        "runs": [{
-            "results": [{
-                "ruleId": "lessons-db.python.bare-except-001",
-                "message": {"text": "bare except"},
-                "locations": [{
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": "src/foo.py"},
-                        "region": {"startLine": 42},
+        "runs": [
+            {
+                "results": [
+                    {
+                        "ruleId": "lessons-db.python.bare-except-001",
+                        "message": {"text": "bare except"},
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {"uri": "src/foo.py"},
+                                    "region": {"startLine": 42},
+                                }
+                            }
+                        ],
                     }
-                }],
-            }]
-        }]
+                ]
+            }
+        ],
     }
     mock_run.return_value = MagicMock(
         returncode=1,  # semgrep exits 1 when findings exist
@@ -222,17 +249,21 @@ def test_scan_command_runs(mock_run, tmp_path):
 
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    insert_lesson(conn, {
-        "title": "Bare except swallows errors",
-        "one_liner": "Never use bare except",
-        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
-    })
+    insert_lesson(
+        conn,
+        {
+            "title": "Bare except swallows errors",
+            "one_liner": "Never use bare except",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
 
     runner = CliRunner()
     result = runner.invoke(
-        main, ["--db", str(db_path), "scan",
-               "--rules-dir", str(tmp_path / "rules"),
-               "--target", str(tmp_path)],
+        main,
+        ["--db", str(db_path), "scan", "--rules-dir", str(tmp_path / "rules"), "--target", str(tmp_path)],
     )
     assert result.exit_code == 0
     assert "1 saved to DB" in result.output
@@ -247,9 +278,16 @@ def test_scan_command_no_rules(tmp_path):
     """scan exits cleanly when rules dir is empty."""
     runner = CliRunner()
     result = runner.invoke(
-        main, ["--db", str(tmp_path / "test.db"), "scan",
-               "--rules-dir", str(tmp_path / "empty-rules"),
-               "--target", str(tmp_path)],
+        main,
+        [
+            "--db",
+            str(tmp_path / "test.db"),
+            "scan",
+            "--rules-dir",
+            str(tmp_path / "empty-rules"),
+            "--target",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 0
     assert "no rules" in result.output.lower()
@@ -258,13 +296,19 @@ def test_scan_command_no_rules(tmp_path):
 def test_export_command(tmp_path):
     """export outputs lesson markdown."""
     from lessons_db.db import init_db, insert_lesson
+
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    lid = insert_lesson(conn, {
-        "title": "Log every external failure",
-        "one_liner": "Never swallow exceptions silently",
-        "cluster": "A", "tier": "lesson_learned", "created_date": "2026-01-01",
-    })
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Log every external failure",
+            "one_liner": "Never swallow exceptions silently",
+            "cluster": "A",
+            "tier": "lesson_learned",
+            "created_date": "2026-01-01",
+        },
+    )
     runner = CliRunner()
     result = runner.invoke(main, ["--db", str(db_path), "export", str(lid)])
     assert result.exit_code == 0
@@ -283,17 +327,22 @@ def test_export_missing_lesson(tmp_path):
 def test_summary_command(tmp_path):
     """summary writes SUMMARY.md to the output path."""
     from lessons_db.db import init_db, insert_lesson
+
     db_path = tmp_path / "test.db"
     conn = init_db(db_path)
-    insert_lesson(conn, {
-        "title": "Log every failure", "one_liner": "Always log",
-        "cluster": "A", "tier": "lesson", "created_date": "2026-01-01",
-    })
+    insert_lesson(
+        conn,
+        {
+            "title": "Log every failure",
+            "one_liner": "Always log",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
     out_file = tmp_path / "SUMMARY.md"
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["--db", str(db_path), "summary", "--output", str(out_file)]
-    )
+    result = runner.invoke(main, ["--db", str(db_path), "summary", "--output", str(out_file)])
     assert result.exit_code == 0
     assert out_file.exists()
     content = out_file.read_text()
