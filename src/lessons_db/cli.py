@@ -669,13 +669,13 @@ def learn():
 @click.option("--lesson-id", required=True, type=int)
 @click.option("--hook", "hook_point", required=True,
               type=click.Choice(["read", "edit", "plan", "bash", "session_start"]))
-@click.option("--context", "ctx", default="", help="File path, query, or error text.")
+@click.option("--context", "hook_context", default="", help="File path, query, or error text.")
 @click.pass_context
-def learn_record(click_ctx, lesson_id, hook_point, ctx):
+def learn_record(click_ctx, lesson_id, hook_point, hook_context):
     """Record that a lesson was surfaced at a hook point."""
     from lessons_db.learn import record_surfacing
     conn = click_ctx.obj["conn"]
-    event_id = record_surfacing(conn, lesson_id, hook_point, ctx)
+    event_id = record_surfacing(conn, lesson_id, hook_point, hook_context)
     click.echo(f"Recorded surfacing event {event_id}")
 
 

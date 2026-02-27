@@ -31,8 +31,9 @@ if [[ -z "$FULL_DIFF" ]]; then
     exit 0
 fi
 
-# Count actual changed lines (+ and - lines) to enforce the 50-line threshold
-CHANGED_LINES=$(echo "$FULL_DIFF" | grep -cE '^[+-]' 2>/dev/null || echo 0)
+# Count actual changed lines (+ and - lines) to enforce the 50-line threshold.
+# Exclude +++ and --- file headers (two consecutive identical chars at start).
+CHANGED_LINES=$(echo "$FULL_DIFF" | grep -cE '^[+-][^+-]' 2>/dev/null || echo 0)
 if [[ "$CHANGED_LINES" -lt 50 ]]; then
     exit 0
 fi

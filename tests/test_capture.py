@@ -263,12 +263,12 @@ class TestCapturePositiveCLI:
         from lessons_db.cli import main
 
         runner = CliRunner()
-        # Simulate user inputs for the interactive prompts
+        # Trailing \n ensures Click's CliRunner correctly terminates the last prompt
         user_input = "\n".join([
             "Dual-axis testing catches integration seam bugs",  # one_liner
             "Tests both horizontal (surface) and vertical (depth) paths",  # why
             "testing-pattern",  # category
-        ])
+        ]) + "\n"
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"response": "4"}  # quality score passes
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):
@@ -284,7 +284,8 @@ class TestCapturePositiveCLI:
         from lessons_db.cli import main
 
         runner = CliRunner()
-        user_input = "\n".join(["vague", "unclear", "testing-pattern"])
+        # Trailing \n ensures Click's CliRunner correctly terminates the last prompt
+        user_input = "\n".join(["vague", "unclear", "testing-pattern"]) + "\n"
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"response": "2"}  # score below threshold
         with patch("lessons_db.capture.requests.post", return_value=mock_resp):

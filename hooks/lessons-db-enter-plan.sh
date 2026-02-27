@@ -46,7 +46,8 @@ fi
 
 # Record each surfaced lesson for the learning pipeline (Lesson #65: wire call sites)
 # Extract IDs from search output format: [#NNN] one_liner
-for RESULT_BLOCK in "$RESULTS1" "$RESULTS2"; do
+# Includes RESULTS_POS so positive pattern surfacing events are also tracked.
+for RESULT_BLOCK in "$RESULTS1" "$RESULTS2" "$RESULTS_POS"; do
     while IFS= read -r line; do
         if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
             LESSON_ID="${BASH_REMATCH[1]}"

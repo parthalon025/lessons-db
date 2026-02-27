@@ -132,6 +132,13 @@ class TestLearnRecordCLI:
         assert result.exit_code == 0, result.output
         assert "Recorded" in result.output
 
+        # Verify the surfacing event was actually written to the DB
+        conn2 = init_db(db_path)
+        events = conn2.execute("SELECT * FROM surfacing_events").fetchall()
+        assert len(events) == 1
+        assert events[0]["hook_point"] == "plan"
+        assert events[0]["lesson_id"] == lid
+
     def test_learn_record_with_context(self, db_path):
         runner = CliRunner()
         conn = init_db(db_path)

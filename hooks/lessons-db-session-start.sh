@@ -10,10 +10,21 @@ fi
 
 "$LESSONS_DB" status 2>/dev/null || true
 
-# Show count of positive patterns (polarity=positive) as signal of accumulated knowledge
-POS_COUNT=$("$LESSONS_DB" search "" --polarity positive --top 100 2>/dev/null \
-    | grep -c '^\[#' || echo "0")
+# Show count of positive patterns as signal of accumulated knowledge.
+# Direct DB query — avoids LanceDB/CLI dependency and works even when search is unavailable.
+POS_COUNT=$(python3 - <<'PYEOF' 2>/dev/null || echo "0"
+import sqlite3, os, pathlib
+db = pathlib.Path.home() / ".local/share/lessons-db/lessons.db"
+if db.exists():
+    conn = sqlite3.connect(str(db))
+    n = conn.execute("SELECT COUNT(*) FROM lessons WHERE polarity='positive'").fetchone()[0]
+    conn.close()
+    print(n)
+else:
+    print(0)
+PYEOF
+)
 
-if [[ "$POS_COUNT" -gt 0 ]]; then
+if [[ "${POS_COUNT:-0}" -gt 0 ]]; then
     echo "Positive patterns available: ${POS_COUNT}"
 fi
