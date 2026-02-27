@@ -204,6 +204,14 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
             if "duplicate column name" not in str(e):
                 raise
 
+    # v3 corrective_action shortcut column on lessons (denormalized from corrective_actions table)
+    try:
+        conn.execute("ALTER TABLE lessons ADD COLUMN corrective_action TEXT")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
 
 def _seed_scan_state(conn: sqlite3.Connection) -> None:
     """Seed scan_state defaults (idempotent via INSERT OR IGNORE)."""
