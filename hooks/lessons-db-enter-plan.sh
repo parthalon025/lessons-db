@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lessons-db PreToolUse hook — semantic lesson search before EnterPlanMode
-set -uo pipefail
+set -euo pipefail
 
 LESSONS_DB=$(command -v lessons-db 2>/dev/null || echo "")
 if [[ -z "$LESSONS_DB" ]]; then

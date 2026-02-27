@@ -555,6 +555,7 @@ def capture_transcript(ctx, transcript_file, positive):
     try:
         drafts = capture_from_transcript(text, conn, polarity=polarity)
     except Exception as exc:
+        logger.error("capture transcript: %s", exc)
         click.echo(f"Capture failed: {exc}", err=True)
         ctx.exit(1)
         return
@@ -584,6 +585,7 @@ def capture_diff(ctx, diff_file):
     try:
         drafts = capture_from_diff(text, conn)
     except Exception as exc:
+        logger.error("capture diff: %s", exc)
         click.echo(f"Capture failed: {exc}", err=True)
         ctx.exit(1)
         return
