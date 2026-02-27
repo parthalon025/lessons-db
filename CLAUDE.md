@@ -90,3 +90,23 @@ language:python, domain:lessons-db
 ## Design Doc
 
 `~/Documents/docs/plans/2026-02-26-lessons-db-design.md`
+
+## Code Quality
+- Lint: `make lint`
+- Format: `make format`
+
+## Quality Gates
+- Before committing: `/verify`
+- Before PRs: `lessons-db scan --target . --baseline HEAD`
+
+## Lessons
+- Check before planning: `/check-lessons`
+- Capture after bugs: `/capture-lesson`
+- Lessons location: `docs/lessons/`
+
+## Local AI Review
+- Code review: `ollama-code-review .`
+
+## Semantic Search
+- Generate: `bash scripts/generate-embeddings.sh`
+- Storage: `.embeddings/` (gitignored)

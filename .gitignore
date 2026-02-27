@@ -8,3 +8,9 @@ build/
 *.db
 lance/
 .worktrees/
+.env
+.env.*
+!.env.example
+.claude/*.local.md
+client_secret*.json
+.embeddings/

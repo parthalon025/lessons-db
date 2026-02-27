@@ -1,0 +1,33 @@
+# Ruff configuration
+# https://docs.astral.sh/ruff/configuration/
+
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "S",    # flake8-bandit (security)
+    "SIM",  # flake8-simplify
+    "C901", # mccabe complexity
+    "PLR",  # pylint refactor
+]
+
+ignore = [
+    "S101",   # assert used (OK in tests)
+    "PLR0913", # too many arguments (sometimes necessary)
+]
+
+[lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]
+
+[lint.mccabe]
+max-complexity = 10
+
+[format]
+quote-style = "double"
+indent-style = "space"
