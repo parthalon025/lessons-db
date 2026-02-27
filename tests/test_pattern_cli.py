@@ -93,10 +93,10 @@ class TestPatternReview:
             main, ["--db", str(cli_db), "pattern", "review"], input="s\ns\ns\n"
         )
         # Highest confidence shown first
-        idx_90 = result.output.find("0.90") if "0.90" in result.output else -1
-        idx_80 = result.output.find("0.80") if "0.80" in result.output else -1
-        if idx_90 >= 0 and idx_80 >= 0:
-            assert idx_90 < idx_80
+        assert "0.90" in result.output, f"Expected 0.90 in output: {result.output}"
+        assert "0.80" in result.output, f"Expected 0.80 in output: {result.output}"
+        assert result.output.index("0.90") < result.output.index("0.80"), \
+            "Expected 0.90 before 0.80 (sorted by confidence DESC)"
 
 
 class TestPatternStatus:

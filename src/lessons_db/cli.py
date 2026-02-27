@@ -760,27 +760,30 @@ def pattern_scan(ctx):
     else:
         click.echo(f"Active repos: {[r.name for r in repos]}")
         patterns = pattern_extract.build_semgrep_patterns(conn)
-        candidates = (
-            pattern_extract.extract_python_candidates(repos, patterns, conn)
-            + pattern_extract.extract_nonpython_candidates(repos, conn)
-        )
-        click.echo(f"Found {len(candidates)} raw candidates.")
+        try:
+            candidates = (
+                pattern_extract.extract_python_candidates(repos, patterns, conn)
+                + pattern_extract.extract_nonpython_candidates(repos, conn)
+            )
+            click.echo(f"Found {len(candidates)} raw candidates.")
 
-        auto_approved = 0
-        queued = 0
-        for cand in candidates:
-            verified = pattern_verify.verify_candidate(cand, conn, lance_dir)
-            if verified is None:
-                continue
-            result = pattern_triage.triage_candidate(verified, conn, lance_dir)
-            if result is not None:
-                auto_approved += 1
-            else:
-                queued += 1
+            auto_approved = 0
+            queued = 0
+            for cand in candidates:
+                verified = pattern_verify.verify_candidate(cand, conn, lance_dir)
+                if verified is None:
+                    continue
+                triage_result = pattern_triage.triage_candidate(verified, conn, lance_dir)
+                if triage_result is not None:
+                    auto_approved += 1
+                else:
+                    queued += 1
 
-        click.echo(
-            f"Done: {auto_approved} auto-captured, {queued} queued for review."
-        )
+            click.echo(
+                f"Done: {auto_approved} auto-captured, {queued} queued for review."
+            )
+        except Exception as exc:
+            click.echo(f"Scan error: {exc}", err=True)
 
     # Always update scan timestamp
     from datetime import datetime
@@ -808,7 +811,9 @@ def pattern_review(ctx):
 
     for row in rows:
         click.echo("\n" + "─" * 60)
-        click.echo(f"Draft #{row['id']} | confidence: {row['confidence']:.2f}")
+        conf = row["confidence"]
+        conf_str = f"{conf:.2f}" if conf is not None else "N/A"
+        click.echo(f"Draft #{row['id']} | confidence: {conf_str}")
         click.echo(f"Snippet:\n{row['raw_content'][:300]}")
         if row["extracted_data"]:
             click.echo(f"Rationale: {row['extracted_data'][:200]}")
