@@ -396,12 +396,18 @@ def extract_nonpython_candidates(
     different repos, emit a CandidatePattern. Windows with failed embeddings
     are skipped silently.
     """
-    # Collect (repo_name, snippet, vector) tuples
+    # Collect (repo_name, snippet, vector) tuples.
+    # Cap at MAX_BLOCKS_PER_REPO *before* embedding to avoid wasting embed calls.
+    MAX_BLOCKS_PER_REPO = 200
     blocks: list[tuple[str, str, list[float]]] = []
+    repo_counts: dict[str, int] = {}
 
     for repo in repos:
+        repo_key = str(repo)
         for ext in _NONPYTHON_EXTS:
             for filepath in repo.rglob(f"*{ext}"):
+                if repo_counts.get(repo_key, 0) >= MAX_BLOCKS_PER_REPO:
+                    break
                 try:
                     text = filepath.read_text(errors="replace")
                 except Exception as exc:
@@ -410,25 +416,17 @@ def extract_nonpython_candidates(
 
                 lines = text.splitlines()
                 for window in _sliding_window(lines, size=15):
+                    if repo_counts.get(repo_key, 0) >= MAX_BLOCKS_PER_REPO:
+                        break
                     snippet = "\n".join(window)
                     vector = get_embedding(snippet)
                     if vector is None:
                         continue
-                    blocks.append((str(repo), snippet, vector))
+                    blocks.append((repo_key, snippet, vector))
+                    repo_counts[repo_key] = repo_counts.get(repo_key, 0) + 1
 
     if not blocks:
         return []
-
-    # Cap blocks per repo to prevent O(n²) explosion on large repos.
-    # 200 blocks/repo × 8 repos = 1600 max → 2.56M comparisons (manageable).
-    MAX_BLOCKS_PER_REPO = 200
-    repo_counts: dict[str, int] = {}
-    capped_blocks = []
-    for repo_name, text, vec in blocks:
-        if repo_counts.get(repo_name, 0) < MAX_BLOCKS_PER_REPO:
-            capped_blocks.append((repo_name, text, vec))
-            repo_counts[repo_name] = repo_counts.get(repo_name, 0) + 1
-    blocks = capped_blocks
 
     # Cluster by cosine similarity: O(n²) — acceptable for small repo counts
     used: set[int] = set()
