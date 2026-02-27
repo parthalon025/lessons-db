@@ -75,9 +75,7 @@ def generate_rule(
     elif len(regex_patterns) == 1:
         rule["pattern-regex"] = regex_patterns[0]["regex"]
     else:
-        rule["pattern-either"] = [
-            {"pattern-regex": p["regex"]} for p in regex_patterns
-        ]
+        rule["pattern-either"] = [{"pattern-regex": p["regex"]} for p in regex_patterns]
 
     return yaml.dump(
         {"rules": [rule]},

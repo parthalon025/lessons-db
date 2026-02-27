@@ -31,8 +31,7 @@ def populated_db(db_path):
     )
     # Detection pattern
     conn.execute(
-        "INSERT INTO detection_patterns (lesson_id, pattern_type, regex, description, language) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO detection_patterns (lesson_id, pattern_type, regex, description, language) VALUES (?, ?, ?, ?, ?)",
         (lid, "syntactic", r"except.*:\s*pass", "Bare except with pass", "python"),
     )
     conn.commit()

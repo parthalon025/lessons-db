@@ -25,12 +25,14 @@ def format_lesson_markdown(lesson: dict) -> str:
     ]
 
     if lesson.get("description"):
-        lines.extend([
-            "## Description",
-            "",
-            lesson["description"],
-            "",
-        ])
+        lines.extend(
+            [
+                "## Description",
+                "",
+                lesson["description"],
+                "",
+            ]
+        )
 
     return "\n".join(lines)
 

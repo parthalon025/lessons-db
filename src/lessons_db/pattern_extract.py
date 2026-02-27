@@ -17,6 +17,7 @@ import tempfile
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import requests
 
@@ -217,7 +218,7 @@ def list_active_repos(since_timestamp: str) -> list[Path]:
     return repos
 
 
-def build_semgrep_patterns(conn) -> list[dict]:
+def build_semgrep_patterns(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Build Semgrep pattern dicts from DB lessons or fall back to bootstrap.
 
     Queries lessons where ``corrective_action`` is non-empty and polarity is
@@ -309,7 +310,7 @@ def _run_semgrep_pattern(yaml_text: str, target_dir: Path) -> list[dict]:
             return []
 
         data = json.loads(result.stdout)
-        return data.get("results", [])
+        return cast(list[dict[Any, Any]], data.get("results", []))
 
     except (json.JSONDecodeError, subprocess.TimeoutExpired, Exception) as exc:
         _log.debug("semgrep run failed: %s", exc)
@@ -340,8 +341,8 @@ def _sliding_window(lines: list[str], size: int = 15) -> Generator:
 
 def extract_python_candidates(
     repos: list[Path],
-    patterns: list[dict],
-    conn,
+    patterns: list[dict[str, Any]],
+    conn: sqlite3.Connection,
 ) -> list[CandidatePattern]:
     """Run each semgrep pattern against all repos; yield candidates spanning 2+ repos.
 
@@ -392,7 +393,7 @@ def extract_python_candidates(
 
 def extract_nonpython_candidates(
     repos: list[Path],
-    conn,
+    conn: sqlite3.Connection,
     similarity_threshold: float = 0.80,
 ) -> list[CandidatePattern]:
     """Embed 15-line windows from non-Python files; cluster by cosine similarity.

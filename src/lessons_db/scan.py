@@ -27,13 +27,15 @@ def parse_sarif(sarif: dict) -> list[dict]:
                     "line_number": phys.get("region", {}).get("startLine"),
                 }
 
-            findings.append({
-                "rule_id": result.get("ruleId", ""),
-                "message": result.get("message", {}).get("text", ""),
-                "file_path": location.get("file_path", ""),
-                "line_number": location.get("line_number"),
-                "matched_content": result.get("message", {}).get("text", ""),
-            })
+            findings.append(
+                {
+                    "rule_id": result.get("ruleId", ""),
+                    "message": result.get("message", {}).get("text", ""),
+                    "file_path": location.get("file_path", ""),
+                    "line_number": location.get("line_number"),
+                    "matched_content": result.get("message", {}).get("text", ""),
+                }
+            )
 
     return findings
 

@@ -3,8 +3,10 @@
 import json
 import logging
 import re
+import sqlite3
 from datetime import date
 from pathlib import Path
+from typing import Any, cast
 
 import requests
 
@@ -48,7 +50,7 @@ def score_one_liner(text: str) -> int:
         return 3
 
 
-def capture_from_design_doc(doc_path: Path, conn) -> list[dict]:
+def capture_from_design_doc(doc_path: Path, conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Extract positive patterns from a design doc. Sends to capture_drafts (quarantine).
 
     Returns list of extracted entry dicts. Does NOT create live lessons."""
@@ -93,10 +95,10 @@ def capture_from_design_doc(doc_path: Path, conn) -> list[dict]:
         conn.rollback()
         return []
     _log.debug("capture_from_design_doc: created %d drafts from %s", len(entries), doc_path.name)
-    return entries
+    return cast(list[dict[str, Any]], entries)
 
 
-def promote_draft(conn, draft_id: int) -> int | None:
+def promote_draft(conn: sqlite3.Connection, draft_id: int) -> int | None:
     """Promote a pending draft to a live positive lesson. Returns lesson_id."""
     row = conn.execute(
         "SELECT extracted_data FROM capture_drafts WHERE id = ? AND status = 'pending'",
@@ -128,7 +130,7 @@ def promote_draft(conn, draft_id: int) -> int | None:
     return lesson_id
 
 
-def list_drafts(conn) -> list[dict]:
+def list_drafts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return all pending capture drafts."""
     rows = conn.execute(
         "SELECT id, extracted_data, status, created_date, source "
@@ -137,7 +139,9 @@ def list_drafts(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def capture_from_transcript(transcript: str, conn, polarity: str = "negative") -> list[dict]:
+def capture_from_transcript(
+    transcript: str, conn: sqlite3.Connection, polarity: str = "negative"
+) -> list[dict[str, Any]]:
     """Extract lessons from a session transcript. Drafts go to capture_drafts.
 
     polarity="negative" (default) — extracts bugs, anti-patterns, mistakes.
@@ -208,10 +212,10 @@ def capture_from_transcript(transcript: str, conn, polarity: str = "negative") -
         raise
 
     _log.debug("capture_from_transcript: created %d drafts", len(inserted))
-    return inserted
+    return cast(list[dict[str, Any]], inserted)
 
 
-def capture_from_diff(diff_text: str, conn) -> list[dict]:
+def capture_from_diff(diff_text: str, conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Extract negative lessons from a git diff. Drafts go to capture_drafts.
 
     Returns list of extracted lesson dicts. Returns [] on empty diff."""
@@ -265,11 +269,16 @@ def capture_from_diff(diff_text: str, conn) -> list[dict]:
         raise
 
     _log.debug("capture_from_diff: created %d drafts", len(inserted))
-    return inserted
+    return cast(list[dict[str, Any]], inserted)
 
 
 def capture_positive_manual(
-    conn, one_liner: str, why: str, category: str, when_to_apply: str = "", when_not_to_apply: str = ""
+    conn: sqlite3.Connection,
+    one_liner: str,
+    why: str,
+    category: str,
+    when_to_apply: str = "",
+    when_not_to_apply: str = "",
 ) -> int | None:
     """Capture a positive knowledge entry manually. Runs quality gate first.
 

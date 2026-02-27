@@ -183,7 +183,7 @@ def test_rule_generate_with_patterns(tmp_path):
         },
     )
     conn.execute(
-        "INSERT INTO detection_patterns " "(lesson_id, pattern_type, regex, description, language) VALUES (?,?,?,?,?)",
+        "INSERT INTO detection_patterns (lesson_id, pattern_type, regex, description, language) VALUES (?,?,?,?,?)",
         [lid, "regex", r"except\s*:", "bare except", "python"],
     )
     conn.commit()

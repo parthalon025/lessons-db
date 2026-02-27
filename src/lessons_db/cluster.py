@@ -9,8 +9,10 @@ find_seed_overlap, get_cluster_history) have no extra dependencies.
 
 import json
 import logging
+import sqlite3
 from collections import Counter
 from datetime import date
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ _STOPWORDS = {
 }
 
 
-def extract_representative_terms(conn, lesson_ids: list[int], top_n: int = 5) -> list[str]:
+def extract_representative_terms(conn: sqlite3.Connection, lesson_ids: list[int], top_n: int = 5) -> list[str]:
     """Extract the most frequent non-stopword terms from one-liners + keywords."""
     if not lesson_ids:
         return []
@@ -59,7 +61,7 @@ def extract_representative_terms(conn, lesson_ids: list[int], top_n: int = 5) ->
         f"SELECT one_liner, keywords FROM lessons WHERE id IN ({placeholders})",
         lesson_ids,
     ).fetchall()
-    words = []
+    words: list[str] = []
     for row in rows:
         text = (row["one_liner"] or "") + " " + (row["keywords"] or "")
         words.extend(text.lower().split())
@@ -67,7 +69,7 @@ def extract_representative_terms(conn, lesson_ids: list[int], top_n: int = 5) ->
     return [w for w, _ in counter.most_common(top_n)]
 
 
-def find_seed_overlap(conn, lesson_ids: list[int], threshold: float = 0.6) -> str | None:
+def find_seed_overlap(conn: sqlite3.Connection, lesson_ids: list[int], threshold: float = 0.6) -> str | None:
     """Return the dominant cluster_seed if >= threshold fraction of lessons share it."""
     if not lesson_ids:
         return None
@@ -81,11 +83,13 @@ def find_seed_overlap(conn, lesson_ids: list[int], threshold: float = 0.6) -> st
     counter = Counter(r["cluster_seed"] for r in rows)
     top_seed, top_count = counter.most_common(1)[0]
     if top_count / len(lesson_ids) >= threshold:
-        return top_seed
+        return str(top_seed)
     return None
 
 
-def apply_cluster_proposals(conn, proposals: list[dict], confirmed: dict[int, str]) -> int:
+def apply_cluster_proposals(
+    conn: sqlite3.Connection, proposals: list[dict[str, Any]], confirmed: dict[int, str]
+) -> int:
     """Write confirmed cluster names to lessons.cluster. Records the run.
 
     proposals: list of {"cluster_id": int, "lesson_ids": [...], "suggested_name": str}
@@ -105,7 +109,7 @@ def apply_cluster_proposals(conn, proposals: list[dict], confirmed: dict[int, st
             updated += 1
 
     conn.execute(
-        "INSERT INTO cluster_runs (run_date, proposal_count, confirmed_count, result_json) " "VALUES (?, ?, ?, ?)",
+        "INSERT INTO cluster_runs (run_date, proposal_count, confirmed_count, result_json) VALUES (?, ?, ?, ?)",
         [
             date.today().isoformat(),
             len(proposals),
@@ -122,7 +126,7 @@ def apply_cluster_proposals(conn, proposals: list[dict], confirmed: dict[int, st
     return updated
 
 
-def get_cluster_history(conn) -> list[dict]:
+def get_cluster_history(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return all past clustering runs in descending date order."""
     rows = conn.execute(
         "SELECT id, run_date, proposal_count, confirmed_count, result_json "
@@ -155,7 +159,7 @@ def generate_cluster_name(terms: list[str]) -> str:
         return " ".join(t.title() for t in terms[:2]) + " Patterns"
 
 
-def discover_clusters(conn, min_cluster_size: int = 5) -> list[dict]:
+def discover_clusters(conn: sqlite3.Connection, min_cluster_size: int = 5) -> list[dict[str, Any]]:
     """Run HDBSCAN on LanceDB embeddings and return cluster proposals.
 
     Requires: pip install 'lessons-db[clustering]'
@@ -171,7 +175,7 @@ def discover_clusters(conn, min_cluster_size: int = 5) -> list[dict]:
         import umap
     except ImportError as e:
         raise RuntimeError(
-            f"Clustering dependencies not installed ({e}). Run:\n" "pip install 'lessons-db[clustering]'"
+            f"Clustering dependencies not installed ({e}). Run:\npip install 'lessons-db[clustering]'"
         ) from e
 
     db = lancedb.connect(str(LANCE_DIR))

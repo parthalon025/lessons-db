@@ -137,7 +137,7 @@ class TestLessonCRUD:
         )
         # Insert an affected file
         conn.execute(
-            "INSERT INTO affected_files (lesson_id, file_path, project) " "VALUES (?, ?, ?)",
+            "INSERT INTO affected_files (lesson_id, file_path, project) VALUES (?, ?, ?)",
             (lid, "src/aria/hub/presence.py", "ha-aria"),
         )
         conn.commit()

@@ -1,12 +1,16 @@
 """Learning pipeline: surfacing event recording and composite relevance scoring."""
 
 import logging
+import sqlite3
 from datetime import UTC, datetime
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
 
-def record_surfacing(conn, lesson_id: int, hook_point: str, context: str = "", session_id: str | None = None) -> int:
+def record_surfacing(
+    conn: sqlite3.Connection, lesson_id: int, hook_point: str, context: str = "", session_id: str | None = None
+) -> int:
     """Record a surfacing event. Returns event ID for later outcome update."""
     cursor = conn.execute(
         "INSERT INTO surfacing_events "
@@ -15,10 +19,11 @@ def record_surfacing(conn, lesson_id: int, hook_point: str, context: str = "", s
         [lesson_id, hook_point, context, datetime.now(UTC).isoformat(), session_id],
     )
     conn.commit()
-    return cursor.lastrowid
+    lastrowid: int = cursor.lastrowid  # type: ignore[assignment]
+    return lastrowid
 
 
-def record_outcome(conn, event_id: int, outcome: str) -> None:
+def record_outcome(conn: sqlite3.Connection, event_id: int, outcome: str) -> None:
     """Update outcome for a surfacing event. outcome must be 'heeded' or 'dismissed'."""
     if outcome not in ("heeded", "dismissed"):
         raise ValueError(f"Invalid outcome '{outcome}'. Must be 'heeded' or 'dismissed'.")
@@ -32,7 +37,7 @@ def record_outcome(conn, event_id: int, outcome: str) -> None:
         raise ValueError(f"No surfacing event found with id={event_id}.")
 
 
-def relevance_score(conn, lesson_id: int, context: str, semantic_sim: float) -> float:
+def relevance_score(conn: sqlite3.Connection, lesson_id: int, context: str, semantic_sim: float) -> float:
     """Composite relevance score.
 
     score = 0.5 * semantic_sim
@@ -44,7 +49,7 @@ def relevance_score(conn, lesson_id: int, context: str, semantic_sim: float) -> 
     return round(0.5 * semantic_sim + 0.3 * outcome + 0.2 * recurrence, 4)
 
 
-def surfacing_stats(conn) -> dict:
+def surfacing_stats(conn: sqlite3.Connection) -> dict[str, Any]:
     """Summary stats for the status command and efficiency tracking."""
     total = conn.execute("SELECT COUNT(*) FROM surfacing_events").fetchone()[0]
     heeded = conn.execute("SELECT COUNT(*) FROM surfacing_events WHERE outcome='heeded'").fetchone()[0]
@@ -63,7 +68,7 @@ def surfacing_stats(conn) -> dict:
     }
 
 
-def _outcome_rate(conn, lesson_id: int, context: str) -> float:
+def _outcome_rate(conn: sqlite3.Connection, lesson_id: int, context: str) -> float:
     """Ratio of heeded outcomes for this lesson in similar contexts.
     Returns 0.5 (neutral) if no outcome data exists.
 
@@ -73,7 +78,7 @@ def _outcome_rate(conn, lesson_id: int, context: str) -> float:
     context strings become high-cardinality."""
     ctx_prefix = context[:50] if context else ""
     rows = conn.execute(
-        "SELECT outcome FROM surfacing_events " "WHERE lesson_id = ? AND context LIKE ? AND outcome != 'unknown'",
+        "SELECT outcome FROM surfacing_events WHERE lesson_id = ? AND context LIKE ? AND outcome != 'unknown'",
         [lesson_id, f"%{ctx_prefix}%"],
     ).fetchall()
     if not rows:
@@ -82,7 +87,7 @@ def _outcome_rate(conn, lesson_id: int, context: str) -> float:
     return heeded / len(rows)
 
 
-def _recurrence_score(conn, lesson_id: int) -> float:
+def _recurrence_score(conn: sqlite3.Connection, lesson_id: int) -> float:
     """Normalized recurrence + near-miss count. Caps at 1.0 (10+ events = max)."""
     row = conn.execute(
         "SELECT recurrence_count, "

@@ -8,12 +8,15 @@ from lessons_db.enforce import check_escalation
 
 def _insert_lesson(conn, recurrence_count=0, enforcement="documentation"):
     """Helper: insert a lesson with specified recurrence state."""
-    return insert_lesson(conn, {
-        "title": "Test lesson",
-        "one_liner": "A test lesson for escalation",
-        "recurrence_count": recurrence_count,
-        "enforcement": enforcement,
-    })
+    return insert_lesson(
+        conn,
+        {
+            "title": "Test lesson",
+            "one_liner": "A test lesson for escalation",
+            "recurrence_count": recurrence_count,
+            "enforcement": enforcement,
+        },
+    )
 
 
 class TestEnforcementEscalation:

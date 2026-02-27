@@ -1,6 +1,7 @@
 """LanceDB vector search with Ollama embeddings via ollama-queue."""
 
 import logging
+from typing import cast
 
 import lancedb
 import pyarrow as pa
@@ -12,21 +13,24 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "lessons"
 
-SCHEMA = pa.schema([
-    pa.field("lesson_id", pa.int64()),
-    pa.field("text", pa.string()),
-    pa.field("vector", pa.list_(pa.float32(), EMBED_DIMS)),
-    pa.field("cluster", pa.string()),
-    pa.field("tier", pa.string()),
-    pa.field("scope", pa.string()),
-    pa.field("enforcement", pa.string()),
-    pa.field("recurrence_count", pa.int64()),
-])
+SCHEMA = pa.schema(
+    [
+        pa.field("lesson_id", pa.int64()),
+        pa.field("text", pa.string()),
+        pa.field("vector", pa.list_(pa.float32(), EMBED_DIMS)),
+        pa.field("cluster", pa.string()),
+        pa.field("tier", pa.string()),
+        pa.field("scope", pa.string()),
+        pa.field("enforcement", pa.string()),
+        pa.field("recurrence_count", pa.int64()),
+    ]
+)
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two equal-length vectors. Returns 0.0 on zero magnitude."""
     import math
+
     dot = sum(x * y for x, y in zip(a, b))
     mag_a = math.sqrt(sum(x * x for x in a))
     mag_b = math.sqrt(sum(x * x for x in b))
@@ -46,7 +50,7 @@ def get_embedding(text: str) -> list[float] | None:
             timeout=120,
         )
         resp.raise_for_status()
-        return resp.json()["embeddings"][0]
+        return cast(list[float], resp.json()["embeddings"][0])
     except Exception:
         logger.warning("Embedding request failed for text: %s", text[:80])
         return None
@@ -90,9 +94,7 @@ def upsert_lesson(db: lancedb.DBConnection, data: dict) -> bool:
     return True
 
 
-def semantic_search(
-    db: lancedb.DBConnection, query: str, top_k: int = 5
-) -> list[dict]:
+def semantic_search(db: lancedb.DBConnection, query: str, top_k: int = 5) -> list[dict]:
     """Search lessons by semantic similarity.
 
     Returns list of dicts with lesson_id, text, cluster, score.

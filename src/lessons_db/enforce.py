@@ -42,12 +42,16 @@ def check_escalation(conn: sqlite3.Connection, lesson_id: int) -> dict:
     add_precommit = new_count == 3
     add_autofix = new_count >= 4
 
-    update_lesson(conn, lesson_id, {
-        "enforcement": enforcement,
-        "confidence": confidence,
-        "recurrence_count": new_count,
-        "last_hit_date": date.today().isoformat(),
-    })
+    update_lesson(
+        conn,
+        lesson_id,
+        {
+            "enforcement": enforcement,
+            "confidence": confidence,
+            "recurrence_count": new_count,
+            "last_hit_date": date.today().isoformat(),
+        },
+    )
 
     return {
         "lesson_id": lesson_id,

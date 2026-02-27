@@ -176,10 +176,10 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
 
     SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS — catch OperationalError instead."""
     new_columns = [
-        ("entry_type",   "TEXT NOT NULL DEFAULT 'lesson'"),
-        ("polarity",     "TEXT NOT NULL DEFAULT 'negative'"),
+        ("entry_type", "TEXT NOT NULL DEFAULT 'lesson'"),
+        ("polarity", "TEXT NOT NULL DEFAULT 'negative'"),
         ("cluster_seed", "TEXT"),
-        ("reuse_count",  "INTEGER NOT NULL DEFAULT 0"),
+        ("reuse_count", "INTEGER NOT NULL DEFAULT 0"),
     ]
     for col_name, col_def in new_columns:
         try:
@@ -192,13 +192,11 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
     # v3 cross-project detection columns on capture_drafts
     draft_columns = [
         ("detection_source", "TEXT NOT NULL DEFAULT 'stop_hook'"),
-        ("confidence",       "REAL"),
+        ("confidence", "REAL"),
     ]
     for col_name, col_def in draft_columns:
         try:
-            conn.execute(
-                f"ALTER TABLE capture_drafts ADD COLUMN {col_name} {col_def}"
-            )
+            conn.execute(f"ALTER TABLE capture_drafts ADD COLUMN {col_name} {col_def}")
             conn.commit()
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e):
@@ -220,35 +218,44 @@ def _seed_scan_state(conn: sqlite3.Connection) -> None:
         ("auto_approve_threshold", "0.85"),
     ]
     for key, value in defaults:
-        conn.execute(
-            "INSERT OR IGNORE INTO scan_state (key, value) VALUES (?, ?)",
-            [key, value]
-        )
+        conn.execute("INSERT OR IGNORE INTO scan_state (key, value) VALUES (?, ?)", [key, value])
     conn.commit()
 
 
 def get_scan_state(conn: sqlite3.Connection, key: str) -> str | None:
     """Get a value from scan_state by key. Returns None if key missing."""
-    row = conn.execute(
-        "SELECT value FROM scan_state WHERE key = ?", [key]
-    ).fetchone()
+    row = conn.execute("SELECT value FROM scan_state WHERE key = ?", [key]).fetchone()
     return row["value"] if row else None
 
 
 def set_scan_state(conn: sqlite3.Connection, key: str, value: str) -> None:
     """Upsert a key-value pair in scan_state."""
-    conn.execute(
-        "INSERT OR REPLACE INTO scan_state (key, value) VALUES (?, ?)",
-        [key, value]
-    )
+    conn.execute("INSERT OR REPLACE INTO scan_state (key, value) VALUES (?, ?)", [key, value])
     conn.commit()
 
 
 LESSON_COLUMNS = {
-    "title", "one_liner", "description", "cluster", "cluster_seed",
-    "tier", "entry_type", "polarity", "category", "severity", "confidence",
-    "scope", "keywords", "enforcement", "recurrence_count", "reuse_count",
-    "last_hit_date", "created_date", "source", "parent_lesson_id", "markdown_path",
+    "title",
+    "one_liner",
+    "description",
+    "cluster",
+    "cluster_seed",
+    "tier",
+    "entry_type",
+    "polarity",
+    "category",
+    "severity",
+    "confidence",
+    "scope",
+    "keywords",
+    "enforcement",
+    "recurrence_count",
+    "reuse_count",
+    "last_hit_date",
+    "created_date",
+    "source",
+    "parent_lesson_id",
+    "markdown_path",
 }
 
 
@@ -282,14 +289,13 @@ def insert_lesson(conn: sqlite3.Connection, data: dict) -> int:
         [row[c] for c in cols],
     )
     conn.commit()
+    assert cursor.lastrowid is not None
     return cursor.lastrowid
 
 
 def get_lesson(conn: sqlite3.Connection, lesson_id: int) -> dict | None:
     """Return a lesson as dict, or None if not found."""
-    row = conn.execute(
-        "SELECT * FROM lessons WHERE id = ?", (lesson_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
     if row is None:
         return None
     return dict(row)
@@ -353,6 +359,7 @@ def insert_corrective_action(conn: sqlite3.Connection, data: dict) -> int:
         [row[c] for c in cols],
     )
     conn.commit()
+    assert cursor.lastrowid is not None
     return cursor.lastrowid
 
 
@@ -388,6 +395,7 @@ def insert_near_miss(conn: sqlite3.Connection, data: dict) -> int:
         [row[c] for c in cols],
     )
     conn.commit()
+    assert cursor.lastrowid is not None
     return cursor.lastrowid
 
 
@@ -426,6 +434,7 @@ def insert_scan_finding(conn: sqlite3.Connection, data: dict) -> int:
         [row[c] for c in cols],
     )
     conn.commit()
+    assert cursor.lastrowid is not None
     return cursor.lastrowid
 
 

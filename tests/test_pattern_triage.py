@@ -1,7 +1,5 @@
 """Tests for cross-project pattern triage (Stage 3)."""
 
-from unittest.mock import patch
-
 import pytest
 
 from lessons_db.db import get_lesson, init_db
@@ -125,8 +123,7 @@ class TestRejectDraft:
         conn.commit()
         draft_id = conn.execute("SELECT id FROM capture_drafts").fetchone()["id"]
 
-        with patch("lessons_db.pattern_triage.get_embedding", return_value=[0.1] * 768):
-            reject_draft(draft_id, conn, lance_dir=str(tmp_path / "lance"), reason="Too project-specific")
+        reject_draft(draft_id, conn, lance_dir=str(tmp_path / "lance"), reason="Too project-specific")
 
         sv = conn.execute("SELECT * FROM suppression_vectors").fetchone()
         assert sv is not None

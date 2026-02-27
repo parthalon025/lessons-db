@@ -14,6 +14,7 @@ On rejection via reject_draft():
 """
 
 import logging
+import sqlite3
 from datetime import date
 
 from lessons_db.db import (
@@ -48,7 +49,7 @@ def tier_from_reuse(reuse_count: int) -> str:
     return "noticed"
 
 
-def _get_threshold(conn) -> float:
+def _get_threshold(conn: sqlite3.Connection) -> float:
     """Read auto_approve_threshold from scan_state. Default 0.85."""
     val = get_scan_state(conn, "auto_approve_threshold")
     try:
@@ -59,7 +60,7 @@ def _get_threshold(conn) -> float:
 
 def triage_candidate(
     candidate: VerifiedCandidate,
-    conn,
+    conn: sqlite3.Connection,
     lance_dir: str | None = None,
 ) -> int | None:
     """Triage a verified candidate. Returns lesson_id if auto-approved, else None."""
@@ -148,7 +149,7 @@ def triage_candidate(
 
 def reject_draft(
     draft_id: int,
-    conn,
+    conn: sqlite3.Connection,
     lance_dir: str | None = None,
     reason: str | None = None,
 ) -> None:
@@ -178,7 +179,7 @@ def reject_draft(
     logger.info("reject_draft: draft %d rejected, suppression vector stored", draft_id)
 
 
-def calibration_bands(conn) -> dict[float, dict]:
+def calibration_bands(conn: sqlite3.Connection) -> dict[float, dict]:
     """Return promotion stats grouped by ROUND(confidence, 1) band."""
     rows = conn.execute("""
         SELECT
@@ -203,7 +204,7 @@ def calibration_bands(conn) -> dict[float, dict]:
     }
 
 
-def should_adjust_threshold(conn) -> dict | None:
+def should_adjust_threshold(conn: sqlite3.Connection) -> dict | None:
     """Propose threshold adjustment if 20+ outcomes exist and data supports it.
 
     Returns dict with proposed_threshold and rationale, or None if insufficient data.

@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 clustering = ["umap-learn>=0.5.0", "hdbscan>=0.8.0", "scikit-learn>=1.0.0", "numpy>=1.24.0"]
-dev = ["pytest>=8.0.0", "pytest-xdist>=3.5.0", "pytest-timeout>=2.4.0"]
+dev = ["pytest>=8.0.0", "pytest-xdist>=3.5.0", "pytest-timeout>=2.4.0", "mypy>=1.8.0"]
 
 [project.scripts]
 lessons-db = "lessons_db.cli:main"
@@ -32,3 +32,47 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # flake8-bugbear (real bugs)
+    "SIM",       # flake8-simplify
+    "C90",       # mccabe complexity
+    "S",         # flake8-bandit (security)
+    "RUF",       # ruff-specific
+]
+ignore = [
+    "S101",      # assert in tests is fine
+    "S603",      # subprocess without shell — used intentionally
+    "S607",      # partial executable path — used intentionally
+    "B008",      # function call in default arg — click uses this
+    "SIM108",    # ternary operator — readability preference
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S", "N802"]   # security + naming relaxed in tests
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = "lessons_db.cli"
+disallow_untyped_defs = false   # Click decorators own function signatures

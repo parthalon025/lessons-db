@@ -297,9 +297,7 @@ def rule_generate(ctx, lesson_id, rules_dir, severity):
 
     patterns = conn.execute("SELECT * FROM detection_patterns WHERE lesson_id = ?", (lesson_id,)).fetchall()
     if not patterns:
-        click.echo(
-            f"No detection patterns for lesson #{lesson_id}. " "Add patterns via detection_patterns table first."
-        )
+        click.echo(f"No detection patterns for lesson #{lesson_id}. Add patterns via detection_patterns table first.")
         return
 
     out_dir = Path(rules_dir) if rules_dir else RULES_DIR
@@ -447,9 +445,7 @@ def summary(ctx, output):
     """
     conn = ctx.obj["conn"]
 
-    rows = conn.execute(
-        "SELECT id, title, one_liner, cluster, tier, created_date " "FROM lessons ORDER BY id"
-    ).fetchall()
+    rows = conn.execute("SELECT id, title, one_liner, cluster, tier, created_date FROM lessons ORDER BY id").fetchall()
 
     lines = [
         "# Lessons-Learned Summary",
@@ -653,7 +649,7 @@ def cluster_history(ctx):
         click.echo("No clustering runs yet. Run: lessons-db cluster discover")
         return
     for run in runs:
-        click.echo(f"[{run['run_date']}] {run['proposal_count']} proposals, " f"{run['confirmed_count']} confirmed")
+        click.echo(f"[{run['run_date']}] {run['proposal_count']} proposals, {run['confirmed_count']} confirmed")
 
 
 @cluster.command("discover")
@@ -867,10 +863,10 @@ def pattern_status(ctx):
     conn = ctx.obj["conn"]
 
     auto = conn.execute(
-        "SELECT COUNT(*) FROM lessons " "WHERE source='cross_project_scan' AND polarity='positive'"
+        "SELECT COUNT(*) FROM lessons WHERE source='cross_project_scan' AND polarity='positive'"
     ).fetchone()[0]
     pending = conn.execute(
-        "SELECT COUNT(*) FROM capture_drafts " "WHERE detection_source='cross_project_scan' AND status='pending'"
+        "SELECT COUNT(*) FROM capture_drafts WHERE detection_source='cross_project_scan' AND status='pending'"
     ).fetchone()[0]
     rejected = conn.execute("SELECT COUNT(*) FROM suppression_vectors").fetchone()[0]
     threshold = get_scan_state(conn, "auto_approve_threshold") or "0.85"
@@ -893,17 +889,17 @@ def pattern_calibrate(ctx, apply):
     if not bands:
         click.echo("No outcome data yet. Run the scanner and review drafts first.")
         if apply:
-            click.echo("\nInsufficient data for threshold adjustment " "(need 20+ outcomes across bands).")
+            click.echo("\nInsufficient data for threshold adjustment (need 20+ outcomes across bands).")
         return
 
     click.echo(f"{'Band':>6}  {'Total':>5}  {'Approved':>8}  {'Rate':>6}")
     for band, data in sorted(bands.items()):
-        click.echo(f"{band:>6.1f}  {data['total']:>5}  " f"{data['approved']:>8}  {data['promotion_rate']:>6.0%}")
+        click.echo(f"{band:>6.1f}  {data['total']:>5}  {data['approved']:>8}  {data['promotion_rate']:>6.0%}")
 
     if apply:
         suggestion = pattern_triage.should_adjust_threshold(conn)
         if suggestion is None:
-            click.echo("\nInsufficient data for threshold adjustment " "(need 20+ outcomes across bands).")
+            click.echo("\nInsufficient data for threshold adjustment (need 20+ outcomes across bands).")
         else:
             click.echo(f"\n{suggestion['rationale']}")
             if click.confirm(

@@ -69,7 +69,7 @@ def nearest_lessons(snippet: str, lance_dir: str, k: int = 3) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
+def _suppression_similarity(snippet: str, conn: sqlite3.Connection, lance_dir: str) -> float:
     """Return max cosine similarity between snippet and all rejected snippets.
 
     Queries suppression_vectors for all rejected_snippet values, embeds each,
@@ -103,7 +103,7 @@ def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
     return max_sim
 
 
-def is_suppressed(snippet: str, conn, lance_dir: str) -> bool:
+def is_suppressed(snippet: str, conn: sqlite3.Connection, lance_dir: str) -> bool:
     """Return True if snippet is too similar to a previously rejected pattern."""
     return _suppression_similarity(snippet, conn, lance_dir) >= SUPPRESSION_SIMILARITY
 
@@ -195,7 +195,7 @@ def _generality_prompt_no_lesson(snippet: str, source_repos: list[str]) -> str:
 
 def verify_candidate(
     candidate: CandidatePattern,
-    conn,
+    conn: sqlite3.Connection,
     lance_dir: str,
 ) -> VerifiedCandidate | None:
     """Run a CandidatePattern through all verification gates.

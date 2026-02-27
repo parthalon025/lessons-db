@@ -6,7 +6,9 @@ reuse_count >= 3 → standard
 """
 
 import logging
+import sqlite3
 from datetime import date
+from typing import Any
 
 from lessons_db.config import (
     PROMOTION_STANDARD_THRESHOLD,
@@ -17,7 +19,7 @@ from lessons_db.config import (
 _log = logging.getLogger(__name__)
 
 
-def record_reuse(conn, lesson_id: int) -> str:
+def record_reuse(conn: sqlite3.Connection, lesson_id: int) -> str:
     """Increment reuse_count and promote tier if threshold reached.
 
     Returns the new tier name."""
@@ -30,7 +32,7 @@ def record_reuse(conn, lesson_id: int) -> str:
         raise ValueError(f"Lesson {lesson_id} not found")
 
     reuse_count = (row["reuse_count"] or 0) + 1
-    tier = row["tier"]
+    tier: str = str(row["tier"]) if row["tier"] is not None else "noticed"
     one_liner = row["one_liner"] or ""
     description = row["description"] or ""
 
@@ -51,7 +53,7 @@ def record_reuse(conn, lesson_id: int) -> str:
     return tier
 
 
-def list_templates(conn) -> list[dict]:
+def list_templates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return all generated templates with associated lesson data."""
     rows = conn.execute(
         """SELECT t.id, t.lesson_id, t.template_type, t.content, t.created_date,
@@ -62,7 +64,7 @@ def list_templates(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def apply_template(conn, lesson_id: int) -> str | None:
+def apply_template(conn: sqlite3.Connection, lesson_id: int) -> str | None:
     """Return template content for a lesson, or None if not yet generated."""
     row = conn.execute(
         "SELECT content FROM templates WHERE lesson_id = ? ORDER BY id DESC LIMIT 1",
@@ -71,13 +73,10 @@ def apply_template(conn, lesson_id: int) -> str | None:
     return row["content"] if row else None
 
 
-def _generate_template(conn, lesson_id: int, one_liner: str,
-                        description: str) -> None:
+def _generate_template(conn: sqlite3.Connection, lesson_id: int, one_liner: str, description: str) -> None:
     """Auto-generate a scaffold template from a proven positive entry.
     No-ops if a template already exists for this lesson (idempotent)."""
-    if conn.execute(
-        "SELECT id FROM templates WHERE lesson_id = ?", [lesson_id]
-    ).fetchone():
+    if conn.execute("SELECT id FROM templates WHERE lesson_id = ?", [lesson_id]).fetchone():
         return
 
     template_type = "approach"
@@ -101,7 +100,6 @@ def _generate_template(conn, lesson_id: int, one_liner: str,
     )
 
     conn.execute(
-        "INSERT INTO templates (lesson_id, template_type, content, created_date) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO templates (lesson_id, template_type, content, created_date) VALUES (?, ?, ?, ?)",
         [lesson_id, template_type, content, date.today().isoformat()],
     )

@@ -2,6 +2,10 @@
 
 import logging
 import re
+import sqlite3
+from typing import Any
+
+import lancedb
 
 from lessons_db.db import search_by_file as _db_search_by_file
 from lessons_db.vectors import semantic_search
@@ -9,12 +13,12 @@ from lessons_db.vectors import semantic_search
 logger = logging.getLogger(__name__)
 
 
-def search_for_file(conn, file_path: str) -> list[dict]:
+def search_for_file(conn: sqlite3.Connection, file_path: str) -> list[dict[str, Any]]:
     """Search lessons by affected file path. Delegates to db.search_by_file."""
     return _db_search_by_file(conn, file_path)
 
 
-def search_by_content(conn, content: str, language: str = "any") -> list[dict]:
+def search_by_content(conn: sqlite3.Connection, content: str, language: str = "any") -> list[dict[str, Any]]:
     """Match content against syntactic detection patterns.
 
     Loads all detection_patterns rows where pattern_type='syntactic'
@@ -46,20 +50,20 @@ def search_by_content(conn, content: str, language: str = "any") -> list[dict]:
     for row in rows:
         try:
             if re.search(row["regex"], content):
-                matches.append({
-                    "lesson_id": row["lesson_id"],
-                    "one_liner": row["one_liner"],
-                    "matched_pattern": row["regex"],
-                    "severity": row["severity"],
-                })
+                matches.append(
+                    {
+                        "lesson_id": row["lesson_id"],
+                        "one_liner": row["one_liner"],
+                        "matched_pattern": row["regex"],
+                        "severity": row["severity"],
+                    }
+                )
         except re.error:
-            logger.warning(
-                "Invalid regex for lesson %d: %s", row["lesson_id"], row["regex"]
-            )
+            logger.warning("Invalid regex for lesson %d: %s", row["lesson_id"], row["regex"])
     return matches
 
 
-def search_semantic(lance_db, query: str, top_k: int = 3) -> list[dict]:
+def search_semantic(lance_db: lancedb.DBConnection | None, query: str, top_k: int = 3) -> list[dict[str, Any]]:
     """Semantic similarity search. Returns empty list if lance_db is None."""
     if lance_db is None:
         return []
@@ -67,8 +71,8 @@ def search_semantic(lance_db, query: str, top_k: int = 3) -> list[dict]:
 
 
 def search_combined(
-    conn,
-    lance_db,
+    conn: sqlite3.Connection,
+    lance_db: lancedb.DBConnection | None,
     file_path: str | None = None,
     content: str | None = None,
     query: str | None = None,
@@ -100,12 +104,14 @@ def search_combined(
             if lid not in seen_ids:
                 seen_ids.add(lid)
                 # Normalize key to 'id' for consistency
-                results.append({
-                    "id": lid,
-                    "one_liner": hit["one_liner"],
-                    "matched_pattern": hit["matched_pattern"],
-                    "severity": hit["severity"],
-                })
+                results.append(
+                    {
+                        "id": lid,
+                        "one_liner": hit["one_liner"],
+                        "matched_pattern": hit["matched_pattern"],
+                        "severity": hit["severity"],
+                    }
+                )
 
     # Strategy 3: semantic search
     if query:
@@ -113,13 +119,15 @@ def search_combined(
             lid = hit["lesson_id"]
             if lid not in seen_ids:
                 seen_ids.add(lid)
-                results.append({
-                    "id": lid,
-                    "one_liner": hit.get("text", ""),
-                    "severity": 0,  # Semantic hits don't carry severity
-                    "score": hit.get("score"),
-                    "cluster": hit.get("cluster"),
-                })
+                results.append(
+                    {
+                        "id": lid,
+                        "one_liner": hit.get("text", ""),
+                        "severity": 0,  # Semantic hits don't carry severity
+                        "score": hit.get("score"),
+                        "cluster": hit.get("cluster"),
+                    }
+                )
 
     # Apply polarity filter by joining with lessons table
     if polarity is not None and results:
