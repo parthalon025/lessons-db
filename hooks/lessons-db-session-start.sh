@@ -28,3 +28,12 @@ PYEOF
 if [[ "${POS_COUNT:-0}" -gt 0 ]]; then
     echo "Positive patterns available: ${POS_COUNT}"
 fi
+
+# Pattern scan counts (cross-project pattern detection v3)
+PATTERN_STATUS=$(lessons-db pattern status 2>/dev/null || echo "")
+PATTERN_AUTO=$(echo "$PATTERN_STATUS" | grep -oP '\d+(?= auto-captured)' || echo "0")
+PATTERN_PENDING=$(echo "$PATTERN_STATUS" | grep -oP '\d+(?= pending)' || echo "0")
+
+if [ "${PATTERN_AUTO:-0}" -gt 0 ] || [ "${PATTERN_PENDING:-0}" -gt 0 ]; then
+    echo "${PATTERN_AUTO} patterns auto-captured | ${PATTERN_PENDING} awaiting review"
+fi

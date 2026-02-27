@@ -18,6 +18,10 @@ LESSONS_SOURCE_DIR = Path(os.environ.get(
     str(Path.home() / "Documents" / "docs" / "lessons"),
 ))
 
+# Cross-project scanner
+PROJECTS_DIR = Path(os.environ.get("LESSONS_DB_PROJECTS_DIR",
+                                   str(Path.home() / "Documents" / "projects")))
+
 # Ollama queue API (generation / analysis tasks) — used for queue-aware callers
 OLLAMA_QUEUE_URL = os.environ.get("LESSONS_DB_OLLAMA_QUEUE_URL", "http://127.0.0.1:7683")
 

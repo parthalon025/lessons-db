@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS cluster_runs (
 CREATE INDEX IF NOT EXISTS idx_surfacing_lesson_ctx ON surfacing_events(lesson_id, context);
 CREATE INDEX IF NOT EXISTS idx_surfacing_outcome ON surfacing_events(lesson_id, outcome);
 CREATE INDEX IF NOT EXISTS idx_templates_lesson ON templates(lesson_id);
+
+CREATE TABLE IF NOT EXISTS suppression_vectors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    embedding_id TEXT NOT NULL,
+    rejected_snippet TEXT NOT NULL,
+    rejection_date TEXT NOT NULL,
+    rejection_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS scan_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -153,6 +166,7 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_SQL)
     _add_extension_columns(conn)
+    _seed_scan_state(conn)
     _log.debug("init_db: opened %s", db_path)
     return conn
 
@@ -174,6 +188,60 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e):
                 raise
+
+    # v3 cross-project detection columns on capture_drafts
+    draft_columns = [
+        ("detection_source", "TEXT NOT NULL DEFAULT 'stop_hook'"),
+        ("confidence",       "REAL"),
+    ]
+    for col_name, col_def in draft_columns:
+        try:
+            conn.execute(
+                f"ALTER TABLE capture_drafts ADD COLUMN {col_name} {col_def}"
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
+
+    # v3 corrective_action shortcut column on lessons (denormalized from corrective_actions table)
+    try:
+        conn.execute("ALTER TABLE lessons ADD COLUMN corrective_action TEXT")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
+
+def _seed_scan_state(conn: sqlite3.Connection) -> None:
+    """Seed scan_state defaults (idempotent via INSERT OR IGNORE)."""
+    defaults = [
+        ("last_scan_timestamp", "1970-01-01T00:00:00"),
+        ("auto_approve_threshold", "0.85"),
+    ]
+    for key, value in defaults:
+        conn.execute(
+            "INSERT OR IGNORE INTO scan_state (key, value) VALUES (?, ?)",
+            [key, value]
+        )
+    conn.commit()
+
+
+def get_scan_state(conn: sqlite3.Connection, key: str) -> str | None:
+    """Get a value from scan_state by key. Returns None if key missing."""
+    row = conn.execute(
+        "SELECT value FROM scan_state WHERE key = ?", [key]
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def set_scan_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upsert a key-value pair in scan_state."""
+    conn.execute(
+        "INSERT OR REPLACE INTO scan_state (key, value) VALUES (?, ?)",
+        [key, value]
+    )
+    conn.commit()
 
 
 LESSON_COLUMNS = {
