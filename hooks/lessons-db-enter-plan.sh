@@ -34,4 +34,19 @@ if [[ -n "$RESULTS1" || -n "$RESULTS2" ]]; then
     fi
 fi
 
+# Record each surfaced lesson for the learning pipeline (Lesson #65: wire call sites)
+# Extract IDs from search output format: [#NNN] one_liner
+for RESULT_BLOCK in "$RESULTS1" "$RESULTS2"; do
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+            LESSON_ID="${BASH_REMATCH[1]}"
+            "$LESSONS_DB" learn record \
+                --lesson-id "$LESSON_ID" \
+                --hook "plan" \
+                --context "$PROJ_NAME" \
+                2>>/tmp/lessons-db-errors.log || true
+        fi
+    done <<< "$RESULT_BLOCK"
+done
+
 exit 0

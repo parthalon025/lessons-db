@@ -54,6 +54,18 @@ if [[ -n "$RESULTS" ]]; then
     echo "$RESULTS"
     echo "\`\`\`"
     echo ""
+
+    # Record each surfaced lesson for the learning pipeline (Lesson #65: wire call sites)
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+            LESSON_ID="${BASH_REMATCH[1]}"
+            "$LESSONS_DB" learn record \
+                --lesson-id "$LESSON_ID" \
+                --hook "bash" \
+                --context "$QUERY" \
+                2>>/tmp/lessons-db-errors.log || true
+        fi
+    done <<< "$RESULTS"
 fi
 
 exit 0

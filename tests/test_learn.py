@@ -3,6 +3,8 @@
 import pytest
 from datetime import datetime
 
+from click.testing import CliRunner
+
 from lessons_db.learn import (
     record_surfacing,
     record_outcome,
@@ -10,6 +12,7 @@ from lessons_db.learn import (
     surfacing_stats,
 )
 from lessons_db.db import init_db, insert_lesson
+from lessons_db.cli import main
 
 
 @pytest.fixture
@@ -108,6 +111,48 @@ class TestRelevanceScore:
         score = relevance_score(conn, lid, context="other.py", semantic_sim=0.5)
         # 0.5*0.5 + 0.3*0.5 + 0.2*1.0 = 0.25 + 0.15 + 0.20 = 0.60
         assert score > 0.55
+
+
+class TestLearnRecordCLI:
+    """CLI learn record creates a surfacing event."""
+
+    def test_learn_record_cli(self, db_path):
+        runner = CliRunner()
+        # First create a lesson to record a surfacing event for
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {"title": "T", "one_liner": "X", "created_date": "2026-01-01"})
+        conn.close()
+
+        result = runner.invoke(main, [
+            "--db", str(db_path),
+            "learn", "record",
+            "--lesson-id", str(lid),
+            "--hook", "plan",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Recorded" in result.output
+
+    def test_learn_record_with_context(self, db_path):
+        runner = CliRunner()
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {"title": "T", "one_liner": "X", "created_date": "2026-01-01"})
+        conn.close()
+
+        result = runner.invoke(main, [
+            "--db", str(db_path),
+            "learn", "record",
+            "--lesson-id", str(lid),
+            "--hook", "bash",
+            "--context", "test failure in hub.py",
+        ])
+        assert result.exit_code == 0, result.output
+
+        # Verify the event was stored
+        conn2 = init_db(db_path)
+        events = conn2.execute("SELECT * FROM surfacing_events").fetchall()
+        assert len(events) == 1
+        assert events[0]["hook_point"] == "bash"
+        assert "hub.py" in events[0]["context"]
 
 
 class TestSurfacingStats:
