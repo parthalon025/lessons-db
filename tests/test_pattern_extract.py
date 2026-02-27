@@ -136,16 +136,22 @@ class TestExtractPythonCandidates:
         repo_a.mkdir()
         repo_b.mkdir()
 
-        semgrep_output = {
-            "results": [
-                {"path": str(repo_a / "a.py"), "extra": {"lines": "with closing(conn):"}},
-                {"path": str(repo_b / "b.py"), "extra": {"lines": "with closing(conn):"}},
-            ]
-        }
-        with patch("lessons_db.pattern_extract.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout=json.dumps(semgrep_output)
-            )
+        # Each call to subprocess.run returns results for that specific repo only.
+        # This verifies the grouping logic keys by the repo argument, not semgrep paths.
+        def semgrep_side_effect(cmd, **kwargs):
+            target = cmd[-1]  # last arg is the target directory
+            if "repo-a" in target:
+                data = {"results": [{"path": str(repo_a / "a.py"),
+                                      "extra": {"lines": "with closing(conn):"}}]}
+            elif "repo-b" in target:
+                data = {"results": [{"path": str(repo_b / "b.py"),
+                                      "extra": {"lines": "with closing(conn):"}}]}
+            else:
+                data = {"results": []}
+            return MagicMock(returncode=0, stdout=json.dumps(data))
+
+        with patch("lessons_db.pattern_extract.subprocess.run",
+                   side_effect=semgrep_side_effect):
             candidates = extract_python_candidates(
                 repos=[repo_a, repo_b], patterns=BOOTSTRAP_PATTERNS, conn=conn
             )

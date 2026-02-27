@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -221,18 +222,18 @@ def build_semgrep_patterns(conn) -> list[dict]:
     Semgrep YAML rule and returns those (with ``source_lesson_id`` set). If
     Ollama generates nothing useful, falls back to BOOTSTRAP_PATTERNS.
     """
-    rows = conn.execute(
-        """
-        SELECT id, corrective_action
-        FROM lessons
-        WHERE corrective_action IS NOT NULL
-          AND corrective_action != ''
-          AND polarity = 'negative'
-        """,
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT id, one_liner, corrective_action FROM lessons "
+            "WHERE corrective_action IS NOT NULL AND corrective_action != '' "
+            "AND polarity = 'negative'"
+        ).fetchall()
+    except sqlite3.OperationalError as e:
+        _log.warning("build_semgrep_patterns: schema not ready, using bootstrap: %s", e)
+        return list(BOOTSTRAP_PATTERNS)
 
     if len(rows) < 10:
-        return BOOTSTRAP_PATTERNS
+        return list(BOOTSTRAP_PATTERNS)
 
     patterns: list[dict] = []
     for row in rows:
@@ -281,6 +282,7 @@ def _run_semgrep_pattern(yaml_text: str, target_dir: Path) -> list[dict]:
         _log.debug("semgrep binary not found; skipping pattern run")
         return []
 
+    tmp_path = None  # initialize before try so finally can safely reference it
     try:
         with tempfile.NamedTemporaryFile(
             suffix=".yaml", mode="w", delete=False
@@ -309,10 +311,11 @@ def _run_semgrep_pattern(yaml_text: str, target_dir: Path) -> list[dict]:
         _log.debug("semgrep run failed: %s", exc)
         return []
     finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _sliding_window(lines: list[str], size: int = 15) -> Generator:
@@ -416,6 +419,17 @@ def extract_nonpython_candidates(
 
     if not blocks:
         return []
+
+    # Cap blocks per repo to prevent O(n²) explosion on large repos.
+    # 200 blocks/repo × 8 repos = 1600 max → 2.56M comparisons (manageable).
+    MAX_BLOCKS_PER_REPO = 200
+    repo_counts: dict[str, int] = {}
+    capped_blocks = []
+    for repo_name, text, vec in blocks:
+        if repo_counts.get(repo_name, 0) < MAX_BLOCKS_PER_REPO:
+            capped_blocks.append((repo_name, text, vec))
+            repo_counts[repo_name] = repo_counts.get(repo_name, 0) + 1
+    blocks = capped_blocks
 
     # Cluster by cosine similarity: O(n²) — acceptable for small repo counts
     used: set[int] = set()
