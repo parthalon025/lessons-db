@@ -73,11 +73,14 @@ def search_combined(
     content: str | None = None,
     query: str | None = None,
     language: str = "any",
+    polarity: str | None = None,
 ) -> list[dict]:
     """Run all applicable strategies, deduplicate by lesson ID, sort by severity DESC.
 
     First hit wins for deduplication. Results are unified to have at minimum:
     id, one_liner, severity.
+
+    polarity: optional filter — 'positive', 'negative', or None (no filter).
     """
     seen_ids: set[int] = set()
     results: list[dict] = []
@@ -117,6 +120,17 @@ def search_combined(
                     "score": hit.get("score"),
                     "cluster": hit.get("cluster"),
                 })
+
+    # Apply polarity filter by joining with lessons table
+    if polarity is not None and results:
+        ids = [r["id"] for r in results]
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT id, polarity FROM lessons WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        allowed = {r["id"] for r in rows if r["polarity"] == polarity}
+        results = [r for r in results if r["id"] in allowed]
 
     # Sort by severity descending
     results.sort(key=lambda r: r.get("severity", 0), reverse=True)

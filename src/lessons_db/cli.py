@@ -84,8 +84,10 @@ def status(ctx):
 @click.option("--file", "-f", default=None, help="File path to search for.")
 @click.option("--content", "-c", default=None, help="Code content to match against patterns.")
 @click.option("--top", "-k", default=5, type=int, help="Max results to return.")
+@click.option("--polarity", default=None, type=click.Choice(["positive", "negative"]),
+              help="Filter by polarity: 'positive' for what works, 'negative' for anti-patterns.")
 @click.pass_context
-def search(ctx, query, file, content, top):
+def search(ctx, query, file, content, top, polarity):
     """Search lessons by text, file path, or content pattern."""
     conn = ctx.obj["conn"]
 
@@ -105,6 +107,7 @@ def search(ctx, query, file, content, top):
         file_path=file,
         content=content,
         query=query,
+        polarity=polarity,
     )[:top]
 
     if not results:

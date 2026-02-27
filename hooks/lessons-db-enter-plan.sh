@@ -34,6 +34,16 @@ if [[ -n "$RESULTS1" || -n "$RESULTS2" ]]; then
     fi
 fi
 
+# Surface top-3 positive entries by semantic similarity
+RESULTS_POS=$("$LESSONS_DB" search "planning ${PROJ_NAME}" \
+    --top 3 --polarity positive 2>/dev/null || echo "")
+
+if [[ -n "$RESULTS_POS" ]]; then
+    echo "### Positive Patterns (what has worked well)"
+    echo "$RESULTS_POS"
+    echo ""
+fi
+
 # Record each surfaced lesson for the learning pipeline (Lesson #65: wire call sites)
 # Extract IDs from search output format: [#NNN] one_liner
 for RESULT_BLOCK in "$RESULTS1" "$RESULTS2"; do
