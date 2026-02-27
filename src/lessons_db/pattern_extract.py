@@ -398,7 +398,7 @@ def extract_nonpython_candidates(
     """
     # Collect (repo_name, snippet, vector) tuples.
     # Cap at MAX_BLOCKS_PER_REPO *before* embedding to avoid wasting embed calls.
-    MAX_BLOCKS_PER_REPO = 200
+    MAX_BLOCKS_PER_REPO = 20
     blocks: list[tuple[str, str, list[float]]] = []
     repo_counts: dict[str, int] = {}
 
