@@ -19,7 +19,7 @@ import requests
 
 from lessons_db.config import ANALYSIS_MODEL, OLLAMA_ANALYSIS_URL
 from lessons_db.pattern_extract import CandidatePattern
-from lessons_db.vectors import get_embedding, init_lance, semantic_search
+from lessons_db.vectors import cosine_similarity, get_embedding, init_lance, semantic_search
 
 _log = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
         rejected_vec = get_embedding(rejected)
         if rejected_vec is None:
             continue
-        sim = _cosine_similarity(snippet_vec, rejected_vec)
+        sim = cosine_similarity(snippet_vec, rejected_vec)
         if sim > max_sim:
             max_sim = sim
 
@@ -186,19 +186,6 @@ def _generality_prompt_no_lesson(snippet: str, source_repos: list[str]) -> str:
         "Respond with a decimal score 0.0-1.0 on the first line, then one "
         "sentence explaining why on the second line."
     )
-
-
-# ---------------------------------------------------------------------------
-# Internal: cosine similarity
-# ---------------------------------------------------------------------------
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    mag_a = sum(x * x for x in a) ** 0.5
-    mag_b = sum(x * x for x in b) ** 0.5
-    if mag_a == 0 or mag_b == 0:
-        return 0.0
-    return dot / (mag_a * mag_b)
 
 
 # ---------------------------------------------------------------------------

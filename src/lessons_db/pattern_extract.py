@@ -10,7 +10,6 @@ two or more project repositories. Detection runs via two complementary paths:
 
 import json
 import logging
-import math
 import shutil
 import sqlite3
 import subprocess
@@ -26,7 +25,7 @@ from lessons_db.config import (
     OLLAMA_ANALYSIS_URL,
     PROJECTS_DIR,
 )
-from lessons_db.vectors import get_embedding
+from lessons_db.vectors import cosine_similarity, get_embedding
 
 _log = logging.getLogger(__name__)
 
@@ -448,7 +447,7 @@ def extract_nonpython_candidates(
             repo_j, _, vec_j = blocks[j]
             if repo_j == repo_i:
                 continue  # same repo, skip
-            sim = _cosine_similarity(vec_i, vec_j)
+            sim = cosine_similarity(vec_i, vec_j)
             if sim >= similarity_threshold:
                 cluster_repos.add(repo_j)
                 cluster_indices.append(j)
@@ -467,11 +466,3 @@ def extract_nonpython_candidates(
     return candidates
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two equal-length float vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
-    mag_a = math.sqrt(sum(x * x for x in a))
-    mag_b = math.sqrt(sum(x * x for x in b))
-    if mag_a == 0 or mag_b == 0:
-        return 0.0
-    return dot / (mag_a * mag_b)

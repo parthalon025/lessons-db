@@ -24,6 +24,15 @@ SCHEMA = pa.schema([
 ])
 
 
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two equal-length vectors. Returns 0.0 on zero magnitude."""
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    return dot / (mag_a * mag_b) if mag_a and mag_b else 0.0
+
+
 def get_embedding(text: str) -> list[float] | None:
     """Get embedding vector from Ollama via ollama-queue.
 
