@@ -23,13 +23,20 @@ run_pass() {
     local model="$2"
     local mode="$3"   # "" or "--positive"
 
-    echo "[$(date)] === Starting: $label ===" >> "$LOG"
+    {
+        echo "[$(date)] === Starting: $label ==="
 
-    LESSONS_DB_OLLAMA_ANALYSIS_MODEL="$model" \
-        bash "$SCRIPT" $mode $SINCE_ARG >> "$LOG" 2>&1
+        # Build args array — avoids passing empty strings as positional args
+        local args=()
+        [[ -n "$mode" ]] && args+=("$mode")
+        [[ -n "$SINCE_ARG" ]] && args+=("$SINCE_ARG")
 
-    echo "[$(date)] === Done: $label ===" >> "$LOG"
-    echo "" >> "$LOG"
+        LESSONS_DB_OLLAMA_ANALYSIS_MODEL="$model" \
+            bash "$SCRIPT" "${args[@]}" 2>&1
+
+        echo "[$(date)] === Done: $label ==="
+        echo ""
+    } >> "$LOG"
 }
 
 echo "[$(date)] Pipeline starting — 4 passes" >> "$LOG"

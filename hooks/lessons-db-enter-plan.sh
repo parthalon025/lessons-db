@@ -8,7 +8,8 @@ if [[ -z "$LESSONS_DB" ]]; then
 fi
 
 # Read tool input from stdin (JSON) — EnterPlanMode has no arguments, discard it
-INPUT=$(cat)
+# shellcheck disable=SC2034  # _INPUT drains stdin; hook framework requires consuming it
+_INPUT=$(cat)
 
 # Derive context from the project directory
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
