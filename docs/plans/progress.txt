@@ -1,0 +1,9 @@
+# lessons-db progress log — append-only
+# Format: ISO timestamp | task | notes
+2026-02-26T00:00:00Z Task 1-13 complete: base system (52 tests pass)
+2026-02-26T00:00:00Z Task 14 complete: schema extension (entry_type, polarity, cluster_seed, reuse_count, surfacing_events, templates)
+2026-02-26T00:00:00Z Task 15 complete: positive knowledge capture (capture.py, CLI capture group)
+2026-02-26T00:00:00Z Task 16 complete: adaptive clustering (cluster.py, HDBSCAN pipeline, CLI cluster group)
+2026-02-26T00:00:00Z Task 17 complete: learning pipeline (learn.py, relevance_score, surfacing stats)
+2026-02-26T00:00:00Z Task 18 complete: promotion ladder (promote.py, record_reuse, template generation)
+# Total at this point: 130 tests pass
