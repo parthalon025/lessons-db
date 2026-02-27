@@ -77,7 +77,7 @@ def _suppression_similarity(snippet: str, conn, lance_dir: str) -> float:
     """
     try:
         rows = conn.execute(
-            "SELECT rejected_snippet FROM suppression_vectors"
+            "SELECT rejected_snippet FROM suppression_vectors LIMIT 500"
         ).fetchall()
     except sqlite3.OperationalError as exc:
         _log.warning("suppression_vectors query failed: %s", exc)
@@ -112,19 +112,16 @@ def is_suppressed(snippet: str, conn, lance_dir: str) -> bool:
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
-def _parse_float(text: str) -> float:
-    """Extract first float from text, clamp to [0.0, 1.0].
+def _parse_float(text: str, default: float = 0.5) -> float:
+    """Extract first probability float from text. Returns default on failure.
 
-    Returns 0.5 on parse failure.
+    Only matches valid probability strings: 0.xxx, 1.0, 1, or 0 as standalone
+    words. Avoids false matches like "1 out of 10" or bare integers > 1.
     """
-    match = re.search(r"\d+\.?\d*", text)
-    if not match:
-        return 0.5
-    try:
-        val = float(match.group())
-        return max(0.0, min(1.0, val))
-    except ValueError:
-        return 0.5
+    m = re.search(r"\b(?:1(?:\.0+)?|0(?:\.\d+)?)\b", text)
+    if m:
+        return float(m.group())
+    return default
 
 
 def _parse_score_and_rationale(text: str) -> tuple[float, str]:
@@ -246,7 +243,8 @@ def verify_candidate(
             json={"model": ANALYSIS_MODEL, "prompt": spec_prompt, "stream": False},
             timeout=30,
         )
-        spec_text = spec_resp.json().get("response", "0.5")
+        spec_resp.raise_for_status()
+        spec_text = spec_resp.json().get("response", "")
         specificity = _parse_float(spec_text.strip())
     except Exception as exc:
         _log.warning("verify_candidate: specificity Ollama call failed: %s", exc)
@@ -280,7 +278,8 @@ def verify_candidate(
             json={"model": ANALYSIS_MODEL, "prompt": gen_prompt, "stream": False},
             timeout=30,
         )
-        gen_text = gen_resp.json().get("response", "0.5")
+        gen_resp.raise_for_status()
+        gen_text = gen_resp.json().get("response", "")
         generality, rationale = _parse_score_and_rationale(gen_text.strip())
     except Exception as exc:
         _log.warning("verify_candidate: generality Ollama call failed: %s", exc)

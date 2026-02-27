@@ -40,21 +40,23 @@ class TestIsSuppressed:
                                    lance_dir=str(db_path.parent / "lance"))
         assert result is False
 
-    def test_returns_true_when_similar_to_rejected(self, db_path):
+    def test_returns_true_when_similar_to_rejected(self, db_path, tmp_path):
+        """is_suppressed returns True when _suppression_similarity >= threshold."""
         conn = init_db(db_path)
-        conn.execute(
-            "INSERT INTO suppression_vectors "
-            "(embedding_id, rejected_snippet, rejection_date) "
-            "VALUES ('vec-1', 'with closing(conn): conn.execute(...)', '2026-02-26')"
-        )
-        conn.commit()
-        with patch("lessons_db.pattern_verify.get_embedding",
-                   return_value=[0.9] * 768), \
-             patch("lessons_db.pattern_verify._suppression_similarity",
+        with patch("lessons_db.pattern_verify._suppression_similarity",
                    return_value=0.92):
-            result = is_suppressed("with closing(conn):", conn,
-                                   lance_dir=str(db_path.parent / "lance"))
+            result = is_suppressed("any snippet", conn,
+                                   lance_dir=str(tmp_path / "lance"))
         assert result is True
+
+    def test_returns_false_when_below_threshold(self, db_path, tmp_path):
+        """is_suppressed returns False when similarity below threshold."""
+        conn = init_db(db_path)
+        with patch("lessons_db.pattern_verify._suppression_similarity",
+                   return_value=0.80):
+            result = is_suppressed("any snippet", conn,
+                                   lance_dir=str(tmp_path / "lance"))
+        assert result is False
 
 
 class TestVerifyCandidate:
@@ -182,3 +184,19 @@ class TestVerifyCandidate:
                                       lance_dir=str(tmp_path / "lance"))
         # 0.6*0.4 + 1.0*0.6 = 0.84
         assert abs(result.confidence - 0.84) < 0.01
+
+    def test_returns_none_when_ollama_returns_error_json(
+        self, candidate, db_path, tmp_path
+    ):
+        """Ollama returning {"error":"..."} should not pass gate with fabricated score."""
+        conn = init_db(db_path)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = Exception("503 Service Unavailable")
+        with patch("lessons_db.pattern_verify.nearest_lessons",
+                   return_value=[{"score": 0.9, "text": "far"}]), \
+             patch("lessons_db.pattern_verify.is_suppressed", return_value=False), \
+             patch("lessons_db.pattern_verify.requests.post",
+                   return_value=mock_resp):
+            result = verify_candidate(candidate, conn,
+                                      lance_dir=str(tmp_path / "lance"))
+        assert result is None
