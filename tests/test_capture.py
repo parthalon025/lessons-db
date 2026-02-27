@@ -244,3 +244,43 @@ class TestCapturePositiveManual:
         lesson = get_lesson(conn, lesson_id)
         assert lesson["polarity"] == "positive"
         assert lesson["tier"] == "noticed"
+
+
+class TestCaptureDesignDocCLI:
+    """CLI capture design-doc command queues drafts from a markdown file."""
+
+    def test_capture_design_doc_cli_success(self, db_path, tmp_path):
+        from click.testing import CliRunner
+        from lessons_db.cli import main
+
+        doc = tmp_path / "test-design.md"
+        doc.write_text("## Decision\nUsed dual-axis testing. Works well in integration scenarios.")
+
+        runner = CliRunner()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "response": json.dumps({
+                "entries": [{"one_liner": "Dual-axis testing finds integration bugs", "why": "Tests both axes", "category": "testing-pattern"}]
+            })
+        }
+        with patch("lessons_db.capture.requests.post", return_value=mock_resp):
+            result = runner.invoke(main, ["--db", str(db_path), "capture", "design-doc", str(doc)])
+
+        assert result.exit_code == 0, result.output
+        assert "Queued" in result.output
+        assert "draft" in result.output.lower()
+
+    def test_capture_design_doc_cli_ollama_unavailable(self, db_path, tmp_path):
+        """Exits 0 even when Ollama is unavailable (non-blocking)."""
+        from click.testing import CliRunner
+        from lessons_db.cli import main
+
+        doc = tmp_path / "test-design.md"
+        doc.write_text("## Decision\nSome content here.")
+
+        runner = CliRunner()
+        with patch("lessons_db.capture.requests.post", side_effect=Exception("connection refused")):
+            result = runner.invoke(main, ["--db", str(db_path), "capture", "design-doc", str(doc)])
+
+        assert result.exit_code == 0, result.output
+        assert "No positive" in result.output

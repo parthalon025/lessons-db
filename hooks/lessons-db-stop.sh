@@ -46,4 +46,13 @@ echo "$FULL_DIFF" > "$TMPFILE"
 
 rm -f "$TMPFILE"
 
+# Check for newly-created design docs this session and capture positive patterns
+# Use -mmin -120 to find docs created/modified in the last 2 hours (session scope)
+if [[ -d "${PROJ}/docs/plans" ]]; then
+    while IFS= read -r -d '' doc_file; do
+        "$LESSONS_DB" capture design-doc "$doc_file" \
+            2>>/tmp/lessons-db-stop-positive.log || true
+    done < <(find "${PROJ}/docs/plans" -name "*.md" -mmin -120 -print0 2>/dev/null)
+fi
+
 exit 0

@@ -495,6 +495,25 @@ def capture_approve(ctx, draft_id):
         click.echo(f"✗ Draft {draft_id} not found or already processed.")
 
 
+@capture.command("design-doc")
+@click.argument("doc_path", type=click.Path(exists=True, path_type=Path))
+@click.pass_context
+def capture_design_doc_cmd(ctx, doc_path):
+    """Extract positive patterns from a design doc → draft queue.
+
+    Sends the document to Ollama for extraction. Drafts require review:
+    run 'lessons-db capture drafts' to inspect, then 'capture approve <id>'.
+    """
+    from lessons_db.capture import capture_from_design_doc
+    conn = ctx.obj["conn"]
+    drafts = capture_from_design_doc(doc_path, conn)
+    if drafts:
+        click.echo(f"Queued {len(drafts)} positive pattern draft(s) for review.")
+        click.echo("Run: lessons-db capture drafts")
+    else:
+        click.echo("No positive patterns extracted.")
+
+
 @capture.command("transcript")
 @click.argument("transcript_file", type=click.Path(exists=True))
 @click.option("--positive", is_flag=True, help="Extract positive patterns (what worked well) instead of failures.")
