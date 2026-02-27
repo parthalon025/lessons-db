@@ -14,7 +14,10 @@ from lessons_db.db import (
     get_near_miss_hotspots,
     insert_lesson,
     insert_corrective_action,
+    get_scan_state,
+    set_scan_state,
 )
+from lessons_db import pattern_extract, pattern_verify, pattern_triage
 from lessons_db.search import search_combined
 from lessons_db.migrate import parse_lesson_file
 
@@ -35,6 +38,7 @@ def main(ctx, db, verbose):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = init_db(db_path)
     ctx.obj["conn"] = conn
+    ctx.obj["lance_dir"] = LANCE_DIR
     ctx.call_on_close(conn.close)
 
 
@@ -733,6 +737,175 @@ def template_show(ctx, lesson_id):
         click.echo(content)
     else:
         click.echo(f"No template for lesson #{lesson_id}. Entry must reach 'proven' tier first.")
+
+
+@main.group()
+def pattern():
+    """Cross-project pattern detection and review."""
+
+
+@pattern.command("scan")
+@click.pass_context
+def pattern_scan(ctx):
+    """Run cross-project pattern scan (all 3 stages)."""
+    conn = ctx.obj["conn"]
+    lance_dir = str(ctx.obj["lance_dir"])
+
+    since = get_scan_state(conn, "last_scan_timestamp") or "1970-01-01T00:00:00"
+    click.echo(f"Scanning repos with commits since {since}...")
+
+    repos = pattern_extract.list_active_repos(since)
+    if not repos:
+        click.echo("No repos with recent commits. Nothing to scan.")
+    else:
+        click.echo(f"Active repos: {[r.name for r in repos]}")
+        patterns = pattern_extract.build_semgrep_patterns(conn)
+        candidates = (
+            pattern_extract.extract_python_candidates(repos, patterns, conn)
+            + pattern_extract.extract_nonpython_candidates(repos, conn)
+        )
+        click.echo(f"Found {len(candidates)} raw candidates.")
+
+        auto_approved = 0
+        queued = 0
+        for cand in candidates:
+            verified = pattern_verify.verify_candidate(cand, conn, lance_dir)
+            if verified is None:
+                continue
+            result = pattern_triage.triage_candidate(verified, conn, lance_dir)
+            if result is not None:
+                auto_approved += 1
+            else:
+                queued += 1
+
+        click.echo(
+            f"Done: {auto_approved} auto-captured, {queued} queued for review."
+        )
+
+    # Always update scan timestamp
+    from datetime import datetime
+    set_scan_state(conn, "last_scan_timestamp",
+                   datetime.now().isoformat(timespec="seconds"))
+
+
+@pattern.command("review")
+@click.pass_context
+def pattern_review(ctx):
+    """Batch review pending cross-project pattern drafts."""
+    conn = ctx.obj["conn"]
+    lance_dir = str(ctx.obj["lance_dir"])
+
+    rows = conn.execute("""
+        SELECT id, raw_content, extracted_data, confidence
+        FROM capture_drafts
+        WHERE status = 'pending' AND detection_source = 'cross_project_scan'
+        ORDER BY confidence DESC
+    """).fetchall()
+
+    if not rows:
+        click.echo("No pending pattern drafts.")
+        return
+
+    for row in rows:
+        click.echo("\n" + "─" * 60)
+        click.echo(f"Draft #{row['id']} | confidence: {row['confidence']:.2f}")
+        click.echo(f"Snippet:\n{row['raw_content'][:300]}")
+        if row["extracted_data"]:
+            click.echo(f"Rationale: {row['extracted_data'][:200]}")
+
+        action = click.prompt(
+            "[a]pprove / [r]eject / [s]kip",
+            default="s"
+        ).strip().lower()
+
+        if action == "a":
+            conn.execute(
+                "UPDATE capture_drafts SET status='approved' WHERE id=?",
+                [row["id"]]
+            )
+            conn.commit()
+            click.echo("Approved.")
+        elif action == "r":
+            reason = click.prompt("Rejection reason (optional)", default="")
+            pattern_triage.reject_draft(
+                row["id"], conn, lance_dir=lance_dir,
+                reason=reason or None
+            )
+            click.echo("Rejected and suppression vector stored.")
+
+    click.echo("\nReview complete.")
+
+
+@pattern.command("status")
+@click.pass_context
+def pattern_status(ctx):
+    """Show pattern scan counts and threshold."""
+    conn = ctx.obj["conn"]
+
+    auto = conn.execute(
+        "SELECT COUNT(*) FROM lessons "
+        "WHERE source='cross_project_scan' AND polarity='positive'"
+    ).fetchone()[0]
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM capture_drafts "
+        "WHERE detection_source='cross_project_scan' AND status='pending'"
+    ).fetchone()[0]
+    rejected = conn.execute(
+        "SELECT COUNT(*) FROM suppression_vectors"
+    ).fetchone()[0]
+    threshold = get_scan_state(conn, "auto_approve_threshold") or "0.85"
+    last_scan = get_scan_state(conn, "last_scan_timestamp") or "never"
+
+    click.echo(
+        f"{auto} auto-captured | {pending} pending review | "
+        f"{rejected} suppressed | threshold: {threshold} | last scan: {last_scan}"
+    )
+
+
+@pattern.command("calibrate")
+@click.option("--apply", is_flag=True, help="Propose and apply threshold adjustment.")
+@click.pass_context
+def pattern_calibrate(ctx, apply):
+    """Show promotion stats by confidence band. Use --apply to adjust threshold."""
+    conn = ctx.obj["conn"]
+
+    bands = pattern_triage.calibration_bands(conn)
+    if not bands:
+        click.echo("No outcome data yet. Run the scanner and review drafts first.")
+        if apply:
+            click.echo(
+                "\nInsufficient data for threshold adjustment "
+                "(need 20+ outcomes across bands)."
+            )
+        return
+
+    click.echo(f"{'Band':>6}  {'Total':>5}  {'Approved':>8}  {'Rate':>6}")
+    for band, data in sorted(bands.items()):
+        click.echo(
+            f"{band:>6.1f}  {data['total']:>5}  "
+            f"{data['approved']:>8}  {data['promotion_rate']:>6.0%}"
+        )
+
+    if apply:
+        suggestion = pattern_triage.should_adjust_threshold(conn)
+        if suggestion is None:
+            click.echo(
+                "\nInsufficient data for threshold adjustment "
+                "(need 20+ outcomes across bands)."
+            )
+        else:
+            click.echo(f"\n{suggestion['rationale']}")
+            if click.confirm(
+                f"Adjust threshold from {suggestion['current_threshold']:.2f} "
+                f"to {suggestion['proposed_threshold']:.2f}?"
+            ):
+                set_scan_state(
+                    conn, "auto_approve_threshold",
+                    str(suggestion["proposed_threshold"])
+                )
+                click.echo(
+                    f"Threshold updated to {suggestion['proposed_threshold']:.2f}."
+                )
 
 
 @main.command()
