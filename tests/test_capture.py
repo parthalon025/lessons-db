@@ -246,6 +246,56 @@ class TestCapturePositiveManual:
         assert lesson["tier"] == "noticed"
 
 
+class TestCapturePositiveCLI:
+    """CLI capture positive subcommand is accessible and prompts correctly."""
+
+    def test_capture_positive_subcommand_exists(self):
+        from click.testing import CliRunner
+        from lessons_db.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["capture", "positive", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "positive" in result.output.lower()
+
+    def test_capture_positive_prompts_and_creates_lesson(self, db_path):
+        from click.testing import CliRunner
+        from lessons_db.cli import main
+
+        runner = CliRunner()
+        # Simulate user inputs for the interactive prompts
+        user_input = "\n".join([
+            "Dual-axis testing catches integration seam bugs",  # one_liner
+            "Tests both horizontal (surface) and vertical (depth) paths",  # why
+            "testing-pattern",  # category
+        ])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "4"}  # quality score passes
+        with patch("lessons_db.capture.requests.post", return_value=mock_resp):
+            result = runner.invoke(
+                main, ["--db", str(db_path), "capture", "positive"],
+                input=user_input,
+            )
+        assert result.exit_code == 0, result.output
+        assert "Captured" in result.output
+
+    def test_capture_positive_aborts_on_low_quality(self, db_path):
+        from click.testing import CliRunner
+        from lessons_db.cli import main
+
+        runner = CliRunner()
+        user_input = "\n".join(["vague", "unclear", "testing-pattern"])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "2"}  # score below threshold
+        with patch("lessons_db.capture.requests.post", return_value=mock_resp):
+            result = runner.invoke(
+                main, ["--db", str(db_path), "capture", "positive"],
+                input=user_input,
+            )
+        assert result.exit_code == 0, result.output
+        assert "aborted" in result.output.lower() or "failed" in result.output.lower()
+
+
 class TestCaptureDesignDocCLI:
     """CLI capture design-doc command queues drafts from a markdown file."""
 

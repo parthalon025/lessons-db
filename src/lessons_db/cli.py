@@ -495,6 +495,29 @@ def capture_approve(ctx, draft_id):
         click.echo(f"✗ Draft {draft_id} not found or already processed.")
 
 
+@capture.command("positive")
+@click.pass_context
+def capture_positive_cmd(ctx):
+    """Interactively capture a positive knowledge entry (what worked well).
+
+    Prompts for: what worked, why it worked, what category it belongs to.
+    Scores the one-liner quality via Ollama before saving.
+    Entry must score >= 3/5 to pass the quality gate.
+    """
+    from lessons_db.capture import capture_positive_manual
+    conn = ctx.obj["conn"]
+
+    one_liner = click.prompt("What worked well (one-liner, be specific)")
+    why = click.prompt("Why did it work / what problem does it solve")
+    category = click.prompt("Category", default="architecture-pattern")
+
+    lesson_id = capture_positive_manual(conn, one_liner, why, category)
+    if lesson_id is not None:
+        click.echo(f"\n✓ Captured positive entry #{lesson_id}: {one_liner}")
+    else:
+        click.echo("\n✗ Capture aborted (quality gate failed — one-liner scored < 3/5).")
+
+
 @capture.command("design-doc")
 @click.argument("doc_path", type=click.Path(exists=True, path_type=Path))
 @click.pass_context
