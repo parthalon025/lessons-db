@@ -7,3 +7,7 @@
 2026-02-26T00:00:00Z Task 17 complete: learning pipeline (learn.py, relevance_score, surfacing stats)
 2026-02-26T00:00:00Z Task 18 complete: promotion ladder (promote.py, record_reuse, template generation)
 # Total at this point: 130 tests pass
+2026-02-27T00:51:01Z Task 19 complete: surfacing event recording wired into EnterPlanMode and Bash hooks
+2026-02-27T00:53:48Z Task 20 complete: positive knowledge surfacing in EnterPlanMode and SessionStart hooks
+2026-02-27T00:59:26Z Task 21 complete: stop hook positive design doc capture
+2026-02-27T01:01:09Z Task 22 complete: capture positive interactive subcommand
