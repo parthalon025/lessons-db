@@ -231,7 +231,7 @@ def build_semgrep_patterns(conn) -> list[dict]:
         """,
     ).fetchall()
 
-    if not rows:
+    if len(rows) < 10:
         return BOOTSTRAP_PATTERNS
 
     patterns: list[dict] = []

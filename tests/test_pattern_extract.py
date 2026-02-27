@@ -52,12 +52,14 @@ class TestListActiveRepos:
 class TestBuildSemgrepPatterns:
     def test_db_seeded_patterns_from_corrective_action(self, db_path):
         conn = init_db(db_path)
-        conn.execute(
-            "INSERT INTO lessons "
-            "(title, one_liner, corrective_action, tier, created_date) "
-            "VALUES (?, ?, ?, 'lesson_learned', '2026-02-26')",
-            ["Test", "use closing()", "Wrap sqlite3.connect with contextlib.closing"]
-        )
+        # Insert 10 rows to meet the threshold
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO lessons "
+                "(title, one_liner, corrective_action, tier, created_date) "
+                "VALUES (?, ?, ?, 'lesson_learned', '2026-02-26')",
+                [f"Test {i}", f"one-liner {i}", "Wrap sqlite3.connect with contextlib.closing"]
+            )
         conn.commit()
 
         mock_resp = MagicMock()
@@ -72,6 +74,22 @@ class TestBuildSemgrepPatterns:
 
     def test_falls_back_to_bootstrap_when_no_corrective_actions(self, db_path):
         conn = init_db(db_path)
+        patterns = build_semgrep_patterns(conn)
+        assert len(patterns) == len(BOOTSTRAP_PATTERNS)
+        assert all(p["source_lesson_id"] is None for p in patterns)
+
+    def test_falls_back_to_bootstrap_when_fewer_than_10_corrective_actions(self, db_path):
+        conn = init_db(db_path)
+        # Insert 5 lessons with corrective_action — below the 10-row threshold
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO lessons "
+                "(title, one_liner, corrective_action, tier, created_date) "
+                "VALUES (?, ?, ?, 'lesson_learned', '2026-02-26')",
+                [f"Lesson {i}", f"one-liner {i}", f"corrective action {i}"]
+            )
+        conn.commit()
+        # No Ollama mock needed — should return BOOTSTRAP_PATTERNS without calling Ollama
         patterns = build_semgrep_patterns(conn)
         assert len(patterns) == len(BOOTSTRAP_PATTERNS)
         assert all(p["source_lesson_id"] is None for p in patterns)
