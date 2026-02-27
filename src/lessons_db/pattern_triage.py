@@ -70,18 +70,22 @@ def triage_candidate(
         reuse = seed_reuse_count(candidate.source_repos)
         tier = tier_from_reuse(reuse)
 
-        lesson_id = insert_lesson(conn, {
-            "title": candidate.snippet[:80],
-            "one_liner": candidate.snippet[:120],
-            "description": candidate.rationale,
-            "polarity": "positive",
-            "entry_type": "pattern",
-            "tier": tier,
-            "reuse_count": reuse,
-            "category": "architecture-pattern",
-            "created_date": today,
-            "source": "cross_project_scan",
-        })
+        try:
+            lesson_id = insert_lesson(conn, {
+                "title": candidate.snippet[:80],
+                "one_liner": candidate.snippet[:120],
+                "description": candidate.rationale,
+                "polarity": "positive",
+                "entry_type": "pattern",
+                "tier": tier,
+                "reuse_count": reuse,
+                "category": "architecture-pattern",
+                "created_date": today,
+                "source": "cross_project_scan",
+            })
+        except Exception as e:
+            logger.error("triage: insert_lesson failed: %s", e)
+            return None
 
         # Record surfacing event
         conn.execute(
@@ -106,7 +110,7 @@ def triage_candidate(
                     "recurrence_count": 0,
                 })
             except Exception as e:
-                logger.warning("triage: LanceDB upsert failed: %s", e)
+                logger.warning("triage: LanceDB upsert failed for lesson %d: %s", lesson_id, e)
 
         logger.info(
             "triage: auto-approved lesson %d (tier=%s, reuse=%d, conf=%.2f)",

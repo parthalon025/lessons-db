@@ -83,7 +83,7 @@ class TestTriageCandidate:
         lesson_id = triage_candidate(verified, conn,
                                      lance_dir=str(tmp_path / "lance"))
         lesson = get_lesson(conn, lesson_id)
-        assert "SQLite" in lesson.get("description", "") or lesson_id is not None
+        assert "SQLite" in lesson.get("description", "")
 
     def test_three_repos_gives_proven_tier(
         self, verified_3repos, db_path, tmp_path
