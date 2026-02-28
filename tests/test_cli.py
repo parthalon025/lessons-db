@@ -535,3 +535,81 @@ class TestStatsEfficiency:
         result = runner.invoke(main, ["--db", str(tmp_path / "empty.db"), "stats", "efficiency"])
         assert result.exit_code == 0, result.output
         # Should not crash, should show empty state or zeros
+
+
+def test_learn_record_with_outcome_heeded(tmp_path):
+    """learn record --outcome heeded records heeded surfacing event."""
+    from lessons_db.db import init_db, insert_lesson
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn,
+        {
+            "title": "Test",
+            "one_liner": "t",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--db",
+            str(db_path),
+            "learn",
+            "record",
+            "--lesson-id",
+            "1",
+            "--hook",
+            "plan",
+            "--context",
+            "ctx",
+            "--outcome",
+            "heeded",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    row = conn.execute("SELECT outcome FROM surfacing_events WHERE lesson_id = 1").fetchone()
+    assert row["outcome"] == "heeded"
+
+
+def test_learn_record_with_outcome_false_positive(tmp_path):
+    """learn record --outcome false_positive records dismissal."""
+    from lessons_db.db import init_db, insert_lesson
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn,
+        {
+            "title": "Test2",
+            "one_liner": "t",
+            "cluster": "B",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--db",
+            str(db_path),
+            "learn",
+            "record",
+            "--lesson-id",
+            "1",
+            "--hook",
+            "edit",
+            "--context",
+            "ctx",
+            "--outcome",
+            "false_positive",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    row = conn.execute("SELECT outcome FROM surfacing_events WHERE lesson_id = 1").fetchone()
+    assert row["outcome"] == "false_positive"
