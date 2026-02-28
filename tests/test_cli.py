@@ -747,5 +747,6 @@ def test_learn_list_since_filters_by_time(tmp_path):
         ["--db", str(db_path), "learn", "list", "--since", "1h", "--format", "ids"],
     )
     assert result.exit_code == 0, result.output
-    assert "1" in result.output  # recent lesson present
-    assert "2" not in result.output  # old lesson filtered out
+    lines = [line.strip() for line in result.output.strip().splitlines()]
+    assert "1" in lines  # exact lesson_id 1, not substring
+    assert "2" not in lines  # lesson_id 2 absent, not digit 2
