@@ -700,3 +700,52 @@ def test_learn_dismiss_no_events(tmp_path):
     result = runner.invoke(main, ["--db", str(db_path), "learn", "dismiss", "1"])
     assert result.exit_code == 0, result.output
     assert "no surfacing events" in result.output.lower()
+
+
+def test_learn_list_since_filters_by_time(tmp_path):
+    """learn list --since 1h returns only recent surfacing events."""
+    import time
+
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn,
+        {
+            "title": "Recent",
+            "one_liner": "t",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    insert_lesson(
+        conn,
+        {
+            "title": "Old",
+            "one_liner": "t",
+            "cluster": "B",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    # Insert recent event for lesson 1
+    record_surfacing(conn, 1, "plan", "recent-ctx")
+    # Insert old event for lesson 2 (2 hours ago) directly into DB
+    conn.execute(
+        "INSERT INTO surfacing_events (lesson_id, hook_point, context, outcome, timestamp) "
+        "VALUES (2, 'plan', 'old-ctx', 'unknown', ?)",
+        [int(time.time()) - 7200],
+    )
+    conn.commit()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["--db", str(db_path), "learn", "list", "--since", "1h", "--format", "ids"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "1" in result.output  # recent lesson present
+    assert "2" not in result.output  # old lesson filtered out

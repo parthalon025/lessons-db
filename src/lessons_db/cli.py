@@ -998,6 +998,65 @@ def learn_dismiss(click_ctx, lesson_id):
         click.echo(f"No surfacing events found for lesson #{lesson_id}.")
 
 
+@learn.command("list")
+@click.option(
+    "--since",
+    default="24h",
+    help="Time window: '1h', '6h', '24h', '7d'. Default: 24h.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    default="table",
+    type=click.Choice(["table", "ids"]),
+    help="Output format. 'ids' prints one lesson_id per line for scripting.",
+)
+@click.pass_context
+def learn_list(click_ctx, since, output_format):
+    """List recent surfacing events."""
+    import re
+    import time
+
+    conn = click_ctx.obj["conn"]
+
+    # Parse window: e.g. "2h" -> 7200, "7d" -> 604800
+    match = re.fullmatch(r"(\d+)([hd])", since)
+    if not match:
+        raise click.BadParameter(
+            f"Invalid window '{since}'. Use e.g. '1h', '24h', '7d'.",
+            param_hint="--since",
+        )
+    n, unit = int(match.group(1)), match.group(2)
+    seconds = n * 3600 if unit == "h" else n * 86400
+    cutoff = int(time.time()) - seconds
+
+    rows = conn.execute(
+        "SELECT se.id, se.lesson_id, l.title, se.hook_point, se.outcome, se.timestamp "
+        "FROM surfacing_events se JOIN lessons l ON l.id = se.lesson_id "
+        "WHERE se.timestamp >= ? ORDER BY se.timestamp DESC",
+        [cutoff],
+    ).fetchall()
+
+    if not rows:
+        click.echo("No surfacing events in window.")
+        return
+
+    if output_format == "ids":
+        seen = set()
+        for row in rows:
+            if row["lesson_id"] not in seen:
+                click.echo(row["lesson_id"])
+                seen.add(row["lesson_id"])
+    else:
+        click.echo(f"{'ID':>6}  {'LID':>5}  {'Hook':<14}  {'Outcome':<14}  Title")
+        click.echo("-" * 72)
+        for row in rows:
+            title = row["title"][:35]
+            click.echo(
+                f"{row['id']:>6}  {row['lesson_id']:>5}  {row['hook_point']:<14}  " f"{row['outcome']:<14}  {title}"
+            )
+
+
 @main.group()
 def stats():
     """Surfacing and efficiency statistics."""
