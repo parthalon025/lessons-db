@@ -622,15 +622,13 @@ def capture_diff(ctx, diff_file):
 
 
 @capture.command("review")
-@click.option("--backfill", is_flag=True, help="Process all pending drafts (not just recent).")
 @click.option("--dry-run", is_flag=True, help="Run filter only, skip Claude API call, print summary.")
 @click.pass_context
-def capture_review(ctx, backfill, dry_run):
+def capture_review(ctx, dry_run):
     """Run automated triage: noise filter + Claude review → promote/dismiss drafts.
 
     Processes pending drafts. Writes decisions to ~/.local/share/lessons-db/triage-YYYY-MM-DD.jsonl.
     """
-    import json as _json
     import os
 
     from lessons_db.config import ANTHROPIC_API_KEY, TRIAGE_LOG_DIR
@@ -660,7 +658,7 @@ def capture_review(ctx, backfill, dry_run):
     if dry_run:
         click.echo("[dry-run] Skipping Claude review. Kept drafts:")
         for d in kept[:10]:
-            data = _json.loads(d.get("extracted_data") or "{}")
+            data = json.loads(d.get("extracted_data") or "{}")
             click.echo(f"  [{d['id']}] {data.get('one_liner', '')[:80]}")
         return
 
