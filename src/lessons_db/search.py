@@ -94,7 +94,13 @@ def search_semantic(lance_db: lancedb.DBConnection | None, query: str, top_k: in
     return semantic_search(lance_db, query, top_k)
 
 
-def _merge_hits(hits, id_key, seen_ids, results, transform=None):
+def _merge_hits(
+    hits: list[dict[str, Any]],
+    id_key: str,
+    seen_ids: set[Any],
+    results: list[dict[str, Any]],
+    transform: Any = None,
+) -> None:
     """Deduplicate hits by lesson ID and append to results."""
     for hit in hits:
         lid = hit[id_key]
