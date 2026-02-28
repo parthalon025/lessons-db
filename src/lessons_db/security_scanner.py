@@ -32,20 +32,7 @@ def run_ruff_security(target: Path) -> dict:
         raw = result.stdout.strip()
         if not raw:
             return {"findings": [], "errors": 0}
-        data = json.loads(raw)
-        # ruff json output is a list of violations directly
-        findings = []
-        for item in data if isinstance(data, list) else []:
-            findings.append(
-                {
-                    "code": item.get("code", ""),
-                    "message": item.get("message", ""),
-                    "file_path": item.get("filename", ""),
-                    "line_number": item.get("location", {}).get("row"),
-                    "tool": "ruff",
-                }
-            )
-        return {"findings": findings, "errors": 0}
+        return {"findings": parse_ruff_findings(raw), "errors": 0}
     except Exception as exc:
         _log.error("ruff scan failed: %s", exc)
         return {"findings": [], "errors": 1, "error": str(exc)}
@@ -152,7 +139,7 @@ def run_full_security_scan(conn, target: Path | None = None) -> dict:
             conn.execute(
                 """INSERT INTO scan_findings
                    (lesson_id, rule_id, file_path, line_number, snippet, status, scan_date)
-                   VALUES (0, ?, ?, ?, ?, 'open', ?)""",
+                   VALUES (NULL, ?, ?, ?, ?, 'open', ?)""",
                 (f.get("code", ""), f.get("file_path", ""), f.get("line_number"), f.get("message", ""), today),
             )
         except Exception as exc:

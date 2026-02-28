@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS near_misses (
 
 CREATE TABLE IF NOT EXISTS scan_findings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lesson_id INTEGER NOT NULL,
+    lesson_id INTEGER,
     rule_id TEXT NOT NULL,
     file_path TEXT NOT NULL,
     line_number INTEGER,
