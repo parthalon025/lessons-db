@@ -398,6 +398,7 @@ def check(ctx, files, scope, json_output):
 def scan(ctx, rules_dir, target, baseline):
     """Run Semgrep scan against all lessons rules and record findings."""
     from lessons_db.db import insert_scan_finding
+    from lessons_db.enforce import check_escalation
     from lessons_db.scan import run_scan
 
     rules = Path(rules_dir) if rules_dir else RULES_DIR
@@ -449,6 +450,12 @@ def scan(ctx, rules_dir, target, baseline):
                 },
             )
             saved += 1
+            action = check_escalation(conn, lesson_id)
+            if action["recurrence_count"] >= 2:
+                click.echo(
+                    f"  [ESCALATED] lesson {lesson_id} → {action['level']}"
+                    f" (recurrence #{action['recurrence_count']})"
+                )
         except Exception as exc:
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
