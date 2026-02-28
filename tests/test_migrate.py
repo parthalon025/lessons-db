@@ -328,7 +328,7 @@ class TestImportCLICommand:
 
         path = _write_yaml_lesson(tmp_path)
         runner = CliRunner()
-        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", str(path)])
+        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", "file", str(path)])
         assert result.exit_code == 0, result.output
         assert "imported" in result.output.lower()
 
@@ -343,7 +343,7 @@ class TestImportCLICommand:
         _write_yaml_lesson(lesson_dir, content=YAML_LESSON_CLUSTER_B, name="0060-boundary.md")
 
         runner = CliRunner()
-        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", str(lesson_dir)])
+        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", "file", str(lesson_dir)])
         assert result.exit_code == 0, result.output
         assert "2" in result.output  # 2 imported
 
@@ -355,8 +355,8 @@ class TestImportCLICommand:
         path = _write_yaml_lesson(tmp_path)
         runner = CliRunner()
         db = str(tmp_path / "test.db")
-        runner.invoke(main, ["--db", db, "import", str(path)])
-        result = runner.invoke(main, ["--db", db, "import", str(path)])
+        runner.invoke(main, ["--db", db, "import", "file", str(path)])
+        result = runner.invoke(main, ["--db", db, "import", "file", str(path)])
         assert result.exit_code == 0
         assert "skipped" in result.output.lower()
 
@@ -366,5 +366,7 @@ class TestImportCLICommand:
         from lessons_db.cli import main
 
         runner = CliRunner()
-        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", str(tmp_path / "nonexistent.md")])
+        result = runner.invoke(
+            main, ["--db", str(tmp_path / "test.db"), "import", "file", str(tmp_path / "nonexistent.md")]
+        )
         assert result.exit_code != 0

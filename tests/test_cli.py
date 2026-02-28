@@ -342,7 +342,7 @@ def test_scan_command_runs(mock_run, tmp_path):
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["--db", str(db_path), "scan", "--rules-dir", str(tmp_path / "rules"), "--target", str(tmp_path)],
+        ["--db", str(db_path), "scan", "run", "--rules-dir", str(tmp_path / "rules"), "--target", str(tmp_path)],
     )
     assert result.exit_code == 0
     assert "1 saved to DB" in result.output
@@ -354,7 +354,7 @@ def test_scan_command_runs(mock_run, tmp_path):
 
 
 def test_scan_command_no_rules(tmp_path):
-    """scan exits cleanly when rules dir is empty."""
+    """scan run exits cleanly when rules dir is empty."""
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -362,6 +362,7 @@ def test_scan_command_no_rules(tmp_path):
             "--db",
             str(tmp_path / "test.db"),
             "scan",
+            "run",
             "--rules-dir",
             str(tmp_path / "empty-rules"),
             "--target",
@@ -844,3 +845,57 @@ def test_kpi_heed_rate_excludes_false_positives(tmp_path):
     # heed_rate = 1/1 = 100.0%  ← correct (noise excluded)
     # old formula: 1/2 = 50.0%  ← incorrect (noise inflates denominator)
     assert "100.0%" in result.output
+
+
+def test_gaps_command(db_path):
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "gaps"])
+    assert result.exit_code == 0
+    assert "security" in result.output.lower()
+
+
+def test_gaps_json_command(db_path):
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "gaps", "--json"])
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+
+
+def test_mine_github_command_dry_run(db_path):
+    runner = CliRunner()
+    with patch(
+        "lessons_db.github_miner.mine_repos_for_gaps",
+        return_value={
+            "repos_searched": 2,
+            "commits_analyzed": 10,
+            "gate0_rejected": 3,
+            "auto_approved": 1,
+            "error_count": 0,
+            "conflicts_flagged": 0,
+            "gate1_rejected": 0,
+        },
+    ):
+        result = runner.invoke(main, ["--db", str(db_path), "mine", "github", "--limit", "5"])
+    assert result.exit_code == 0
+    assert "auto_approved" in result.output
+
+
+def test_scan_security_command(db_path, tmp_path):
+    runner = CliRunner()
+    with patch(
+        "lessons_db.security_scanner.run_full_security_scan",
+        return_value={"ruff_findings": 2, "vulnerabilities": 0, "new_candidates": 1, "errors": 0},
+    ):
+        result = runner.invoke(main, ["--db", str(db_path), "scan", "security", "--target", str(tmp_path)])
+    assert result.exit_code == 0
+
+
+def test_import_semgrep_command(db_path):
+    runner = CliRunner()
+    with patch("lessons_db.semgrep_import.run_delta_import", return_value={"imported": 5, "skipped": 10, "errors": 0}):
+        result = runner.invoke(main, ["--db", str(db_path), "import", "semgrep", "--delta"])
+    assert result.exit_code == 0
+    assert "imported" in result.output

@@ -214,7 +214,13 @@ def migrate(ctx, source, db_override, dry_run):
     click.echo(f"Migrated: {migrated}, Skipped: {skipped}, Errors: {errors}")
 
 
-@main.command("import")
+@main.group("import")
+@click.pass_context
+def import_group(ctx):
+    """Import lesson files or external rule sets into the database."""
+
+
+@import_group.command("file")
 @click.argument("path", type=click.Path(exists=True))
 @click.pass_context
 def import_cmd(ctx, path):
@@ -267,6 +273,20 @@ def import_cmd(ctx, path):
     click.echo(f"\nImported: {imported}, Skipped: {skipped}, Errors: {errors}")
     if errors:
         ctx.exit(1)
+
+
+@import_group.command("semgrep")
+@click.option("--delta", is_flag=True, help="Only import new/changed rules.")
+@click.pass_context
+def import_semgrep(ctx, delta):
+    """Import Semgrep registry Python rules as lesson stubs."""
+    from lessons_db.semgrep_import import run_delta_import
+
+    conn = ctx.obj["conn"]
+    result = run_delta_import(conn, delta_only=delta)
+    click.echo(
+        f"Semgrep import: {result['imported']} imported, " f"{result['skipped']} skipped, {result['errors']} errors"
+    )
 
 
 @main.command()
@@ -442,7 +462,13 @@ def check(ctx, files, scope, json_output):
         ctx.exit(1)
 
 
-@main.command()
+@main.group()
+@click.pass_context
+def scan(ctx):
+    """Scan repositories for rule violations, security issues, and anti-patterns."""
+
+
+@scan.command("run")
 @click.option(
     "--rules-dir", type=click.Path(), default=None, help="Rules directory (default: ~/.local/share/lessons-db/rules/)"
 )
@@ -451,7 +477,7 @@ def check(ctx, files, scope, json_output):
 )
 @click.option("--baseline", default=None, help="Git commit hash for diff-aware scanning.")
 @click.pass_context
-def scan(ctx, rules_dir, target, baseline):
+def scan_run(ctx, rules_dir, target, baseline):
     """Run Semgrep scan against all lessons rules and record findings."""
     from lessons_db.db import insert_scan_finding
     from lessons_db.enforce import check_escalation
@@ -516,6 +542,23 @@ def scan(ctx, rules_dir, target, baseline):
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
     click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved to DB")
+
+
+@scan.command("security")
+@click.option("--target", type=click.Path(), default=None, help="Target directory (default: ~/Documents/projects/).")
+@click.pass_context
+def scan_security(ctx, target):
+    """Run Ruff S-rules + pip-audit on target directory."""
+    from pathlib import Path as _Path
+
+    from lessons_db.security_scanner import run_full_security_scan
+
+    conn = ctx.obj["conn"]
+    target_path = _Path(target) if target else None
+    summary = run_full_security_scan(conn, target_path)
+    click.echo("Security scan complete:")
+    for k, v in summary.items():
+        click.echo(f"  {k}: {v}")
 
 
 @main.command()
@@ -1435,3 +1478,137 @@ def kpi_dashboard(click_ctx):
     click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'✓' if dead_pct < 10 else '✗'}")
     click.echo(f"  DB Growth (7d)         :  +{growth_7d} lessons")
     click.echo("")
+
+
+@main.command("enrich")
+@click.option("--id", "lesson_id", type=int, default=None, help="Enrich a single lesson by ID.")
+@click.option("--batch", type=int, default=None, help="Process at most N un-enriched lessons.")
+@click.option("--dry-run", is_flag=True, help="Generate output but do not write to DB.")
+@click.option("--model", default=None, help="Override ANALYSIS_MODEL for this run.")
+@click.option(
+    "--ollama-url",
+    default=None,
+    help=(
+        "Ollama base URL. Defaults to queue proxy (7683) for standalone runs. "
+        "Pass http://127.0.0.1:11434 when running as a queue subprocess to avoid self-deadlock."
+    ),
+)
+@click.pass_context
+def enrich_cmd(ctx, lesson_id, batch, dry_run, model, ollama_url):
+    """Backfill false_assumption, detection_pattern, invariant via Ollama.
+
+    Standalone: routes each call through the queue proxy (serialized).
+    As a queue job: pass --ollama-url http://127.0.0.1:11434 to call Ollama directly.
+    """
+    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_QUEUE_URL
+    from lessons_db.enrich import backfill_lessons, enrich_lesson
+
+    conn = ctx.obj["conn"]
+    resolved_model = model or ANALYSIS_MODEL
+    resolved_url = ollama_url or OLLAMA_QUEUE_URL
+
+    if dry_run:
+        click.echo(f"[dry-run] model={resolved_model} url={resolved_url}")
+
+    if lesson_id is not None:
+        row = conn.execute(
+            "SELECT id, title, one_liner, description FROM lessons WHERE id = ?", (lesson_id,)
+        ).fetchone()
+        if not row:
+            click.echo(f"Lesson #{lesson_id} not found.", err=True)
+            raise SystemExit(1)
+        result = enrich_lesson(
+            conn=conn,
+            lesson_id=row["id"],
+            title=row["title"] or "",
+            description=row["description"] or "",
+            one_liner=row["one_liner"] or "",
+            model=resolved_model,
+            ollama_url=resolved_url,
+            dry_run=dry_run,
+        )
+        if result:
+            suffix = " (dry-run, not written)" if dry_run else "→ written"
+            click.echo(f"  enriched: #{lesson_id} {(row['title'] or '')[:60]} {suffix}")
+            if dry_run:
+                click.echo(f"    false_assumption  : {result['false_assumption']}")
+                click.echo(f"    detection_pattern : {result['detection_pattern']}")
+                click.echo(f"    invariant         : {result['invariant']}")
+        else:
+            click.echo(f"  error: #{lesson_id} — enrichment failed (check logs for details)", err=True)
+        return
+
+    # Batch / full backfill
+    enriched, skipped, errors = backfill_lessons(
+        conn=conn,
+        model=resolved_model,
+        ollama_url=resolved_url,
+        batch=batch,
+        dry_run=dry_run,
+    )
+    click.echo(f"Enriched: {enriched}, Skipped: {skipped}, Errors: {errors}")
+
+
+@main.group()
+@click.pass_context
+def mine(ctx):
+    """Mine external repositories for lesson patterns."""
+
+
+@mine.command("github")
+@click.option("--topic", multiple=True, help="GitHub topics to target.")
+@click.option("--limit", default=500, help="Max commits per repo.")
+@click.pass_context
+def mine_github(ctx, topic, limit):
+    """Mine GitHub repos for anti-patterns and positive novel methods."""
+    from lessons_db.github_miner import MiningConfig, mine_repos_for_gaps
+
+    conn = ctx.obj["conn"]
+    lance_dir = ctx.obj["lance_dir"]
+    default_topics = MiningConfig().topics
+    config = MiningConfig(
+        max_commits_per_repo=limit,
+        topics=list(topic) if topic else default_topics,
+    )
+    stats = mine_repos_for_gaps(conn, lance_dir, config=config)
+    click.echo("Mining complete:")
+    for k, v in stats.items():
+        click.echo(f"  {k}: {v}")
+
+
+@main.command("gaps")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def gaps(ctx, as_json):
+    """Show weighted gap report — categories with thin lesson coverage."""
+    import json as json_mod
+
+    from lessons_db.gap_analyzer import get_gap_report
+
+    conn = ctx.obj["conn"]
+    report = get_gap_report(conn)
+    if as_json:
+        click.echo(json_mod.dumps(report, indent=2))
+    else:
+        click.echo("Category gap scores (higher = more gaps):")
+        for entry in report[:10]:
+            bar = "█" * min(20, int(entry["gap_score"] * 4))
+            click.echo(f"  {entry['category']:25s} {entry['gap_score']:6.3f} {bar}")
+
+
+@main.command("mining-history")
+@click.option("--limit", default=10, help="Number of recent runs to show.")
+@click.pass_context
+def mining_history(ctx, limit):
+    """Show recent mining run history."""
+    conn = ctx.obj["conn"]
+    rows = conn.execute("SELECT * FROM mining_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    if not rows:
+        click.echo("No mining runs yet.")
+        return
+    for row in rows:
+        click.echo(
+            f"  [{row['run_date']}] repos={row['repos_searched']} "
+            f"commits={row['commits_analyzed']} approved={row['auto_approved']} "
+            f"errors={row['error_count']}"
+        )
