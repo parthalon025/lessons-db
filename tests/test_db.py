@@ -532,8 +532,14 @@ def test_mined_repo_idempotent(db_path):
 def test_update_mined_repo(db_path):
     conn = init_db(db_path)
     insert_mined_repo(conn, "owner/repo")
+    # First update
     update_mined_repo(conn, "owner/repo", commit_count=10, lessons_extracted=2)
     repo = get_mined_repo(conn, "owner/repo")
     assert repo["commit_count"] == 10
     assert repo["lessons_extracted"] == 2
     assert repo["last_mined_date"] is not None
+    # Second update — verify cumulative increment
+    update_mined_repo(conn, "owner/repo", commit_count=5, lessons_extracted=1)
+    repo = get_mined_repo(conn, "owner/repo")
+    assert repo["commit_count"] == 15  # 10 + 5
+    assert repo["lessons_extracted"] == 3  # 2 + 1
