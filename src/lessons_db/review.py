@@ -5,6 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
+from datetime import date
+from pathlib import Path
+
+from lessons_db.capture import promote_draft
+from lessons_db.db import insert_detection_pattern
 
 _log = logging.getLogger(__name__)
 
@@ -194,3 +200,119 @@ def claude_review_batch(
                 )
 
     return all_verdicts
+
+
+def _apply_promote(conn: sqlite3.Connection, v: dict, today: str) -> dict | None:
+    """Promote a single draft verdict. Returns log entry dict or None if promote_draft fails."""
+    draft_id = v["id"]
+
+    # Inject improved_one_liner into extracted_data before promoting
+    row = conn.execute("SELECT extracted_data FROM capture_drafts WHERE id = ?", [draft_id]).fetchone()
+    if row:
+        data = json.loads(row["extracted_data"] or "{}")
+        if v.get("improved_one_liner"):
+            data["improved_one_liner"] = v["improved_one_liner"]
+        conn.execute(
+            "UPDATE capture_drafts SET extracted_data = ? WHERE id = ?",
+            [json.dumps(data), draft_id],
+        )
+        conn.commit()
+
+    lesson_id = promote_draft(conn, draft_id)
+    if not lesson_id:
+        _log.warning("_apply_promote: promote_draft returned None for draft %d", draft_id)
+        return None
+
+    # Insert detection pattern if provided
+    pattern = v.get("detection_pattern", "").strip()
+    if pattern:
+        try:
+            insert_detection_pattern(
+                conn,
+                {
+                    "lesson_id": lesson_id,
+                    "pattern_type": "regex",
+                    "regex": pattern,
+                    "description": v.get("reason", ""),
+                    "language": "any",
+                },
+            )
+        except Exception as exc:
+            _log.warning("_apply_promote: pattern insert failed for lesson %d: %s", lesson_id, exc)
+
+    # Write Semgrep rule if provided
+    rule_yaml = v.get("semgrep_rule", "").strip()
+    if rule_yaml:
+        _write_semgrep_rule(lesson_id, rule_yaml)
+
+    return {
+        "date": today,
+        "draft_id": draft_id,
+        "lesson_id": lesson_id,
+        "verdict": "PROMOTE",
+        "reason": v.get("reason", ""),
+        "one_liner": v.get("improved_one_liner", ""),
+    }
+
+
+def execute_verdicts(
+    conn: sqlite3.Connection,
+    verdicts: list[dict],
+    log_dir: Path,
+) -> dict:
+    """Apply PROMOTE/DISMISS verdicts. Returns summary dict."""
+    promoted = 0
+    dismissed = 0
+    log_entries: list[dict] = []
+    today = date.today().isoformat()
+
+    for v in verdicts:
+        draft_id = v["id"]
+        verdict = v.get("verdict", "DISMISS")
+
+        if verdict == "PROMOTE":
+            entry = _apply_promote(conn, v, today)
+            if entry:
+                promoted += 1
+                log_entries.append(entry)
+        else:
+            conn.execute(
+                "UPDATE capture_drafts SET status = 'dismissed' WHERE id = ?",
+                [draft_id],
+            )
+            conn.commit()
+            dismissed += 1
+            log_entries.append(
+                {
+                    "date": today,
+                    "draft_id": draft_id,
+                    "lesson_id": None,
+                    "verdict": "DISMISS",
+                    "reason": v.get("reason", ""),
+                    "one_liner": "",
+                }
+            )
+
+    # Write JSONL log
+    if log_entries:
+        log_path = log_dir / f"triage-{today}.jsonl"
+        with log_path.open("a") as f:
+            for entry in log_entries:
+                f.write(json.dumps(entry) + "\n")
+
+    _log.info("execute_verdicts: promoted=%d dismissed=%d", promoted, dismissed)
+    return {"promoted": promoted, "dismissed": dismissed}
+
+
+def _write_semgrep_rule(lesson_id: int, rule_yaml: str) -> None:
+    """Write a Semgrep rule YAML to the rules directory."""
+    try:
+        from lessons_db.config import DATA_DIR
+
+        rules_dir = DATA_DIR / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        rule_path = rules_dir / f"lesson-{lesson_id}.yaml"
+        rule_path.write_text(rule_yaml)
+        _log.debug("_write_semgrep_rule: wrote %s", rule_path)
+    except Exception as exc:
+        _log.warning("_write_semgrep_rule: failed for lesson %d: %s", lesson_id, exc)

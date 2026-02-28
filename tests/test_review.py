@@ -3,7 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from lessons_db.review import claude_review_batch, filter_noise, jaccard_similarity
+from lessons_db.db import init_db
+from lessons_db.review import claude_review_batch, execute_verdicts, filter_noise, jaccard_similarity
 
 
 class TestJaccardSimilarity:
@@ -247,3 +248,101 @@ class TestClaudeReviewBatch:
         call_kwargs = MockClient.return_value.messages.create.call_args
         prompt_text = call_kwargs[1]["messages"][0]["content"]
         assert "Never swallow exceptions" in prompt_text
+
+
+class TestExecuteVerdicts:
+    def _insert_draft(self, conn, one_liner, source="auto_transcript"):
+        data = {"one_liner": one_liner, "improved_one_liner": one_liner + " (improved)"}
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES ('raw', ?, 'pending', '2026-02-27', ?)",
+            [json.dumps(data), source],
+        )
+        conn.commit()
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def test_promote_verdict_inserts_lesson(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        draft_id = self._insert_draft(conn, "Never swallow exceptions silently")
+        verdicts = [
+            {
+                "id": draft_id,
+                "verdict": "PROMOTE",
+                "reason": "Specific and actionable",
+                "improved_one_liner": "Never swallow exceptions — log first",
+                "detection_pattern": r"except\s*:",
+                "semgrep_rule": "",
+            }
+        ]
+
+        result = execute_verdicts(conn, verdicts, log_dir=tmp_path)
+
+        assert result["promoted"] == 1
+        assert result["dismissed"] == 0
+        lesson = conn.execute("SELECT * FROM lessons WHERE one_liner LIKE '%swallow%'").fetchone()
+        assert lesson is not None
+        assert lesson["polarity"] == "negative"
+
+    def test_promote_verdict_inserts_detection_pattern(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        draft_id = self._insert_draft(conn, "Never swallow exceptions silently")
+        verdicts = [
+            {
+                "id": draft_id,
+                "verdict": "PROMOTE",
+                "reason": "Good",
+                "improved_one_liner": "Never swallow exceptions",
+                "detection_pattern": r"except\s*:",
+                "semgrep_rule": "",
+            }
+        ]
+
+        execute_verdicts(conn, verdicts, log_dir=tmp_path)
+
+        pattern = conn.execute("SELECT * FROM detection_patterns").fetchone()
+        assert pattern is not None
+        assert pattern["regex"] == r"except\s*:"
+
+    def test_dismiss_verdict_marks_draft_dismissed(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        draft_id = self._insert_draft(conn, "Write better code generally")
+        verdicts = [
+            {
+                "id": draft_id,
+                "verdict": "DISMISS",
+                "reason": "Too vague",
+                "improved_one_liner": "",
+                "detection_pattern": "",
+                "semgrep_rule": "",
+            }
+        ]
+
+        result = execute_verdicts(conn, verdicts, log_dir=tmp_path)
+
+        assert result["dismissed"] == 1
+        row = conn.execute("SELECT status FROM capture_drafts WHERE id = ?", [draft_id]).fetchone()
+        assert row["status"] == "dismissed"
+
+    def test_writes_triage_jsonl_log(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        draft_id = self._insert_draft(conn, "Write better code generally")
+        verdicts = [
+            {
+                "id": draft_id,
+                "verdict": "DISMISS",
+                "reason": "Too vague",
+                "improved_one_liner": "",
+                "detection_pattern": "",
+                "semgrep_rule": "",
+            }
+        ]
+
+        execute_verdicts(conn, verdicts, log_dir=tmp_path)
+
+        log_files = list(tmp_path.glob("triage-*.jsonl"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["verdict"] == "DISMISS"
+        assert entry["draft_id"] == draft_id
