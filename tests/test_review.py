@@ -118,6 +118,16 @@ class TestClaudeReviewBatch:
     def _draft(self, id_, one_liner):
         return {"id": id_, "extracted_data": json.dumps({"one_liner": one_liner}), "source": "auto_transcript"}
 
+    @staticmethod
+    def _mock_openai_response(response_json):
+        """Build a mock OpenAI chat completion response."""
+        mock_choice = MagicMock()
+        mock_choice.finish_reason = "stop"
+        mock_choice.message.content = json.dumps(response_json)
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        return mock_resp
+
     def test_returns_promote_verdict_for_specific_lesson(self):
         drafts = [self._draft(42, "Never use bare except: without logging the error first")]
         mock_response = {
@@ -132,11 +142,9 @@ class TestClaudeReviewBatch:
                 }
             ]
         }
-        mock_msg = MagicMock()
-        mock_msg.content = [MagicMock(text=json.dumps(mock_response))]
 
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = mock_msg
+        with patch("openai.OpenAI") as MockClient:
+            MockClient.return_value.chat.completions.create.return_value = self._mock_openai_response(mock_response)
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert len(verdicts) == 1
@@ -158,19 +166,17 @@ class TestClaudeReviewBatch:
                 }
             ]
         }
-        mock_msg = MagicMock()
-        mock_msg.content = [MagicMock(text=json.dumps(mock_response))]
 
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = mock_msg
+        with patch("openai.OpenAI") as MockClient:
+            MockClient.return_value.chat.completions.create.return_value = self._mock_openai_response(mock_response)
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert verdicts[0]["verdict"] == "DISMISS"
 
     def test_handles_api_error_gracefully(self):
         drafts = [self._draft(7, "Always log exceptions before swallowing them silently")]
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.side_effect = Exception("API timeout")
+        with patch("openai.OpenAI") as MockClient:
+            MockClient.return_value.chat.completions.create.side_effect = Exception("API timeout")
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert len(verdicts) == 1
@@ -206,46 +212,38 @@ class TestClaudeReviewBatch:
                 for i in range(20, 25)
             ]
         }
-        mock_msg1 = MagicMock()
-        mock_msg1.content = [MagicMock(text=json.dumps(mock_response))]
-        mock_msg2 = MagicMock()
-        mock_msg2.content = [MagicMock(text=json.dumps(mock_response2))]
 
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.side_effect = [mock_msg1, mock_msg2]
+        with patch("openai.OpenAI") as MockClient:
+            MockClient.return_value.chat.completions.create.side_effect = [
+                self._mock_openai_response(mock_response),
+                self._mock_openai_response(mock_response2),
+            ]
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
-        assert MockClient.return_value.messages.create.call_count == 2
+        assert MockClient.return_value.chat.completions.create.call_count == 2
         assert len(verdicts) == 25
 
     def test_existing_titles_included_in_prompt(self):
         """Verify existing lesson titles are passed in the prompt for duplicate detection."""
         drafts = [self._draft(1, "Never swallow exceptions without logging")]
-        mock_msg = MagicMock()
-        mock_msg.content = [
-            MagicMock(
-                text=json.dumps(
-                    {
-                        "reviews": [
-                            {
-                                "id": 1,
-                                "verdict": "DISMISS",
-                                "reason": "dup",
-                                "improved_one_liner": "",
-                                "detection_pattern": "",
-                                "semgrep_rule": "",
-                            }
-                        ]
-                    }
-                )
-            )
-        ]
+        mock_response = {
+            "reviews": [
+                {
+                    "id": 1,
+                    "verdict": "DISMISS",
+                    "reason": "dup",
+                    "improved_one_liner": "",
+                    "detection_pattern": "",
+                    "semgrep_rule": "",
+                }
+            ]
+        }
 
-        with patch("anthropic.Anthropic") as MockClient:
-            MockClient.return_value.messages.create.return_value = mock_msg
+        with patch("openai.OpenAI") as MockClient:
+            MockClient.return_value.chat.completions.create.return_value = self._mock_openai_response(mock_response)
             claude_review_batch(drafts, existing_titles=["Never swallow exceptions"], api_key="test-key")
 
-        call_kwargs = MockClient.return_value.messages.create.call_args
+        call_kwargs = MockClient.return_value.chat.completions.create.call_args
         prompt_text = call_kwargs[1]["messages"][0]["content"]
         assert "Never swallow exceptions" in prompt_text
 
