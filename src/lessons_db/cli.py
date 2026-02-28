@@ -1015,7 +1015,7 @@ def learn_dismiss(click_ctx, lesson_id):
 def learn_list(click_ctx, since, output_format):
     """List recent surfacing events."""
     import re
-    import time
+    from datetime import UTC, datetime, timedelta
 
     conn = click_ctx.obj["conn"]
 
@@ -1028,7 +1028,7 @@ def learn_list(click_ctx, since, output_format):
         )
     n, unit = int(match.group(1)), match.group(2)
     seconds = n * 3600 if unit == "h" else n * 86400
-    cutoff = int(time.time()) - seconds
+    cutoff = (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
 
     rows = conn.execute(
         "SELECT se.id, se.lesson_id, l.title, se.hook_point, se.outcome, se.timestamp "
@@ -1368,7 +1368,7 @@ def logs(tail, level):
 @click.pass_context
 def kpi_dashboard(click_ctx):
     """Show all KPI metrics for the lesson learning system."""
-    import time
+    from datetime import UTC, datetime, timedelta
 
     conn = click_ctx.obj["conn"]
 
@@ -1383,7 +1383,7 @@ def kpi_dashboard(click_ctx):
     recurrences = q("SELECT COUNT(*) FROM surfacing_events WHERE outcome = 'recurrence'")
     false_positives = q("SELECT COUNT(*) FROM surfacing_events WHERE outcome = 'false_positive'")
     heed_recur = heeded + recurrences
-    cutoff_90d = int(time.time()) - 86400 * 90
+    cutoff_90d = (datetime.now(UTC) - timedelta(seconds=86400 * 90)).isoformat()
     dead_lessons = q(
         "SELECT COUNT(*) FROM lessons l WHERE NOT EXISTS ("
         "  SELECT 1 FROM surfacing_events se "

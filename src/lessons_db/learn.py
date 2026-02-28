@@ -79,7 +79,7 @@ def surfacing_stats(conn: sqlite3.Connection) -> dict[str, Any]:
         "total_surfacing_events": total,
         "heeded": heeded,
         "dismissed": dismissed,
-        "unknown": total - heeded - dismissed,
+        "unknown": conn.execute("SELECT COUNT(*) FROM surfacing_events WHERE outcome='unknown'").fetchone()[0],
         "heed_rate": round(heeded / total, 2) if total > 0 else None,
         "avg_per_session": round(avg_row or 0.0, 1),
     }

@@ -704,7 +704,7 @@ def test_learn_dismiss_no_events(tmp_path):
 
 def test_learn_list_since_filters_by_time(tmp_path):
     """learn list --since 1h returns only recent surfacing events."""
-    import time
+    from datetime import UTC, datetime, timedelta
 
     from lessons_db.db import init_db, insert_lesson
     from lessons_db.learn import record_surfacing
@@ -734,10 +734,11 @@ def test_learn_list_since_filters_by_time(tmp_path):
     # Insert recent event for lesson 1
     record_surfacing(conn, 1, "plan", "recent-ctx")
     # Insert old event for lesson 2 (2 hours ago) directly into DB
+    old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     conn.execute(
         "INSERT INTO surfacing_events (lesson_id, hook_point, context, outcome, timestamp) "
         "VALUES (2, 'plan', 'old-ctx', 'unknown', ?)",
-        [int(time.time()) - 7200],
+        [old_ts],
     )
     conn.commit()
 
