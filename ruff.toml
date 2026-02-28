@@ -39,6 +39,8 @@ ignore = [
 "src/lessons_db/scan.py" = ["S603", "S607"]
 # search_combined is deliberately complex — multi-strategy search (semantic + keyword + file + content)
 "src/lessons_db/search.py" = ["C901"]
+# _add_extension_columns grows with each schema version; complexity is structural, not accidental
+"src/lessons_db/db.py" = ["C901"]
 # zip() strict= not needed for paired enumerate results
 "src/lessons_db/cluster.py" = ["B905"]
 "src/lessons_db/vectors.py" = ["B905"]

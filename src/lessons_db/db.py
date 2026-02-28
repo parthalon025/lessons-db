@@ -155,6 +155,32 @@ CREATE TABLE IF NOT EXISTS scan_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS mined_repos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_full_name TEXT NOT NULL UNIQUE,
+    last_mined_date TEXT,
+    commit_count INTEGER DEFAULT 0,
+    lessons_extracted INTEGER DEFAULT 0,
+    quality_score REAL,
+    topics TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mining_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date TEXT NOT NULL,
+    repos_searched INTEGER DEFAULT 0,
+    commits_analyzed INTEGER DEFAULT 0,
+    gate0_rejected INTEGER DEFAULT 0,
+    gate1_rejected INTEGER DEFAULT 0,
+    auto_approved INTEGER DEFAULT 0,
+    conflicts_flagged INTEGER DEFAULT 0,
+    error_count INTEGER DEFAULT 0,
+    duration_seconds REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mined_repos_name ON mined_repos(repo_full_name);
+CREATE INDEX IF NOT EXISTS idx_mining_runs_date ON mining_runs(run_date);
 """
 
 
@@ -210,6 +236,20 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
         if "duplicate column name" not in str(e):
             raise
 
+    # v4 why-capture columns (AI-framed cognitive gap fields)
+    why_columns = [
+        ("false_assumption", "TEXT"),
+        ("detection_pattern", "TEXT"),
+        ("invariant", "TEXT"),
+    ]
+    for col_name, col_def in why_columns:
+        try:
+            conn.execute(f"ALTER TABLE lessons ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
+
 
 def _seed_scan_state(conn: sqlite3.Connection) -> None:
     """Seed scan_state defaults (idempotent via INSERT OR IGNORE)."""
@@ -256,6 +296,10 @@ LESSON_COLUMNS = {
     "source",
     "parent_lesson_id",
     "markdown_path",
+    "corrective_action",
+    "false_assumption",
+    "detection_pattern",
+    "invariant",
 }
 
 
@@ -463,3 +507,77 @@ def get_open_findings(conn: sqlite3.Connection) -> list[dict]:
         """,
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def insert_mined_repo(
+    conn: sqlite3.Connection,
+    repo_full_name: str,
+    topics: list[str] | None = None,
+) -> int:
+    """Insert or return existing mined_repos entry (idempotent by repo_full_name)."""
+    import json
+
+    existing = conn.execute("SELECT id FROM mined_repos WHERE repo_full_name = ?", (repo_full_name,)).fetchone()
+    if existing:
+        return existing["id"]
+    cursor = conn.execute(
+        "INSERT INTO mined_repos (repo_full_name, topics) VALUES (?, ?)",
+        (repo_full_name, json.dumps(topics or [])),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_mined_repo(conn: sqlite3.Connection, repo_full_name: str) -> dict | None:
+    row = conn.execute("SELECT * FROM mined_repos WHERE repo_full_name = ?", (repo_full_name,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_mined_repo(
+    conn: sqlite3.Connection,
+    repo_full_name: str,
+    commit_count: int = 0,
+    lessons_extracted: int = 0,
+    quality_score: float | None = None,
+) -> None:
+    conn.execute(
+        """UPDATE mined_repos
+           SET last_mined_date = date('now'),
+               commit_count = commit_count + ?,
+               lessons_extracted = lessons_extracted + ?,
+               quality_score = COALESCE(?, quality_score)
+           WHERE repo_full_name = ?""",
+        (commit_count, lessons_extracted, quality_score, repo_full_name),
+    )
+    conn.commit()
+
+
+def insert_mining_run(
+    conn: sqlite3.Connection,
+    repos_searched: int = 0,
+    commits_analyzed: int = 0,
+    gate0_rejected: int = 0,
+    gate1_rejected: int = 0,
+    auto_approved: int = 0,
+    conflicts_flagged: int = 0,
+    error_count: int = 0,
+    duration_seconds: float | None = None,
+) -> int:
+    cursor = conn.execute(
+        """INSERT INTO mining_runs
+           (run_date, repos_searched, commits_analyzed, gate0_rejected,
+            gate1_rejected, auto_approved, conflicts_flagged, error_count, duration_seconds)
+           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            repos_searched,
+            commits_analyzed,
+            gate0_rejected,
+            gate1_rejected,
+            auto_approved,
+            conflicts_flagged,
+            error_count,
+            duration_seconds,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid

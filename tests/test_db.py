@@ -486,3 +486,54 @@ class TestInsertDetectionPattern:
         )
         row = conn.execute("SELECT language FROM detection_patterns WHERE id = ?", [pattern_id]).fetchone()
         assert row["language"] == "any"
+
+
+from lessons_db.db import get_mined_repo, insert_mined_repo, insert_mining_run, update_mined_repo
+
+
+def test_insert_mined_repo(db_path):
+    conn = init_db(db_path)
+    repo_id = insert_mined_repo(conn, "owner/repo", topics=["asyncio", "python"])
+    assert repo_id > 0
+    repo = get_mined_repo(conn, "owner/repo")
+    assert repo["repo_full_name"] == "owner/repo"
+    assert repo["commit_count"] == 0
+    assert repo["lessons_extracted"] == 0
+
+
+def test_insert_mining_run(db_path):
+    conn = init_db(db_path)
+    run_id = insert_mining_run(
+        conn,
+        repos_searched=5,
+        commits_analyzed=200,
+        gate0_rejected=80,
+        gate1_rejected=20,
+        auto_approved=3,
+        conflicts_flagged=1,
+        error_count=2,
+        duration_seconds=45.2,
+    )
+    assert run_id > 0
+    row = conn.execute("SELECT * FROM mining_runs WHERE id=?", (run_id,)).fetchone()
+    assert row["repos_searched"] == 5
+    assert row["error_count"] == 2
+
+
+def test_mined_repo_idempotent(db_path):
+    conn = init_db(db_path)
+    id1 = insert_mined_repo(conn, "owner/repo")
+    id2 = insert_mined_repo(conn, "owner/repo")  # should upsert, not duplicate
+    assert id1 == id2
+    count = conn.execute("SELECT COUNT(*) FROM mined_repos WHERE repo_full_name='owner/repo'").fetchone()[0]
+    assert count == 1
+
+
+def test_update_mined_repo(db_path):
+    conn = init_db(db_path)
+    insert_mined_repo(conn, "owner/repo")
+    update_mined_repo(conn, "owner/repo", commit_count=10, lessons_extracted=2)
+    repo = get_mined_repo(conn, "owner/repo")
+    assert repo["commit_count"] == 10
+    assert repo["lessons_extracted"] == 2
+    assert repo["last_mined_date"] is not None
