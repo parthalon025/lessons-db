@@ -7,6 +7,7 @@ from lessons_db.search import (
     search_by_content,
     search_combined,
     search_for_file,
+    search_text_fallback,
 )
 
 
@@ -207,3 +208,65 @@ class TestCombinedSearch:
         ids = [r["id"] for r in results]
         assert neg_id in ids
         assert pos_id in ids
+
+
+class TestTextFallback:
+    """SQLite LIKE fallback when LanceDB is unavailable."""
+
+    def test_search_text_fallback_matches(self, populated_db):
+        """Search for a word in one_liner — should find it."""
+        results = search_text_fallback(populated_db, "bare")
+        assert len(results) == 1
+        assert results[0]["one_liner"] == "Never use bare except without logging"
+
+    def test_search_text_fallback_no_match(self, populated_db):
+        """Search for nonsense — should return empty."""
+        results = search_text_fallback(populated_db, "xyzzyplugh")
+        assert results == []
+
+    def test_search_text_fallback_multi_term(self, db_path):
+        """Multi-term search: only match lessons containing all terms."""
+        conn = init_db(db_path)
+        id1 = insert_lesson(
+            conn,
+            {
+                "title": "subscriber lifecycle",
+                "one_liner": "Store callback ref on self and unsubscribe in shutdown",
+                "severity": 4,
+            },
+        )
+        id2 = insert_lesson(
+            conn,
+            {
+                "title": "async discipline",
+                "one_liner": "No async def without IO",
+                "severity": 3,
+            },
+        )
+        conn.commit()
+
+        # Both terms must match
+        results = search_text_fallback(conn, "callback shutdown")
+        ids = [r["id"] for r in results]
+        assert id1 in ids
+        assert id2 not in ids
+        conn.close()
+
+    def test_search_combined_falls_back_without_lance(self, db_path):
+        """search_combined with lance_db=None and a text query uses text fallback."""
+        conn = init_db(db_path)
+        insert_lesson(
+            conn,
+            {
+                "title": "schema changes",
+                "one_liner": "Schema changes must update all consumers in same PR",
+                "severity": 5,
+            },
+        )
+        conn.commit()
+
+        # No file_path, no content — only query. lance_db=None triggers fallback.
+        results = search_combined(conn, lance_db=None, query="schema consumers")
+        assert len(results) >= 1
+        assert any("schema" in r["one_liner"].lower() for r in results)
+        conn.close()

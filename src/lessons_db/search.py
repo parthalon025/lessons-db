@@ -63,11 +63,44 @@ def search_by_content(conn: sqlite3.Connection, content: str, language: str = "a
     return matches
 
 
+def search_text_fallback(conn: sqlite3.Connection, query: str, top_k: int = 10) -> list[dict[str, Any]]:
+    """SQLite LIKE fallback when semantic search is unavailable."""
+    if not query:
+        return []
+    terms = query.strip().split()
+    if not terms:
+        return []
+    # Build WHERE clause: all terms must appear in one_liner OR title OR description
+    conditions = []
+    params: list[Any] = []
+    for term in terms:
+        like = f"%{term}%"
+        conditions.append(
+            "(COALESCE(one_liner,'') || ' ' || COALESCE(title,'') || ' ' || COALESCE(description,'')) LIKE ?"
+        )
+        params.append(like)
+    where = " AND ".join(conditions)
+    rows = conn.execute(
+        f"SELECT id, one_liner, severity, title FROM lessons WHERE {where} ORDER BY severity DESC LIMIT ?",
+        params + [top_k],
+    ).fetchall()
+    return [{"id": r["id"], "one_liner": r["one_liner"] or r["title"], "severity": r["severity"] or 0} for r in rows]
+
+
 def search_semantic(lance_db: lancedb.DBConnection | None, query: str, top_k: int = 3) -> list[dict[str, Any]]:
     """Semantic similarity search. Returns empty list if lance_db is None."""
     if lance_db is None:
         return []
     return semantic_search(lance_db, query, top_k)
+
+
+def _merge_hits(hits, id_key, seen_ids, results, transform=None):
+    """Deduplicate hits by lesson ID and append to results."""
+    for hit in hits:
+        lid = hit[id_key]
+        if lid not in seen_ids:
+            seen_ids.add(lid)
+            results.append(transform(hit, lid) if transform else hit)
 
 
 def search_combined(
@@ -91,43 +124,40 @@ def search_combined(
 
     # Strategy 1: file path search
     if file_path:
-        for hit in search_for_file(conn, file_path):
-            lid = hit["id"]
-            if lid not in seen_ids:
-                seen_ids.add(lid)
-                results.append(hit)
+        _merge_hits(search_for_file(conn, file_path), "id", seen_ids, results)
 
     # Strategy 2: content regex search
     if content:
-        for hit in search_by_content(conn, content, language):
-            lid = hit["lesson_id"]
-            if lid not in seen_ids:
-                seen_ids.add(lid)
-                # Normalize key to 'id' for consistency
-                results.append(
-                    {
-                        "id": lid,
-                        "one_liner": hit["one_liner"],
-                        "matched_pattern": hit["matched_pattern"],
-                        "severity": hit["severity"],
-                    }
-                )
+        _merge_hits(
+            search_by_content(conn, content, language),
+            "lesson_id",
+            seen_ids,
+            results,
+            transform=lambda hit, lid: {
+                "id": lid,
+                "one_liner": hit["one_liner"],
+                "matched_pattern": hit["matched_pattern"],
+                "severity": hit["severity"],
+            },
+        )
 
-    # Strategy 3: semantic search
+    # Strategy 3: semantic search (with text fallback when LanceDB unavailable)
     if query:
-        for hit in search_semantic(lance_db, query):
-            lid = hit["lesson_id"]
-            if lid not in seen_ids:
-                seen_ids.add(lid)
-                results.append(
-                    {
-                        "id": lid,
-                        "one_liner": hit.get("text", ""),
-                        "severity": 0,  # Semantic hits don't carry severity
-                        "score": hit.get("score"),
-                        "cluster": hit.get("cluster"),
-                    }
-                )
+        _merge_hits(
+            search_semantic(lance_db, query),
+            "lesson_id",
+            seen_ids,
+            results,
+            transform=lambda hit, lid: {
+                "id": lid,
+                "one_liner": hit.get("text", ""),
+                "severity": 0,
+                "score": hit.get("score"),
+                "cluster": hit.get("cluster"),
+            },
+        )
+        if lance_db is None:
+            _merge_hits(search_text_fallback(conn, query), "id", seen_ids, results)
 
     # Apply polarity filter by joining with lessons table
     if polarity is not None and results:
