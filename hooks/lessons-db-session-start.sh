@@ -41,7 +41,7 @@ fi
 # Show overnight promoted lessons from today's triage log
 TRIAGE_LOG="$HOME/.local/share/lessons-db/triage-$(date +%Y-%m-%d).jsonl"
 if [[ -f "$TRIAGE_LOG" ]]; then
-    PROMOTED_TONIGHT=$(grep -c '"verdict": "PROMOTE"' "$TRIAGE_LOG" 2>/dev/null || echo "0")
+    PROMOTED_TONIGHT=$(grep -c '"verdict": "PROMOTE",' "$TRIAGE_LOG" 2>/dev/null || echo "0")
     if [[ "${PROMOTED_TONIGHT:-0}" -gt 0 ]]; then
         echo "${PROMOTED_TONIGHT} lessons auto-promoted overnight — run: lessons-db capture triage --review-log"
     fi

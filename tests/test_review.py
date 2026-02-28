@@ -365,3 +365,34 @@ class TestExecuteVerdicts:
 
         assert result["promoted"] == 0
         assert result["errors"] == 1
+
+    def test_promote_failed_sets_draft_status(self, db_path, tmp_path):
+        """A draft that exists but fails promote_draft (status != 'pending') is set to promote_failed."""
+        conn = init_db(db_path)
+        # Insert a draft with status='approved' — promote_draft will find the row but
+        # its WHERE status='pending' guard will return None, triggering the PROMOTE_FAILED path.
+        data = json.dumps({"one_liner": "Always validate inputs at boundaries"})
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES ('raw', ?, 'approved', '2026-02-27', 'auto_transcript')",
+            [data],
+        )
+        conn.commit()
+        draft_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        verdicts = [
+            {
+                "id": draft_id,
+                "verdict": "PROMOTE",
+                "reason": "Good",
+                "improved_one_liner": "Always validate inputs at boundaries",
+                "detection_pattern": "",
+                "semgrep_rule": "",
+            }
+        ]
+        result = execute_verdicts(conn, verdicts, log_dir=tmp_path)
+
+        assert result["errors"] == 1
+        assert result["promoted"] == 0
+        row = conn.execute("SELECT status FROM capture_drafts WHERE id=?", [draft_id]).fetchone()
+        assert row["status"] == "promote_failed"

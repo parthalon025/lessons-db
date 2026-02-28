@@ -218,7 +218,8 @@ def _apply_promote(conn: sqlite3.Connection, v: dict, today: str) -> dict | None
         "UPDATE capture_drafts SET extracted_data = ? WHERE id = ?",
         [json.dumps(data), draft_id],
     )
-    conn.commit()
+    # No commit here — promote_draft commits its own transaction which includes
+    # the extracted_data UPDATE above, keeping both changes in one atomic write.
 
     lesson_id = promote_draft(conn, draft_id)
     if not lesson_id:
@@ -280,6 +281,12 @@ def execute_verdicts(
                 log_entries.append(entry)
             else:
                 errors += 1
+                # Mark the draft so the nightly loop doesn't retry it forever.
+                conn.execute(
+                    "UPDATE capture_drafts SET status='promote_failed' WHERE id=?",
+                    [draft_id],
+                )
+                conn.commit()
                 log_entries.append(
                     {
                         "date": today,
@@ -308,12 +315,13 @@ def execute_verdicts(
                 }
             )
 
-    # Write JSONL log
+    # Write JSONL log — single write minimises crash window for append mode.
+    log_dir.mkdir(parents=True, exist_ok=True)
     if log_entries:
         log_path = log_dir / f"triage-{today}.jsonl"
+        content = "\n".join(json.dumps(e) for e in log_entries) + "\n"
         with log_path.open("a") as f:
-            for entry in log_entries:
-                f.write(json.dumps(entry) + "\n")
+            f.write(content)
 
     _log.info("execute_verdicts: promoted=%d dismissed=%d errors=%d", promoted, dismissed, errors)
     return {"promoted": promoted, "dismissed": dismissed, "errors": errors}

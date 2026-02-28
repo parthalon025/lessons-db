@@ -95,6 +95,7 @@ VALID_SOURCES = (
     "manual",
     "auto_diff",
     "auto_transcript",
+    "auto_transcript_positive",
     "auto_test",
     "community",
     "migrated",
