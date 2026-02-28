@@ -93,7 +93,7 @@ def create_app(  # noqa: C901, PLR0915
             conn.close()
 
     @app.get("/api/mining/history")
-    def mining_history(limit: int = 20) -> list:
+    def mining_history(limit: int = Query(20, le=500)) -> list:
         conn = get_conn()
         try:
             rows = conn.execute("SELECT * FROM mining_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
@@ -111,7 +111,7 @@ def create_app(  # noqa: C901, PLR0915
             conn.close()
 
     @app.get("/api/security/findings")
-    def security_findings(status: str = "open", limit: int = 50) -> list:
+    def security_findings(status: str = "open", limit: int = Query(50, le=500)) -> list:
         conn = get_conn()
         try:
             rows = conn.execute(
