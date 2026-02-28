@@ -140,25 +140,25 @@ def claude_review_batch(
     existing_titles: list[str],
     api_key: str,
 ) -> list[dict]:
-    """Send drafts to Claude haiku for PROMOTE/DISMISS review.
+    """Send drafts to OpenAI for PROMOTE/DISMISS review.
 
     Processes in batches of _BATCH_SIZE. On API error, marks all drafts
-    in that batch as DISMISS with reason='error: <msg>'.
+    in that batch as ERROR with reason='error: <msg>'.
 
     Args:
         drafts: List of draft dicts with 'id' and 'extracted_data' fields.
         existing_titles: One-liner strings of already-promoted lessons (duplicate guard).
-        api_key: Anthropic API key.
+        api_key: OpenAI API key.
 
     Returns:
         List of verdict dicts with keys: id, verdict, reason, improved_one_liner,
         detection_pattern, semgrep_rule.
     """
-    import anthropic  # lazy import — only needed when calling Claude
+    import openai  # lazy import — only needed when calling the reviewer
 
-    from lessons_db.config import CLAUDE_REVIEW_MODEL
+    from lessons_db.config import OPENAI_REVIEW_MODEL
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key)
     all_verdicts: list[dict] = []
 
     for i in range(0, len(drafts), _BATCH_SIZE):
@@ -171,14 +171,14 @@ def claude_review_batch(
         )
 
         try:
-            msg = client.messages.create(
-                model=CLAUDE_REVIEW_MODEL,
+            response = client.chat.completions.create(
+                model=OPENAI_REVIEW_MODEL,
                 max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}],
             )
-            if msg.stop_reason == "max_tokens":
+            if response.choices[0].finish_reason == "length":
                 raise ValueError("Response truncated by max_tokens limit")
-            raw = msg.content[0].text.strip()
+            raw = response.choices[0].message.content.strip()
             # Extract JSON object — tolerates preamble/postamble from model
             json_match = re.search(r"\{.*\}", raw, re.DOTALL)
             if not json_match:
