@@ -94,3 +94,97 @@ def filter_noise(
         kept.append(draft)
 
     return kept, dismissed
+
+
+import anthropic  # noqa: E402 — imported here to avoid top-level hard dep during filter_noise usage
+
+_REVIEW_PROMPT_TEMPLATE = """\
+You are reviewing draft lessons for a coding lessons-learned system.
+For each draft, decide PROMOTE or DISMISS.
+
+Existing lessons (do not promote duplicates of these):
+{existing_titles}
+
+Drafts to review:
+{draft_lines}
+
+Criteria for PROMOTE:
+- Specific: names a concrete pattern, not a general principle
+- Actionable: clear do/don't a developer can follow
+- Prevents recurrence: would catch this mistake if checked automatically
+- Novel: not already in the existing lessons list above
+
+Return ONLY valid JSON, no other text:
+{{
+  "reviews": [
+    {{
+      "id": <integer draft id>,
+      "verdict": "PROMOTE" or "DISMISS",
+      "reason": "<one sentence>",
+      "improved_one_liner": "<cleaned wording if PROMOTE, else empty string>",
+      "detection_pattern": "<Python regex string for code matching if PROMOTE, else empty string>",
+      "semgrep_rule": "<YAML Semgrep rule text if syntactic pattern possible, else empty string>"
+    }}
+  ]
+}}"""
+
+_BATCH_SIZE = 20
+
+
+def claude_review_batch(
+    drafts: list[dict],
+    existing_titles: list[str],
+    api_key: str,
+) -> list[dict]:
+    """Send drafts to Claude haiku for PROMOTE/DISMISS review.
+
+    Processes in batches of _BATCH_SIZE. On API error, marks all drafts
+    in that batch as DISMISS with reason='error: <msg>'.
+
+    Args:
+        drafts: List of draft dicts with 'id' and 'extracted_data' fields.
+        existing_titles: One-liner strings of already-promoted lessons (duplicate guard).
+        api_key: Anthropic API key.
+
+    Returns:
+        List of verdict dicts with keys: id, verdict, reason, improved_one_liner,
+        detection_pattern, semgrep_rule.
+    """
+    from lessons_db.config import CLAUDE_REVIEW_MODEL
+
+    client = anthropic.Anthropic(api_key=api_key)
+    all_verdicts: list[dict] = []
+
+    for i in range(0, len(drafts), _BATCH_SIZE):
+        batch = drafts[i : i + _BATCH_SIZE]
+        draft_lines = "\n".join(f"[{d['id']}] {_extract_one_liner(d)}" for d in batch)
+        titles_block = "\n".join(f"- {t}" for t in existing_titles[:150])
+        prompt = _REVIEW_PROMPT_TEMPLATE.format(
+            existing_titles=titles_block or "(none yet)",
+            draft_lines=draft_lines,
+        )
+
+        try:
+            msg = client.messages.create(
+                model=CLAUDE_REVIEW_MODEL,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = msg.content[0].text.strip()
+            data = json.loads(raw)
+            all_verdicts.extend(data.get("reviews", []))
+        except Exception as exc:
+            _log.warning("claude_review_batch: batch %d failed: %s", i // _BATCH_SIZE, exc)
+            for d in batch:
+                all_verdicts.append(
+                    {
+                        "id": d["id"],
+                        "verdict": "DISMISS",
+                        "reason": f"error: {exc}",
+                        "improved_one_liner": "",
+                        "detection_pattern": "",
+                        "semgrep_rule": "",
+                    }
+                )
+
+    return all_verdicts
