@@ -39,6 +39,21 @@ def record_outcome(conn: sqlite3.Connection, event_id: int, outcome: str) -> Non
         raise ValueError(f"No surfacing event found with id={event_id}.")
 
 
+def dismiss_latest(conn: sqlite3.Connection, lesson_id: int) -> bool:
+    """Mark the most recent unknown surfacing event for lesson_id as false_positive.
+
+    Returns True if an event was found and updated, False if none existed.
+    """
+    row = conn.execute(
+        "SELECT id FROM surfacing_events " "WHERE lesson_id = ? AND outcome = 'unknown' " "ORDER BY id DESC LIMIT 1",
+        [lesson_id],
+    ).fetchone()
+    if row is None:
+        return False
+    record_outcome(conn, row["id"], "false_positive")
+    return True
+
+
 def relevance_score(conn: sqlite3.Connection, lesson_id: int, context: str, semantic_sim: float) -> float:
     """Composite relevance score.
 

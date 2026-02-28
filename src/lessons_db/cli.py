@@ -983,6 +983,21 @@ def learn_record(click_ctx, lesson_id, hook_point, hook_context, outcome):
     click.echo(f"Recorded surfacing event {event_id}")
 
 
+@learn.command("dismiss")
+@click.argument("lesson_id", type=int)
+@click.pass_context
+def learn_dismiss(click_ctx, lesson_id):
+    """Mark most recent surfacing of LESSON_ID as a false positive."""
+    from lessons_db.learn import dismiss_latest
+
+    conn = click_ctx.obj["conn"]
+    updated = dismiss_latest(conn, lesson_id)
+    if updated:
+        click.echo(f"Marked latest surfacing of lesson #{lesson_id} as false_positive.")
+    else:
+        click.echo(f"No surfacing events found for lesson #{lesson_id}.")
+
+
 @main.group()
 def stats():
     """Surfacing and efficiency statistics."""

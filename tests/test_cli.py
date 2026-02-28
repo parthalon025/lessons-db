@@ -650,3 +650,53 @@ def test_learn_record_without_outcome_defaults_to_unknown(tmp_path):
     assert result.exit_code == 0, result.output
     row = conn.execute("SELECT outcome FROM surfacing_events WHERE lesson_id = 1").fetchone()
     assert row["outcome"] == "unknown"
+
+
+def test_learn_dismiss_marks_latest_event_false_positive(tmp_path):
+    """learn dismiss marks most recent unknown surfacing as false_positive."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn,
+        {
+            "title": "Dismiss test",
+            "one_liner": "t",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    # Record two events; dismiss should only affect the latest
+    record_surfacing(conn, 1, "plan", "ctx-old")
+    record_surfacing(conn, 1, "edit", "ctx-new")
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "learn", "dismiss", "1"])
+    assert result.exit_code == 0, result.output
+    rows = conn.execute("SELECT outcome FROM surfacing_events WHERE lesson_id = 1 ORDER BY id").fetchall()
+    assert rows[0]["outcome"] == "unknown"  # first event unchanged
+    assert rows[1]["outcome"] == "false_positive"  # latest event dismissed
+
+
+def test_learn_dismiss_no_events(tmp_path):
+    """learn dismiss exits cleanly when no surfacing events exist."""
+    from lessons_db.db import init_db, insert_lesson
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn,
+        {
+            "title": "No events",
+            "one_liner": "t",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "learn", "dismiss", "1"])
+    assert result.exit_code == 0, result.output
+    assert "no surfacing events" in result.output.lower()
