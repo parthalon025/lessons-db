@@ -192,23 +192,59 @@ def _parse_yaml_frontmatter(path: Path) -> dict:
     return fm
 
 
-def import_lesson_file(conn: sqlite3.Connection, path: Path) -> int | None:
-    """Import a YAML-frontmatter lesson file into the DB.
+def _insert_yaml_detection_pattern(conn: sqlite3.Connection, fm: dict, lesson_id: int) -> None:
+    """Insert detection pattern from YAML frontmatter if present."""
+    from lessons_db.db import insert_detection_pattern
 
-    Handles the 0001-*.md through 0091-*.md format used by ACT lessons.
+    pattern_block = fm.get("pattern", {})
+    if not (isinstance(pattern_block, dict) and pattern_block.get("type") == "syntactic"):
+        return
+    regex = pattern_block.get("regex", "")
+    if not regex:
+        return
+    languages_raw = fm.get("languages", ["any"])
+    language = languages_raw[0] if isinstance(languages_raw, list) and languages_raw else str(languages_raw)
+    insert_detection_pattern(
+        conn,
+        {
+            "lesson_id": lesson_id,
+            "pattern_type": "syntactic",
+            "regex": regex,
+            "description": pattern_block.get("description", ""),
+            "language": language,
+        },
+    )
+
+
+def import_lesson_file(conn: sqlite3.Connection, path: Path) -> int | None:
+    """Import a lesson file into the DB.
+
+    Accepts two formats:
+    - YAML frontmatter (--- ... --- delimiters): 0001-*.md through 0091-*.md
+    - Heading+bold (**Key:** value): Documents workspace lessons
+
     Returns the new lesson DB id, or None if the lesson was already present
     (duplicate detected by markdown_path or title).
-
-    Raises ValueError if the file has no YAML frontmatter.
     """
-    from lessons_db.db import insert_detection_pattern, insert_lesson
+    from lessons_db.db import insert_lesson
 
-    fm = _parse_yaml_frontmatter(path)
+    # Try YAML frontmatter first; fall back to heading+bold format
+    try:
+        fm = _parse_yaml_frontmatter(path)
+        use_yaml = True
+    except ValueError:
+        fm = None
+        use_yaml = False
 
-    title: str = fm.get("title", path.stem)
+    if use_yaml:
+        title: str = fm.get("title", path.stem)
+    else:
+        parsed = parse_lesson_file(path)
+        title = parsed["title"] or path.stem
+
     path_str = str(path)
 
-    # Duplicate check — by path first, then title
+    # Duplicate check — by path first, then title (shared for both formats)
     existing_path = conn.execute("SELECT id FROM lessons WHERE markdown_path = ?", (path_str,)).fetchone()
     if existing_path:
         _log.debug("import_lesson_file: skipping %s (path already in DB)", path.name)
@@ -219,59 +255,63 @@ def import_lesson_file(conn: sqlite3.Connection, path: Path) -> int | None:
         _log.debug("import_lesson_file: skipping %s (title '%s' already in DB)", path.name, title)
         return None
 
-    # Derive cluster letter from category
-    category: str = fm.get("category", "")
-    cluster = _CATEGORY_TO_CLUSTER.get(category, "")
+    if use_yaml:
+        # --- YAML path (unchanged) ---
+        category: str = fm.get("category", "")
+        cluster = _CATEGORY_TO_CLUSTER.get(category, "")
 
-    # Scope: frontmatter stores as list ["language:python", ...] or string
-    scope_raw = fm.get("scope", [])
-    scope = ", ".join(scope_raw) if isinstance(scope_raw, list) else str(scope_raw)
+        # Scope: frontmatter stores as list ["language:python", ...] or string
+        scope_raw = fm.get("scope", [])
+        scope = ", ".join(scope_raw) if isinstance(scope_raw, list) else str(scope_raw)
 
-    # one_liner: use fix field, or first 120 chars of lesson body
-    fix = fm.get("fix", "")
-    lesson_body = fm.get("_lesson", "")
-    one_liner = fix or (lesson_body[:120] if lesson_body else "")
+        # one_liner: use fix field, or first 120 chars of lesson body
+        fix = fm.get("fix", "")
+        lesson_body = fm.get("_lesson", "")
+        one_liner = fix or (lesson_body[:120] if lesson_body else "")
 
-    # Description from body sections
-    desc_parts = [p for p in (fm["_observation"], fm["_insight"], fm["_lesson"]) if p]
-    description = "\n\n".join(desc_parts)
+        # Description from body sections
+        desc_parts = [p for p in (fm["_observation"], fm["_insight"], fm["_lesson"]) if p]
+        description = "\n\n".join(desc_parts)
 
-    lesson_data = {
-        "title": title,
-        "one_liner": one_liner,
-        "description": description,
-        "cluster": cluster,
-        "tier": "lesson",
-        "category": category,
-        "scope": scope,
-        "created_date": date.today().isoformat(),
-        "source": "imported",
-        "markdown_path": path_str,
-    }
+        lesson_data = {
+            "title": title,
+            "one_liner": one_liner,
+            "description": description,
+            "cluster": cluster,
+            "tier": "lesson",
+            "category": category,
+            "scope": scope,
+            "created_date": date.today().isoformat(),
+            "source": "imported",
+            "markdown_path": path_str,
+        }
+    else:
+        # --- Heading+bold path ---
+        category = parsed["category"]
+        # Use explicit cluster letter if present (e.g. "B" from "**Cluster:** B (Integration Boundary)")
+        # Fall back to category → letter mapping
+        cluster = parsed["cluster"] or _CATEGORY_TO_CLUSTER.get(category, "")
+        scope = parsed["scope"]
+        one_liner = (parsed["key_takeaway"] or "")[:120]
+        description = parsed["description"]
+        lesson_data = {
+            "title": title,
+            "one_liner": one_liner,
+            "description": description,
+            "cluster": cluster,
+            "tier": parsed["tier"] or "lesson",
+            "category": category,
+            "scope": scope,
+            "created_date": parsed["date"] or date.today().isoformat(),
+            "source": "imported",
+            "markdown_path": path_str,
+        }
+
     lesson_id = insert_lesson(conn, lesson_data)
 
-    # Insert detection pattern from frontmatter pattern: block
-    pattern_block = fm.get("pattern", {})
-    if isinstance(pattern_block, dict) and pattern_block.get("type") == "syntactic":
-        regex = pattern_block.get("regex", "")
-        if regex:
-            # Derive language from languages field
-            languages_raw = fm.get("languages", ["any"])
-            if isinstance(languages_raw, list):
-                language = languages_raw[0] if languages_raw else "any"
-            else:
-                language = str(languages_raw)
+    # Detection pattern — YAML frontmatter only (heading+bold format has no pattern: field)
+    if use_yaml:
+        _insert_yaml_detection_pattern(conn, fm, lesson_id)
 
-            insert_detection_pattern(
-                conn,
-                {
-                    "lesson_id": lesson_id,
-                    "pattern_type": "syntactic",
-                    "regex": regex,
-                    "description": pattern_block.get("description", ""),
-                    "language": language,
-                },
-            )
-
-    _log.debug("import_lesson_file: imported %s → DB id %d", path.name, lesson_id)
+    _log.info("import_lesson_file: inserted lesson id=%d from %s", lesson_id, path.name)
     return lesson_id

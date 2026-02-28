@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from lessons_db.migrate import import_lesson_file, parse_lesson_file
 
 SAMPLE_LESSON = """\
@@ -265,14 +263,59 @@ class TestImportLessonFile:
         row = conn.execute("SELECT cluster FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
         assert row["cluster"] == "B"
 
-    def test_non_frontmatter_file_raises(self, tmp_path: Path) -> None:
+    def test_imports_heading_bold_format(self, tmp_path: Path) -> None:
+        """import_lesson_file accepts heading+bold format as a fallback."""
         from lessons_db.db import init_db
 
         conn = init_db(tmp_path / "test.db")
-        path = tmp_path / "old-format.md"
-        path.write_text("# Lesson #88: Old-style lesson\n\n**Date:** 2026-01-01\n")
-        with pytest.raises(ValueError, match="YAML frontmatter"):
-            import_lesson_file(conn, path)
+        path = tmp_path / "2026-02-28-old-format.md"
+        path.write_text(
+            "# Lesson: Old-style lesson\n\n"
+            "**Date:** 2026-02-28\n"
+            "**System:** lessons-db\n"
+            "**Tier:** lesson\n"
+            "**Category:** integration\n"
+            "**Cluster:** B (Integration Boundary)\n"
+            "**Keywords:** test, integration\n"
+            "\n"
+            "## Observation (What Happened)\n"
+            "Something failed at the seam.\n"
+            "\n"
+            "## Key Takeaway\n"
+            "Always verify at the boundary.\n"
+        )
+        lesson_id = import_lesson_file(conn, path)
+        assert isinstance(lesson_id, int)
+        assert lesson_id > 0
+        row = conn.execute("SELECT title, cluster, one_liner FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        assert row["title"] == "Old-style lesson"
+        assert row["cluster"] == "B"
+        assert "boundary" in row["one_liner"].lower()
+
+    def test_heading_bold_duplicate_by_title_returns_none(self, tmp_path: Path) -> None:
+        """import_lesson_file skips duplicate heading+bold lessons by title."""
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        content = (
+            "# Lesson: Duplicate heading bold\n\n"
+            "**Date:** 2026-02-28\n"
+            "**Tier:** lesson\n"
+            "**Category:** integration\n"
+            "**Cluster:** B\n"
+            "\n"
+            "## Key Takeaway\n"
+            "Only imported once.\n"
+        )
+        path1 = tmp_path / "file-a.md"
+        path1.write_text(content)
+        path2 = tmp_path / "file-b.md"
+        path2.write_text(content)
+
+        first = import_lesson_file(conn, path1)
+        second = import_lesson_file(conn, path2)
+        assert first is not None
+        assert second is None  # duplicate title skipped
 
 
 class TestImportCLICommand:
