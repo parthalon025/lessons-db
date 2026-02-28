@@ -208,15 +208,17 @@ def _apply_promote(conn: sqlite3.Connection, v: dict, today: str) -> dict | None
 
     # Inject improved_one_liner into extracted_data before promoting
     row = conn.execute("SELECT extracted_data FROM capture_drafts WHERE id = ?", [draft_id]).fetchone()
-    if row:
-        data = json.loads(row["extracted_data"] or "{}")
-        if v.get("improved_one_liner"):
-            data["improved_one_liner"] = v["improved_one_liner"]
-        conn.execute(
-            "UPDATE capture_drafts SET extracted_data = ? WHERE id = ?",
-            [json.dumps(data), draft_id],
-        )
-        conn.commit()
+    if not row:
+        _log.warning("_apply_promote: draft %d not found in capture_drafts — skipping", draft_id)
+        return None
+    data = json.loads(row["extracted_data"] or "{}")
+    if v.get("improved_one_liner"):
+        data["improved_one_liner"] = v["improved_one_liner"]
+    conn.execute(
+        "UPDATE capture_drafts SET extracted_data = ? WHERE id = ?",
+        [json.dumps(data), draft_id],
+    )
+    conn.commit()
 
     lesson_id = promote_draft(conn, draft_id)
     if not lesson_id:
@@ -263,6 +265,7 @@ def execute_verdicts(
     """Apply PROMOTE/DISMISS verdicts. Returns summary dict."""
     promoted = 0
     dismissed = 0
+    errors = 0
     log_entries: list[dict] = []
     today = date.today().isoformat()
 
@@ -275,6 +278,18 @@ def execute_verdicts(
             if entry:
                 promoted += 1
                 log_entries.append(entry)
+            else:
+                errors += 1
+                log_entries.append(
+                    {
+                        "date": today,
+                        "draft_id": draft_id,
+                        "lesson_id": None,
+                        "verdict": "PROMOTE_FAILED",
+                        "reason": "promote_draft returned None",
+                        "one_liner": "",
+                    }
+                )
         else:
             conn.execute(
                 "UPDATE capture_drafts SET status = 'dismissed' WHERE id = ?",
@@ -300,8 +315,8 @@ def execute_verdicts(
             for entry in log_entries:
                 f.write(json.dumps(entry) + "\n")
 
-    _log.info("execute_verdicts: promoted=%d dismissed=%d", promoted, dismissed)
-    return {"promoted": promoted, "dismissed": dismissed}
+    _log.info("execute_verdicts: promoted=%d dismissed=%d errors=%d", promoted, dismissed, errors)
+    return {"promoted": promoted, "dismissed": dismissed, "errors": errors}
 
 
 def _write_semgrep_rule(lesson_id: int, rule_yaml: str) -> None:

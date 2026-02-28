@@ -346,3 +346,22 @@ class TestExecuteVerdicts:
         entry = json.loads(lines[0])
         assert entry["verdict"] == "DISMISS"
         assert entry["draft_id"] == draft_id
+
+    def test_promote_with_missing_draft_returns_error_in_summary(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        # Use a draft_id that doesn't exist
+        verdicts = [
+            {
+                "id": 9999,
+                "verdict": "PROMOTE",
+                "reason": "Good",
+                "improved_one_liner": "Some lesson",
+                "detection_pattern": "",
+                "semgrep_rule": "",
+            }
+        ]
+
+        result = execute_verdicts(conn, verdicts, log_dir=tmp_path)
+
+        assert result["promoted"] == 0
+        assert result["errors"] == 1
