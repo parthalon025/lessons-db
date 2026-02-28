@@ -613,3 +613,40 @@ def test_learn_record_with_outcome_false_positive(tmp_path):
     assert result.exit_code == 0, result.output
     row = conn.execute("SELECT outcome FROM surfacing_events WHERE lesson_id = 1").fetchone()
     assert row["outcome"] == "false_positive"
+
+
+def test_learn_record_without_outcome_defaults_to_unknown(tmp_path):
+    """learn record without --outcome stores outcome='unknown'."""
+    from lessons_db.db import init_db, insert_lesson
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn,
+        {
+            "title": "Test3",
+            "one_liner": "t",
+            "cluster": "C",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--db",
+            str(db_path),
+            "learn",
+            "record",
+            "--lesson-id",
+            "1",
+            "--hook",
+            "plan",
+            "--context",
+            "ctx",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    row = conn.execute("SELECT outcome FROM surfacing_events WHERE lesson_id = 1").fetchone()
+    assert row["outcome"] == "unknown"
