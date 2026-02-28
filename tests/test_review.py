@@ -4,7 +4,14 @@ import json
 from unittest.mock import MagicMock, patch
 
 from lessons_db.db import init_db
-from lessons_db.review import claude_review_batch, execute_verdicts, filter_noise, jaccard_similarity
+from lessons_db.review import (
+    DraftReview,
+    ReviewBatch,
+    claude_review_batch,
+    execute_verdicts,
+    filter_noise,
+    jaccard_similarity,
+)
 
 
 class TestJaccardSimilarity:
@@ -119,32 +126,29 @@ class TestClaudeReviewBatch:
         return {"id": id_, "extracted_data": json.dumps({"one_liner": one_liner}), "source": "auto_transcript"}
 
     @staticmethod
-    def _mock_openai_response(response_json):
-        """Build a mock OpenAI chat completion response."""
+    def _mock_parse_response(reviews: list[DraftReview]) -> MagicMock:
+        """Build a mock structured-output parse response."""
         mock_choice = MagicMock()
         mock_choice.finish_reason = "stop"
-        mock_choice.message.content = json.dumps(response_json)
+        mock_choice.message.parsed = ReviewBatch(reviews=reviews)
         mock_resp = MagicMock()
         mock_resp.choices = [mock_choice]
         return mock_resp
 
     def test_returns_promote_verdict_for_specific_lesson(self):
         drafts = [self._draft(42, "Never use bare except: without logging the error first")]
-        mock_response = {
-            "reviews": [
-                {
-                    "id": 42,
-                    "verdict": "PROMOTE",
-                    "reason": "Specific, actionable, prevents silent failures",
-                    "improved_one_liner": "Never use bare `except:` — always log before swallowing",
-                    "detection_pattern": r"except\s*:",
-                    "semgrep_rule": "",
-                }
-            ]
-        }
+        review = DraftReview(
+            id=42,
+            verdict="PROMOTE",
+            confidence=5,
+            reason="Specific, actionable, prevents silent failures",
+            improved_one_liner="Never use bare `except:` — always log before swallowing",
+            detection_pattern=r"except\s*:",
+            semgrep_rule="",
+        )
 
         with patch("openai.OpenAI") as MockClient:
-            MockClient.return_value.chat.completions.create.return_value = self._mock_openai_response(mock_response)
+            MockClient.return_value.beta.chat.completions.parse.return_value = self._mock_parse_response([review])
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert len(verdicts) == 1
@@ -152,31 +156,71 @@ class TestClaudeReviewBatch:
         assert verdicts[0]["id"] == 42
         assert verdicts[0]["detection_pattern"] == r"except\s*:"
 
-    def test_returns_dismiss_verdict_for_vague_lesson(self):
-        drafts = [self._draft(99, "Write cleaner code and test more thoroughly")]
-        mock_response = {
-            "reviews": [
-                {
-                    "id": 99,
-                    "verdict": "DISMISS",
-                    "reason": "Too vague",
-                    "improved_one_liner": "",
-                    "detection_pattern": "",
-                    "semgrep_rule": "",
-                }
-            ]
-        }
+    def test_confidence_gate_demotes_low_confidence_promote(self):
+        """A PROMOTE verdict with confidence < threshold is downgraded to DISMISS."""
+        drafts = [self._draft(10, "Always validate inputs carefully before processing")]
+        review = DraftReview(
+            id=10,
+            verdict="PROMOTE",
+            confidence=2,  # below _CONFIDENCE_THRESHOLD=4
+            reason="Borderline",
+            improved_one_liner="Validate inputs",
+            detection_pattern="",
+            semgrep_rule="",
+        )
 
         with patch("openai.OpenAI") as MockClient:
-            MockClient.return_value.chat.completions.create.return_value = self._mock_openai_response(mock_response)
+            MockClient.return_value.beta.chat.completions.parse.return_value = self._mock_parse_response([review])
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert verdicts[0]["verdict"] == "DISMISS"
 
-    def test_handles_api_error_gracefully(self):
+    def test_returns_dismiss_verdict_for_vague_lesson(self):
+        drafts = [self._draft(99, "Write cleaner code and test more thoroughly")]
+        review = DraftReview(
+            id=99,
+            verdict="DISMISS",
+            confidence=1,
+            reason="Too vague",
+            improved_one_liner="",
+            detection_pattern="",
+            semgrep_rule="",
+        )
+
+        with patch("openai.OpenAI") as MockClient:
+            MockClient.return_value.beta.chat.completions.parse.return_value = self._mock_parse_response([review])
+            verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
+
+        assert verdicts[0]["verdict"] == "DISMISS"
+
+    def test_handles_api_error_falls_back_to_sub_batches(self):
+        """On primary batch failure, should retry with sub-batches."""
+        drafts = [self._draft(7, "Always log exceptions before swallowing them silently")]
+        review = DraftReview(
+            id=7,
+            verdict="DISMISS",
+            confidence=1,
+            reason="retry succeeded",
+            improved_one_liner="",
+            detection_pattern="",
+            semgrep_rule="",
+        )
+        with patch("openai.OpenAI") as MockClient:
+            # First call (batch) fails; second call (sub-batch retry) succeeds
+            MockClient.return_value.beta.chat.completions.parse.side_effect = [
+                Exception("API timeout"),
+                self._mock_parse_response([review]),
+            ]
+            verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
+
+        assert len(verdicts) == 1
+        assert verdicts[0]["verdict"] == "DISMISS"
+
+    def test_handles_api_error_gracefully_when_retry_also_fails(self):
+        """When both batch and sub-batch retry fail, marks verdicts as ERROR."""
         drafts = [self._draft(7, "Always log exceptions before swallowing them silently")]
         with patch("openai.OpenAI") as MockClient:
-            MockClient.return_value.chat.completions.create.side_effect = Exception("API timeout")
+            MockClient.return_value.beta.chat.completions.parse.side_effect = Exception("API timeout")
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert len(verdicts) == 1
@@ -186,64 +230,59 @@ class TestClaudeReviewBatch:
     def test_processes_multiple_drafts_in_batches(self):
         """Verify batching: 25 drafts with batch_size=20 should trigger 2 API calls."""
         drafts = [self._draft(i, f"Always validate input at boundary {i} before processing") for i in range(25)]
-        mock_response = {
-            "reviews": [
-                {
-                    "id": i,
-                    "verdict": "DISMISS",
-                    "reason": "test",
-                    "improved_one_liner": "",
-                    "detection_pattern": "",
-                    "semgrep_rule": "",
-                }
-                for i in range(20)
-            ]
-        }
-        mock_response2 = {
-            "reviews": [
-                {
-                    "id": i,
-                    "verdict": "DISMISS",
-                    "reason": "test",
-                    "improved_one_liner": "",
-                    "detection_pattern": "",
-                    "semgrep_rule": "",
-                }
-                for i in range(20, 25)
-            ]
-        }
+        batch1 = [
+            DraftReview(
+                id=i,
+                verdict="DISMISS",
+                confidence=1,
+                reason="test",
+                improved_one_liner="",
+                detection_pattern="",
+                semgrep_rule="",
+            )
+            for i in range(20)
+        ]
+        batch2 = [
+            DraftReview(
+                id=i,
+                verdict="DISMISS",
+                confidence=1,
+                reason="test",
+                improved_one_liner="",
+                detection_pattern="",
+                semgrep_rule="",
+            )
+            for i in range(20, 25)
+        ]
 
         with patch("openai.OpenAI") as MockClient:
-            MockClient.return_value.chat.completions.create.side_effect = [
-                self._mock_openai_response(mock_response),
-                self._mock_openai_response(mock_response2),
+            MockClient.return_value.beta.chat.completions.parse.side_effect = [
+                self._mock_parse_response(batch1),
+                self._mock_parse_response(batch2),
             ]
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
-        assert MockClient.return_value.chat.completions.create.call_count == 2
+        assert MockClient.return_value.beta.chat.completions.parse.call_count == 2
         assert len(verdicts) == 25
 
     def test_existing_titles_included_in_prompt(self):
         """Verify existing lesson titles are passed in the prompt for duplicate detection."""
         drafts = [self._draft(1, "Never swallow exceptions without logging")]
-        mock_response = {
-            "reviews": [
-                {
-                    "id": 1,
-                    "verdict": "DISMISS",
-                    "reason": "dup",
-                    "improved_one_liner": "",
-                    "detection_pattern": "",
-                    "semgrep_rule": "",
-                }
-            ]
-        }
+        review = DraftReview(
+            id=1,
+            verdict="DISMISS",
+            confidence=1,
+            reason="dup",
+            improved_one_liner="",
+            detection_pattern="",
+            semgrep_rule="",
+        )
 
         with patch("openai.OpenAI") as MockClient:
-            MockClient.return_value.chat.completions.create.return_value = self._mock_openai_response(mock_response)
+            MockClient.return_value.beta.chat.completions.parse.return_value = self._mock_parse_response([review])
             claude_review_batch(drafts, existing_titles=["Never swallow exceptions"], api_key="test-key")
 
-        call_kwargs = MockClient.return_value.chat.completions.create.call_args
+        call_kwargs = MockClient.return_value.beta.chat.completions.parse.call_args
         prompt_text = call_kwargs[1]["messages"][0]["content"]
         assert "Never swallow exceptions" in prompt_text
 

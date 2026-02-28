@@ -361,6 +361,32 @@ def rule_test(ctx, rules_dir):
 
 
 @main.command()
+@click.option("--files", "-f", multiple=True, required=True, help="Files to check")
+@click.option("--scope", "-s", default=None, help="Scope filter")
+@click.option("--json", "json_output", is_flag=True, help="JSON output for script consumption")
+@click.pass_context
+def check(ctx, files, scope, json_output):
+    """Check files against lesson detection patterns."""
+    import json as json_mod
+
+    from .check import check_files
+
+    conn = ctx.obj["conn"]
+    lance_dir = ctx.obj.get("lance_dir")
+
+    violations = check_files(conn, lance_dir, list(files), scope=scope)
+
+    if json_output:
+        click.echo(json_mod.dumps(violations))
+    else:
+        for v in violations:
+            click.echo(f"{v['file_path']}:{v['line_number']}: [lesson-{v['lesson_id']}] {v['one_liner']}")
+
+    if violations:
+        ctx.exit(1)
+
+
+@main.command()
 @click.option(
     "--rules-dir", type=click.Path(), default=None, help="Rules directory (default: ~/.local/share/lessons-db/rules/)"
 )

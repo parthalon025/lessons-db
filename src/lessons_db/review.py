@@ -1,4 +1,4 @@
-"""Draft triage pipeline: noise filter + Claude batch review + verdict execution."""
+"""Draft triage pipeline: noise filter + OpenAI batch review + verdict execution."""
 
 from __future__ import annotations
 
@@ -8,11 +8,36 @@ import re
 import sqlite3
 from datetime import date
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel
 
 from lessons_db.capture import promote_draft
 from lessons_db.db import insert_detection_pattern
 
 _log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema for OpenAI structured output
+# ---------------------------------------------------------------------------
+
+
+class DraftReview(BaseModel):
+    id: int
+    verdict: Literal["PROMOTE", "DISMISS"]
+    confidence: int  # 1-5; only auto-promote if >= _CONFIDENCE_THRESHOLD
+    reason: str
+    improved_one_liner: str
+    detection_pattern: str
+    semgrep_rule: str
+
+
+class ReviewBatch(BaseModel):
+    reviews: list[DraftReview]
+
+
+_CONFIDENCE_THRESHOLD = 4  # raise to filter out marginal promotions
 
 # Noise patterns — one_liners matching these are auto-dismissed
 _NOISE_PATTERNS = [
@@ -103,36 +128,106 @@ def filter_noise(
 
 
 _REVIEW_PROMPT_TEMPLATE = """\
-You are reviewing draft lessons for a coding lessons-learned system.
-For each draft, decide PROMOTE or DISMISS.
+You are a strict reviewer for a coding lessons-learned system.
+For each draft, decide PROMOTE or DISMISS and assign a confidence score 1-5.
 
-Existing lessons (do not promote duplicates of these):
+PROMOTE only if ALL of the following are true:
+1. Names a specific API call, method name, config key, error message, or code construct — NOT a general principle
+2. The mistake would NOT be caught by a basic code review
+3. A developer could write a regex or Semgrep rule to detect it today
+4. Not already covered by an existing lesson (see list below)
+
+DISMISS if any of:
+- Vague principle ("always use good practices", "ensure security", "be careful")
+- Already covered by an existing lesson
+- Not a coding mistake/anti-pattern (general advice, tool tips, workflow suggestions)
+- Would be caught immediately by any code review
+
+Confidence scale:
+5 = Concrete, specific, novel — definitely promote
+4 = Specific enough, worth promoting
+3 = Borderline — default to DISMISS
+1-2 = Clear DISMISS
+
+Examples:
+
+DISMISS (confidence 2): "Skill invocation should be conditional and context-dependent"
+→ General workflow advice, not a code pattern, no regex possible
+
+DISMISS (confidence 1): "Settings can be scoped per-project or globally for better control"
+→ Documentation tip, not a coding mistake, too vague to detect
+
+DISMISS (confidence 3): "Avoid using broad permissions unless necessary"
+→ Principle without a specific code pattern to match
+
+PROMOTE (confidence 5): "sqlite3 connection used as context manager does not close — call .close() explicitly"
+→ Specific: sqlite3 module, context manager, .close() method. Detectable: regex for `with sqlite3.connect`
+
+PROMOTE (confidence 5): "asyncio.create_task without storing the return value silently drops exceptions"
+→ Specific: asyncio.create_task, return value. Detectable: regex for `create_task(` without assignment
+
+PROMOTE (confidence 4): "Hardcoded test counts break when fixtures change — use len(results) not assert len == 5"
+→ Specific: test assertions with literal counts. Detectable: regex for `assert len(` with integer literal
+
+Existing lessons (do not promote duplicates):
 {existing_titles}
 
 Drafts to review:
-{draft_lines}
-
-Criteria for PROMOTE:
-- Specific: names a concrete pattern, not a general principle
-- Actionable: clear do/don't a developer can follow
-- Prevents recurrence: would catch this mistake if checked automatically
-- Novel: not already in the existing lessons list above
-
-Return ONLY valid JSON, no other text:
-{{
-  "reviews": [
-    {{
-      "id": <integer draft id>,
-      "verdict": "PROMOTE" or "DISMISS",
-      "reason": "<one sentence>",
-      "improved_one_liner": "<cleaned wording if PROMOTE, else empty string>",
-      "detection_pattern": "<Python regex string for code matching if PROMOTE, else empty string>",
-      "semgrep_rule": "<YAML Semgrep rule text if syntactic pattern possible, else empty string>"
-    }}
-  ]
-}}"""
+{draft_lines}"""
 
 _BATCH_SIZE = 20
+
+
+_RETRY_BATCH_SIZE = 5  # sub-batch size when retrying a failed batch
+
+
+def _call_openai_batch(
+    client: object,
+    model: str,
+    drafts: list[dict],
+    existing_titles: list[str],
+) -> list[dict]:
+    """Call OpenAI structured output for one batch. Returns list of verdict dicts."""
+
+    draft_lines = "\n".join(f"[{d['id']}] {_extract_one_liner(d)}" for d in drafts)
+    titles_block = "\n".join(f"- {t}" for t in existing_titles[:150])
+    prompt = _REVIEW_PROMPT_TEMPLATE.format(
+        existing_titles=titles_block or "(none yet)",
+        draft_lines=draft_lines,
+    )
+    response = client.beta.chat.completions.parse(  # type: ignore[attr-defined]
+        model=model,
+        max_tokens=8192,
+        messages=[{"role": "user", "content": prompt}],
+        response_format=ReviewBatch,
+    )
+    if response.choices[0].finish_reason == "length":
+        raise ValueError("Response truncated by max_tokens limit")
+    parsed: ReviewBatch = response.choices[0].message.parsed
+    verdicts = []
+    for r in parsed.reviews:
+        # Apply confidence gate: downgrade low-confidence PROMOTE to DISMISS
+        verdict = r.verdict
+        if verdict == "PROMOTE" and r.confidence < _CONFIDENCE_THRESHOLD:
+            verdict = "DISMISS"
+            _log.debug(
+                "_call_openai_batch: draft %d demoted PROMOTE→DISMISS (confidence %d < %d)",
+                r.id,
+                r.confidence,
+                _CONFIDENCE_THRESHOLD,
+            )
+        verdicts.append(
+            {
+                "id": r.id,
+                "verdict": verdict,
+                "confidence": r.confidence,
+                "reason": r.reason,
+                "improved_one_liner": r.improved_one_liner,
+                "detection_pattern": r.detection_pattern,
+                "semgrep_rule": r.semgrep_rule,
+            }
+        )
+    return verdicts
 
 
 def claude_review_batch(
@@ -140,10 +235,11 @@ def claude_review_batch(
     existing_titles: list[str],
     api_key: str,
 ) -> list[dict]:
-    """Send drafts to OpenAI for PROMOTE/DISMISS review.
+    """Send drafts to OpenAI for PROMOTE/DISMISS review with confidence gate.
 
-    Processes in batches of _BATCH_SIZE. On API error, marks all drafts
-    in that batch as ERROR with reason='error: <msg>'.
+    Uses structured outputs (Pydantic schema) to eliminate JSON parse failures.
+    On batch failure, retries at sub-batch size _RETRY_BATCH_SIZE. On retry
+    failure, marks drafts as ERROR.
 
     Args:
         drafts: List of draft dicts with 'id' and 'extracted_data' fields.
@@ -151,8 +247,8 @@ def claude_review_batch(
         api_key: OpenAI API key.
 
     Returns:
-        List of verdict dicts with keys: id, verdict, reason, improved_one_liner,
-        detection_pattern, semgrep_rule.
+        List of verdict dicts with keys: id, verdict, confidence, reason,
+        improved_one_liner, detection_pattern, semgrep_rule.
     """
     import openai  # lazy import — only needed when calling the reviewer
 
@@ -163,41 +259,40 @@ def claude_review_batch(
 
     for i in range(0, len(drafts), _BATCH_SIZE):
         batch = drafts[i : i + _BATCH_SIZE]
-        draft_lines = "\n".join(f"[{d['id']}] {_extract_one_liner(d)}" for d in batch)
-        titles_block = "\n".join(f"- {t}" for t in existing_titles[:150])
-        prompt = _REVIEW_PROMPT_TEMPLATE.format(
-            existing_titles=titles_block or "(none yet)",
-            draft_lines=draft_lines,
-        )
+        batch_num = i // _BATCH_SIZE
 
         try:
-            response = client.chat.completions.create(
-                model=OPENAI_REVIEW_MODEL,
-                max_tokens=8192,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            if response.choices[0].finish_reason == "length":
-                raise ValueError("Response truncated by max_tokens limit")
-            raw = response.choices[0].message.content.strip()
-            # Extract JSON object — tolerates preamble/postamble from model
-            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if not json_match:
-                raise ValueError(f"No JSON object in response: {raw[:200]}")
-            data = json.loads(json_match.group())
-            all_verdicts.extend(data.get("reviews", []))
+            all_verdicts.extend(_call_openai_batch(client, OPENAI_REVIEW_MODEL, batch, existing_titles))
         except Exception as exc:
-            _log.warning("claude_review_batch: batch %d failed: %s", i // _BATCH_SIZE, exc)
-            for d in batch:
-                all_verdicts.append(
-                    {
-                        "id": d["id"],
-                        "verdict": "ERROR",
-                        "reason": f"error: {exc}",
-                        "improved_one_liner": "",
-                        "detection_pattern": "",
-                        "semgrep_rule": "",
-                    }
-                )
+            _log.warning("claude_review_batch: batch %d failed (%s) — retrying in sub-batches", batch_num, exc)
+            # Retry at smaller sub-batch size to reduce JSON complexity
+            any_retry_failed = False
+            for j in range(0, len(batch), _RETRY_BATCH_SIZE):
+                sub = batch[j : j + _RETRY_BATCH_SIZE]
+                try:
+                    all_verdicts.extend(_call_openai_batch(client, OPENAI_REVIEW_MODEL, sub, existing_titles))
+                except Exception as sub_exc:
+                    _log.warning(
+                        "claude_review_batch: sub-batch %d.%d failed: %s",
+                        batch_num,
+                        j // _RETRY_BATCH_SIZE,
+                        sub_exc,
+                    )
+                    any_retry_failed = True
+                    for d in sub:
+                        all_verdicts.append(
+                            {
+                                "id": d["id"],
+                                "verdict": "ERROR",
+                                "confidence": 0,
+                                "reason": f"error: {sub_exc}",
+                                "improved_one_liner": "",
+                                "detection_pattern": "",
+                                "semgrep_rule": "",
+                            }
+                        )
+            if not any_retry_failed:
+                _log.info("claude_review_batch: batch %d recovered via sub-batches", batch_num)
 
     return all_verdicts
 
