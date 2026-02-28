@@ -144,6 +144,9 @@ def parse_lesson_file(path: Path) -> dict:
         "key_takeaway": _extract_section(lines, "Key Takeaway"),
         "corrective_actions": _parse_corrective_actions(lines),
         "description": description,
+        "false_assumption": _extract_section(lines, "False Assumption"),
+        "detection_pattern": _extract_section(lines, "Detection Pattern"),
+        "invariant": _extract_section(lines, "Invariant"),
         "markdown_path": str(path),
     }
     if not result["title"] or not result["date"]:
@@ -189,6 +192,9 @@ def _parse_yaml_frontmatter(path: Path) -> dict:
     fm["_observation"] = _body_section("Observation")
     fm["_insight"] = _body_section("Insight")
     fm["_lesson"] = _body_section("Lesson")
+    fm["_false_assumption"] = _body_section("False Assumption")
+    fm["_detection_pattern"] = _body_section("Detection Pattern")
+    fm["_invariant"] = _body_section("Invariant")
     return fm
 
 
@@ -284,6 +290,9 @@ def import_lesson_file(conn: sqlite3.Connection, path: Path) -> int | None:
             "created_date": date.today().isoformat(),
             "source": "imported",
             "markdown_path": path_str,
+            "false_assumption": fm.get("_false_assumption") or None,
+            "detection_pattern": fm.get("_detection_pattern") or None,
+            "invariant": fm.get("_invariant") or None,
         }
     else:
         # --- Heading+bold path ---
@@ -305,6 +314,9 @@ def import_lesson_file(conn: sqlite3.Connection, path: Path) -> int | None:
             "created_date": parsed["date"] or date.today().isoformat(),
             "source": "imported",
             "markdown_path": path_str,
+            "false_assumption": parsed.get("false_assumption") or None,
+            "detection_pattern": parsed.get("detection_pattern") or None,
+            "invariant": parsed.get("invariant") or None,
         }
 
     lesson_id = insert_lesson(conn, lesson_data)

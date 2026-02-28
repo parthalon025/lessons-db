@@ -891,6 +891,7 @@ def test_scan_security_command(db_path, tmp_path):
     ):
         result = runner.invoke(main, ["--db", str(db_path), "scan", "security", "--target", str(tmp_path)])
     assert result.exit_code == 0
+    assert "ruff_findings" in result.output
 
 
 def test_import_semgrep_command(db_path):
@@ -899,3 +900,10 @@ def test_import_semgrep_command(db_path):
         result = runner.invoke(main, ["--db", str(db_path), "import", "semgrep", "--delta"])
     assert result.exit_code == 0
     assert "imported" in result.output
+
+
+def test_mining_history_command_empty(db_path):
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "mining-history"])
+    assert result.exit_code == 0
+    assert "No mining runs yet." in result.output

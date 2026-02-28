@@ -34,6 +34,15 @@ def format_lesson_markdown(lesson: dict) -> str:
             ]
         )
 
+    if lesson.get("false_assumption"):
+        lines.extend(["## False Assumption", "", lesson["false_assumption"], ""])
+
+    if lesson.get("detection_pattern"):
+        lines.extend(["## Detection Pattern", "", lesson["detection_pattern"], ""])
+
+    if lesson.get("invariant"):
+        lines.extend(["## Invariant", "", lesson["invariant"], ""])
+
     return "\n".join(lines)
 
 
