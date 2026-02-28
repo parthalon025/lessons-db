@@ -784,3 +784,5 @@ def test_kpi_command_runs_and_shows_metrics(tmp_path):
     assert "False Positive Rate" in result.output
     assert "Dead Lessons" in result.output
     assert "DB Growth" in result.output
+    assert "50.0%" in result.output  # recurrence_rate: 1/(1+1)
+    assert "33.3%" in result.output  # heed_rate and fp_rate: 1/3 decided
