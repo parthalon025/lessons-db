@@ -621,6 +621,170 @@ def capture_diff(ctx, diff_file):
         click.echo("No lessons extracted.")
 
 
+@capture.command("review")
+@click.option("--dry-run", is_flag=True, help="Run filter only, skip Claude API call, print summary.")
+@click.pass_context
+def capture_review(ctx, dry_run):
+    """Run automated triage: noise filter + Claude review → promote/dismiss drafts.
+
+    Processes pending drafts. Writes decisions to ~/.local/share/lessons-db/triage-YYYY-MM-DD.jsonl.
+    """
+    import os
+
+    from lessons_db.config import ANTHROPIC_API_KEY, TRIAGE_LOG_DIR
+    from lessons_db.review import claude_review_batch, execute_verdicts, filter_noise
+
+    conn = ctx.obj["conn"]
+
+    # Load pending drafts
+    drafts = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, extracted_data, source FROM capture_drafts WHERE status = 'pending'"
+        ).fetchall()
+    ]
+
+    if not drafts:
+        click.echo("No pending drafts to review.")
+        return
+
+    # Load existing lesson one_liners for dedup
+    existing = [r[0] for r in conn.execute("SELECT one_liner FROM lessons WHERE one_liner IS NOT NULL").fetchall()]
+
+    # Phase 1: noise filter
+    kept, dismissed_noise = filter_noise(drafts, existing_one_liners=existing)
+    click.echo(f"Filter: {len(drafts)} drafts → {len(kept)} kept, {len(dismissed_noise)} noise-dismissed")
+
+    if dry_run:
+        click.echo("[dry-run] Skipping Claude review. Kept drafts:")
+        for d in kept[:10]:
+            data = json.loads(d.get("extracted_data") or "{}")
+            click.echo(f"  [{d['id']}] {data.get('one_liner', '')[:80]}")
+        return
+
+    # Mark noise-dismissed drafts
+    for d in dismissed_noise:
+        conn.execute("UPDATE capture_drafts SET status='dismissed' WHERE id=?", [d["id"]])
+    conn.commit()
+
+    if not kept:
+        click.echo("All drafts dismissed by noise filter.")
+        return
+
+    api_key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        click.echo("Error: ANTHROPIC_API_KEY not set. Export it or add to ~/.env.", err=True)
+        ctx.exit(1)
+        return
+
+    # Phase 2: Claude review
+    click.echo(f"Sending {len(kept)} drafts to Claude for review...")
+    verdicts = claude_review_batch(kept, existing_titles=existing, api_key=api_key)
+
+    # Phase 3: execute
+    summary = execute_verdicts(conn, verdicts, log_dir=TRIAGE_LOG_DIR)
+    click.echo(
+        f"Done: {summary['promoted']} promoted, {summary['dismissed']} dismissed"
+        + (f", {summary['errors']} errors" if summary.get("errors") else "")
+        + "."
+    )
+    import datetime
+
+    click.echo(f"Log: {TRIAGE_LOG_DIR}/triage-{datetime.date.today().isoformat()}.jsonl")
+
+
+@capture.command("triage")
+@click.option("--review-log", is_flag=True, help="Show triage decisions from the log.")
+@click.option("--date", "log_date", default=None, help="Date to show log for (YYYY-MM-DD). Defaults to today.")
+@click.option("--override", "override_id", type=int, default=None, help="Re-promote a dismissed draft by ID.")
+@click.pass_context
+def capture_triage(ctx, review_log, log_date, override_id):
+    """Audit triage decisions or override a specific dismissed draft."""
+    from lessons_db.capture import promote_draft
+    from lessons_db.config import TRIAGE_LOG_DIR
+
+    conn = ctx.obj["conn"]
+
+    if override_id:
+        # Re-promote: only reset dismissed drafts — guard against duplicating approved ones
+        cursor = conn.execute(
+            "UPDATE capture_drafts SET status='pending' WHERE id=? AND status='dismissed'",
+            [override_id],
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            # Check whether it exists at all vs already approved
+            row = conn.execute("SELECT status FROM capture_drafts WHERE id=?", [override_id]).fetchone()
+            if row is None:
+                click.echo(f"Draft {override_id} not found.")
+            else:
+                click.echo(
+                    f"Draft {override_id} has status '{row['status']}' — only dismissed drafts can be overridden."
+                )
+            return
+        lesson_id = promote_draft(conn, override_id)
+        if lesson_id:
+            click.echo(f"Draft {override_id} re-promoted → lesson #{lesson_id}")
+        else:
+            click.echo(f"Draft {override_id}: promote failed unexpectedly.")
+        return
+
+    if review_log:
+        import datetime
+
+        target_date = log_date or datetime.date.today().isoformat()
+        log_path = TRIAGE_LOG_DIR / f"triage-{target_date}.jsonl"
+        if not log_path.exists():
+            click.echo(f"No triage log for {target_date}.")
+            return
+
+        promoted = []
+        dismissed = []
+        errors = []
+        for line in log_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                click.echo(f"  [warning] Skipping malformed line: {line[:60]!r}", err=True)
+                continue
+            if entry["verdict"] == "PROMOTE":
+                promoted.append(entry)
+            elif entry["verdict"] == "PROMOTE_FAILED":
+                errors.append(entry)
+            else:
+                dismissed.append(entry)
+
+        click.echo(f"\n=== Triage log: {target_date} ===")
+        click.echo(f"Promoted: {len(promoted)} | Dismissed: {len(dismissed)} | Errors: {len(errors)}\n")
+
+        if promoted:
+            click.echo("PROMOTED:")
+            for e in promoted:
+                click.echo(f"  [draft {e['draft_id']} → lesson {e['lesson_id']}] {e.get('one_liner', '')}")
+                click.echo(f"    Reason: {e['reason']}")
+
+        if errors:
+            click.echo("\nPROMOTE FAILURES:")
+            for e in errors:
+                click.echo(f"  [draft {e['draft_id']}] {e['reason']}")
+            click.echo("  To re-promote: lessons-db capture triage --override <draft_id>")
+
+        if dismissed:
+            click.echo(f"\nDISMISSED (first 20 of {len(dismissed)}):")
+            for e in dismissed[:20]:
+                click.echo(f"  [draft {e['draft_id']}] {e.get('one_liner', '') or '(empty)'}")
+                click.echo(f"    Reason: {e['reason']}")
+            if len(dismissed) > 20:
+                click.echo(f"  ... and {len(dismissed) - 20} more")
+
+        click.echo("\nTo override a dismissal: lessons-db capture triage --override <draft_id>")
+        return
+
+    click.echo("Usage: lessons-db capture triage [--review-log [--date DATE] | --override ID]")
+
+
 @main.group()
 def cluster():
     """Adaptive cluster discovery and management."""

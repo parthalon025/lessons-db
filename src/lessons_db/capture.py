@@ -98,27 +98,38 @@ def capture_from_design_doc(doc_path: Path, conn: sqlite3.Connection) -> list[di
     return cast(list[dict[str, Any]], entries)
 
 
+_POLARITY_BY_SOURCE = {
+    "auto_transcript": ("negative", "lesson"),
+    "auto_transcript_positive": ("positive", "pattern"),
+    "auto_diff": ("negative", "lesson"),
+    "auto_design_doc": ("positive", "pattern"),
+}
+
+
 def promote_draft(conn: sqlite3.Connection, draft_id: int) -> int | None:
-    """Promote a pending draft to a live positive lesson. Returns lesson_id."""
+    """Promote a pending draft to a live lesson. Returns lesson_id."""
     row = conn.execute(
-        "SELECT extracted_data FROM capture_drafts WHERE id = ? AND status = 'pending'",
+        "SELECT extracted_data, source FROM capture_drafts WHERE id = ? AND status = 'pending'",
         [draft_id],
     ).fetchone()
     if not row:
         return None
 
     data = json.loads(row["extracted_data"])
+    source = row["source"] or "auto_transcript"
+    polarity, entry_type = _POLARITY_BY_SOURCE.get(source, ("negative", "lesson"))
+
     lesson_id = insert_lesson(
         conn,
         {
-            "title": data.get("one_liner", "Untitled pattern"),
-            "one_liner": data.get("one_liner", ""),
+            "title": data.get("improved_one_liner") or data.get("one_liner", "Untitled"),
+            "one_liner": data.get("improved_one_liner") or data.get("one_liner", ""),
             "description": data.get("why", ""),
-            "polarity": "positive",
-            "entry_type": "pattern",
+            "polarity": polarity,
+            "entry_type": entry_type,
             "category": data.get("category", "architecture-pattern"),
-            "tier": "noticed",
-            "source": "auto_design_doc",
+            "tier": data.get("tier", "noticed"),
+            "source": source,
             "created_date": date.today().isoformat(),
         },
     )

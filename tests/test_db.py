@@ -9,6 +9,7 @@ from lessons_db.db import (
     get_overdue_actions,
     init_db,
     insert_corrective_action,
+    insert_detection_pattern,
     insert_lesson,
     insert_near_miss,
     insert_scan_finding,
@@ -416,3 +417,72 @@ class TestSchemaExtension:
         conn = init_db(db_path)
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "cluster_runs" in tables
+
+
+class TestInsertDetectionPattern:
+    def test_inserts_pattern_for_lesson(self, db_path):
+        conn = init_db(db_path)
+        lesson_id = insert_lesson(
+            conn, {"title": "bare-except", "one_liner": "Never swallow exceptions", "tier": "lesson"}
+        )
+
+        pattern_id = insert_detection_pattern(
+            conn,
+            {
+                "lesson_id": lesson_id,
+                "pattern_type": "regex",
+                "regex": r"except\s*:",
+                "description": "Bare except clause — always log before swallowing",
+                "language": "python",
+            },
+        )
+
+        row = conn.execute("SELECT * FROM detection_patterns WHERE id = ?", [pattern_id]).fetchone()
+        assert row["lesson_id"] == lesson_id
+        assert row["regex"] == r"except\s*:"
+        assert row["language"] == "python"
+
+    def test_requires_lesson_id(self, db_path):
+        conn = init_db(db_path)
+        import sqlite3
+
+        import pytest
+
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_detection_pattern(
+                conn,
+                {
+                    "pattern_type": "regex",
+                    "regex": r"except\s*:",
+                },
+            )
+
+    def test_requires_pattern_type(self, db_path):
+        conn = init_db(db_path)
+        lesson_id = insert_lesson(conn, {"title": "test-lesson", "one_liner": "test", "tier": "lesson"})
+        import sqlite3
+
+        import pytest
+
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_detection_pattern(
+                conn,
+                {
+                    "lesson_id": lesson_id,
+                    "regex": r"except\s*:",
+                },
+            )
+
+    def test_defaults_language_to_any(self, db_path):
+        conn = init_db(db_path)
+        lesson_id = insert_lesson(conn, {"title": "test-lesson", "one_liner": "test", "tier": "lesson"})
+        pattern_id = insert_detection_pattern(
+            conn,
+            {
+                "lesson_id": lesson_id,
+                "pattern_type": "regex",
+                "regex": r"except\s*:",
+            },
+        )
+        row = conn.execute("SELECT language FROM detection_patterns WHERE id = ?", [pattern_id]).fetchone()
+        assert row["language"] == "any"

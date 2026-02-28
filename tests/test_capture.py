@@ -244,6 +244,72 @@ class TestCaptureFromDiff:
             capture_from_diff("diff --git a/foo.py b/foo.py\n-except:\n+except Exception:", conn)
 
 
+class TestPromoteDraftPolarity:
+    def test_auto_transcript_promotes_as_negative(self, db_path):
+        conn = init_db(db_path)
+        entry = {"one_liner": "Never swallow exceptions silently", "cluster": "A", "tier": "lesson"}
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'pending', '2026-02-27', 'auto_transcript')",
+            ["raw", json.dumps(entry)],
+        )
+        conn.commit()
+        draft_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        lesson_id = promote_draft(conn, draft_id)
+
+        lesson = get_lesson(conn, lesson_id)
+        assert lesson["polarity"] == "negative"
+        assert lesson["source"] == "auto_transcript"
+
+    def test_auto_transcript_positive_promotes_as_positive(self, db_path):
+        conn = init_db(db_path)
+        entry = {"one_liner": "Dual-axis testing catches integration bugs", "cluster": "", "tier": "lesson"}
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'pending', '2026-02-27', 'auto_transcript_positive')",
+            ["raw", json.dumps(entry)],
+        )
+        conn.commit()
+        draft_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        lesson_id = promote_draft(conn, draft_id)
+
+        lesson = get_lesson(conn, lesson_id)
+        assert lesson["polarity"] == "positive"
+
+    def test_auto_diff_promotes_as_negative(self, db_path):
+        conn = init_db(db_path)
+        entry = {"one_liner": "Always validate schema before inserting", "cluster": "B", "tier": "lesson"}
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'pending', '2026-02-27', 'auto_diff')",
+            ["raw", json.dumps(entry)],
+        )
+        conn.commit()
+        draft_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        lesson_id = promote_draft(conn, draft_id)
+
+        lesson = get_lesson(conn, lesson_id)
+        assert lesson["polarity"] == "negative"
+
+    def test_unknown_source_defaults_to_negative(self, db_path):
+        conn = init_db(db_path)
+        entry = {"one_liner": "Some lesson", "tier": "lesson"}
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'pending', '2026-02-27', 'unknown_future_source')",
+            ["raw", json.dumps(entry)],
+        )
+        conn.commit()
+        draft_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        lesson_id = promote_draft(conn, draft_id)
+        lesson = get_lesson(conn, lesson_id)
+        assert lesson["polarity"] == "negative"
+        assert lesson["entry_type"] == "lesson"
+
+
 class TestCapturePositiveManual:
     """Quality gate and lesson creation for manual capture."""
 

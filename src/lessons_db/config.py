@@ -95,9 +95,17 @@ VALID_SOURCES = (
     "manual",
     "auto_diff",
     "auto_transcript",
+    "auto_transcript_positive",
     "auto_test",
     "community",
     "migrated",
     "auto_design_doc",
     "auto_plan",
 )
+
+# Claude API config (for draft triage reviewer)
+CLAUDE_REVIEW_MODEL = os.environ.get("LESSONS_DB_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# Triage log directory — JSONL verdict logs written here by capture review
+TRIAGE_LOG_DIR = DATA_DIR
