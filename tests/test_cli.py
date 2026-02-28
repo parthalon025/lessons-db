@@ -445,3 +445,93 @@ class TestCaptureReview:
         result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "capture", "review", "--dry-run"])
 
         assert result.exit_code == 0
+
+
+class TestStatsEfficiency:
+    """stats efficiency subcommand."""
+
+    def test_stats_efficiency_shows_wasted_surfacings(self, tmp_path):
+        """stats efficiency lists lessons surfaced but never heeded."""
+        from lessons_db.db import init_db, insert_lesson
+        from lessons_db.learn import record_surfacing
+
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Wasted lesson",
+                "one_liner": "Bare except swallows failures",
+                "created_date": "2026-01-01",
+            },
+        )
+        # 5 surfacings, 0 heeded
+        for _ in range(5):
+            record_surfacing(conn, lid, "read", "hub.py")
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "stats", "efficiency"])
+        assert result.exit_code == 0, result.output
+        assert "Bare except swallows failures" in result.output
+        assert "Wasted" in result.output or "wasted" in result.output
+
+    def test_stats_efficiency_shows_enforcement_candidates(self, tmp_path):
+        """stats efficiency lists high-recurrence low-heed-rate lessons."""
+        from lessons_db.db import init_db, insert_lesson
+        from lessons_db.learn import record_outcome, record_surfacing
+
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "High recurrence low heed",
+                "one_liner": "SQLite closing context manager",
+                "created_date": "2026-01-01",
+                "recurrence_count": 12,
+            },
+        )
+        # 4 surfacings, 1 heeded → heed_rate = 0.25
+        for i in range(4):
+            eid = record_surfacing(conn, lid, "read", "db.py")
+            record_outcome(conn, eid, "heeded" if i == 0 else "dismissed")
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "stats", "efficiency"])
+        assert result.exit_code == 0, result.output
+        assert "SQLite closing context manager" in result.output
+
+    def test_stats_efficiency_shows_average_outcome_rate(self, tmp_path):
+        """stats efficiency prints average outcome rate across all lessons with surfacings."""
+        from lessons_db.db import init_db, insert_lesson
+        from lessons_db.learn import record_outcome, record_surfacing
+
+        db_path = tmp_path / "test.db"
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Some lesson",
+                "one_liner": "Do something right",
+                "created_date": "2026-01-01",
+            },
+        )
+        e1 = record_surfacing(conn, lid, "read", "x.py")
+        record_outcome(conn, e1, "heeded")
+        e2 = record_surfacing(conn, lid, "read", "y.py")
+        record_outcome(conn, e2, "dismissed")
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "stats", "efficiency"])
+        assert result.exit_code == 0, result.output
+        assert "outcome rate" in result.output.lower() or "Average" in result.output
+
+    def test_stats_efficiency_no_data(self, tmp_path):
+        """stats efficiency handles empty DB gracefully."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(tmp_path / "empty.db"), "stats", "efficiency"])
+        assert result.exit_code == 0, result.output
+        # Should not crash, should show empty state or zeros

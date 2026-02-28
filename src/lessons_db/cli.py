@@ -939,6 +939,93 @@ def stats_surfacing(ctx):
     click.echo(f"Avg per session        : {s['avg_per_session']}")
 
 
+@stats.command("efficiency")
+@click.pass_context
+def stats_efficiency(ctx):
+    """Show wasted surfacings and enforcement candidates.
+
+    Wasted surfacings: lessons surfaced at least once but never heeded.
+    Enforcement candidates: lessons with high recurrence and low heed rate (<30%).
+    """
+    conn = ctx.obj["conn"]
+
+    # --- Wasted surfacings: surfaced > 0 AND heeded = 0 ---
+    wasted_rows = conn.execute(
+        """
+        SELECT l.id, l.one_liner, l.title,
+               COUNT(se.id) AS surfaced,
+               SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded
+        FROM lessons l
+        JOIN surfacing_events se ON se.lesson_id = l.id
+        GROUP BY l.id
+        HAVING surfaced > 0 AND heeded = 0
+        ORDER BY surfaced DESC
+        """
+    ).fetchall()
+
+    # --- Enforcement candidates: high recurrence, low heed rate ---
+    # Threshold: recurrence_count > 3 AND heed_rate < 0.3 (must have at least 1 surfacing)
+    candidate_rows = conn.execute(
+        """
+        SELECT l.id, l.one_liner, l.title, l.recurrence_count,
+               COUNT(se.id) AS surfaced,
+               SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded
+        FROM lessons l
+        JOIN surfacing_events se ON se.lesson_id = l.id
+        GROUP BY l.id
+        HAVING surfaced > 0
+           AND l.recurrence_count > 3
+           AND (CAST(heeded AS REAL) / surfaced) < 0.3
+        ORDER BY l.recurrence_count DESC
+        """
+    ).fetchall()
+
+    # --- Average outcome rate across lessons with at least 1 surfacing ---
+    avg_row = conn.execute(
+        """
+        SELECT AVG(CAST(heeded AS REAL) / surfaced) AS avg_outcome_rate
+        FROM (
+            SELECT l.id,
+                   SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded,
+                   COUNT(se.id) AS surfaced
+            FROM lessons l
+            JOIN surfacing_events se ON se.lesson_id = l.id
+            GROUP BY l.id
+            HAVING surfaced > 0
+        )
+        """
+    ).fetchone()
+    avg_outcome_rate = avg_row[0] if avg_row and avg_row[0] is not None else None
+
+    # --- Output ---
+    click.echo("Efficiency Report")
+    click.echo("─" * 45)
+
+    if wasted_rows:
+        click.echo("\nWasted surfacings (surfaced, never heeded):")
+        for r in wasted_rows:
+            label = r["one_liner"] or r["title"] or f"lesson #{r['id']}"
+            click.echo(f"  #{r['id']} {label[:50]:<50}  surfaced: {r['surfaced']}   heeded: 0")
+    else:
+        click.echo("\nWasted surfacings: none")
+
+    if candidate_rows:
+        click.echo("\nEnforcement candidates (high recurrence, low heed rate):")
+        for r in candidate_rows:
+            label = r["one_liner"] or r["title"] or f"lesson #{r['id']}"
+            heed_rate = r["heeded"] / r["surfaced"] if r["surfaced"] > 0 else 0.0
+            click.echo(
+                f"  #{r['id']} {label[:50]:<50}  recurrence: {r['recurrence_count']}  " f"heed_rate: {heed_rate:.2f}"
+            )
+    else:
+        click.echo("\nEnforcement candidates: none")
+
+    if avg_outcome_rate is not None:
+        click.echo(f"\nAverage outcome rate: {avg_outcome_rate:.2f}")
+    else:
+        click.echo("\nAverage outcome rate: N/A (no surfacing data)")
+
+
 @main.group()
 def template():
     """View and apply templates from proven positive patterns."""

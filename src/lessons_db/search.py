@@ -103,6 +103,46 @@ def _merge_hits(hits, id_key, seen_ids, results, transform=None):
             results.append(transform(hit, lid) if transform else hit)
 
 
+def _apply_composite_scores(conn: sqlite3.Connection, results: list[dict]) -> list[dict]:
+    """Compute composite relevance score for each result and re-sort by it.
+
+    Uses semantic similarity from result['score'] if present, else 0.0.
+    Falls back to semantic_sim=0.0 if relevance_score() raises — logs the error
+    so failures are visible (Cluster A: no silent swallowing).
+
+    Adds 'composite_score' to each result dict.
+    Returns results sorted by composite_score descending.
+    """
+    from lessons_db.learn import relevance_score
+
+    for result in results:
+        lesson_id = result.get("id")
+        if lesson_id is None:
+            result["composite_score"] = 0.0
+            continue
+
+        # Semantic similarity: use score from vector search if available, else 0.0
+        semantic_sim: float = float(result.get("score") or 0.0)
+        # Context: use matched_pattern or empty string as context signal
+        context: str = result.get("matched_pattern") or ""
+
+        try:
+            score = relevance_score(conn, lesson_id, context, semantic_sim)
+        except Exception as exc:
+            logger.warning(
+                "search_combined: relevance_score fallback for lesson %d — %s. " "Using semantic_sim=%.3f as score.",
+                lesson_id,
+                exc,
+                semantic_sim,
+            )
+            score = semantic_sim
+
+        result["composite_score"] = score
+
+    results.sort(key=lambda r: r.get("composite_score", 0.0), reverse=True)
+    return results
+
+
 def search_combined(
     conn: sqlite3.Connection,
     lance_db: lancedb.DBConnection | None,
@@ -112,10 +152,13 @@ def search_combined(
     language: str = "any",
     polarity: str | None = None,
 ) -> list[dict]:
-    """Run all applicable strategies, deduplicate by lesson ID, sort by severity DESC.
+    """Run all applicable strategies, deduplicate by lesson ID, rank by composite relevance.
 
     First hit wins for deduplication. Results are unified to have at minimum:
-    id, one_liner, severity.
+    id, one_liner, severity, composite_score.
+
+    composite_score = 0.5 * semantic_sim + 0.3 * outcome_rate + 0.2 * recurrence_score.
+    Falls back to semantic_sim for any lesson where relevance_score() raises.
 
     polarity: optional filter — 'positive', 'negative', or None (no filter).
     """
@@ -170,6 +213,6 @@ def search_combined(
         allowed = {r["id"] for r in rows if r["polarity"] == polarity}
         results = [r for r in results if r["id"] in allowed]
 
-    # Sort by severity descending
-    results.sort(key=lambda r: r.get("severity", 0), reverse=True)
+    # Rank by composite relevance score (replaces severity-only sort)
+    results = _apply_composite_scores(conn, results)
     return results
