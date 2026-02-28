@@ -753,6 +753,38 @@ def test_learn_list_since_filters_by_time(tmp_path):
     assert "2" not in lines  # lesson_id 2 absent, not digit 2
 
 
+def test_learn_list_outcome_filter_excludes_decided(tmp_path):
+    """learn list --outcome unknown returns only undecided events."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_outcome, record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    insert_lesson(
+        conn, {"title": "L1", "one_liner": "t", "cluster": "A", "tier": "lesson", "created_date": "2026-01-01"}
+    )
+    insert_lesson(
+        conn, {"title": "L2", "one_liner": "t", "cluster": "B", "tier": "lesson", "created_date": "2026-01-01"}
+    )
+
+    # Lesson 1: surfaced + heeded (decided)
+    eid1 = record_surfacing(conn, 1, "plan", "ctx")
+    record_outcome(conn, eid1, "heeded")
+
+    # Lesson 2: surfaced, no outcome yet (unknown)
+    record_surfacing(conn, 2, "plan", "ctx")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["--db", str(db_path), "learn", "list", "--since", "1h", "--format", "ids", "--outcome", "unknown"],
+    )
+    assert result.exit_code == 0, result.output
+    lines = [line.strip() for line in result.output.strip().splitlines()]
+    assert "2" in lines  # lesson 2 is unknown — included
+    assert "1" not in lines  # lesson 1 is heeded — excluded
+
+
 def test_kpi_command_runs_and_shows_metrics(tmp_path):
     """kpi command outputs all expected metric labels."""
     from lessons_db.db import init_db, insert_lesson

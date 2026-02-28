@@ -1012,8 +1012,15 @@ def learn_dismiss(click_ctx, lesson_id):
     type=click.Choice(["table", "ids"]),
     help="Output format. 'ids' prints one lesson_id per line for scripting.",
 )
+@click.option(
+    "--outcome",
+    "outcome_filter",
+    default=None,
+    type=click.Choice(["unknown", "heeded", "dismissed", "false_positive", "recurrence"]),
+    help="Filter by outcome value. Omit to return all outcomes.",
+)
 @click.pass_context
-def learn_list(click_ctx, since, output_format):
+def learn_list(click_ctx, since, output_format, outcome_filter):
     """List recent surfacing events."""
     import re
     from datetime import UTC, datetime, timedelta
@@ -1031,11 +1038,17 @@ def learn_list(click_ctx, since, output_format):
     seconds = n * 3600 if unit == "h" else n * 86400
     cutoff = (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
 
+    where_parts = ["se.timestamp >= ?"]
+    params: list = [cutoff]
+    if outcome_filter is not None:
+        where_parts.append("se.outcome = ?")
+        params.append(outcome_filter)
+
     rows = conn.execute(
         "SELECT se.id, se.lesson_id, l.title, se.hook_point, se.outcome, se.timestamp "
         "FROM surfacing_events se JOIN lessons l ON l.id = se.lesson_id "
-        "WHERE se.timestamp >= ? ORDER BY se.timestamp DESC",
-        [cutoff],
+        f"WHERE {' AND '.join(where_parts)} ORDER BY se.timestamp DESC",
+        params,
     ).fetchall()
 
     if not rows:
