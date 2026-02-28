@@ -1,4 +1,4 @@
-.PHONY: lint lint-py lint-sh lint-audit lint-types format
+.PHONY: lint lint-py lint-sh lint-audit lint-types format install uninstall status
 
 all: lint
 
@@ -19,3 +19,12 @@ lint-types:
 format:
 	ruff format .
 	ruff check --fix .
+
+install:
+	@bash install.sh
+
+uninstall:
+	@bash install.sh --uninstall
+
+status:
+	@bash install.sh --status
