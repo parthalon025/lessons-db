@@ -1,5 +1,6 @@
 """SQLite schema, migrations, and CRUD for lessons-db."""
 
+import json
 import logging
 import sqlite3
 from datetime import date, timedelta
@@ -515,8 +516,6 @@ def insert_mined_repo(
     topics: list[str] | None = None,
 ) -> int:
     """Insert or return existing mined_repos entry (idempotent by repo_full_name)."""
-    import json
-
     existing = conn.execute("SELECT id FROM mined_repos WHERE repo_full_name = ?", (repo_full_name,)).fetchone()
     if existing:
         return existing["id"]
@@ -525,6 +524,7 @@ def insert_mined_repo(
         (repo_full_name, json.dumps(topics or [])),
     )
     conn.commit()
+    assert cursor.lastrowid is not None
     return cursor.lastrowid
 
 
