@@ -63,3 +63,25 @@ PYEOF
 if [[ "${PENDING_COUNT:-0}" -gt 50 ]]; then
     echo "Draft backlog: ${PENDING_COUNT} pending — run: lessons-db capture review --dry-run"
 fi
+
+# Surface top-3 contextually relevant lessons for current project.
+# Mirrors the enter-plan hook — session start should show the same signal.
+PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+PROJ_NAME=$(basename "$PROJ_DIR")
+CONTEXT_RESULTS=$("$LESSONS_DB" search "planning ${PROJ_NAME}" --top 3 2>/dev/null || echo "")
+if [[ -n "$CONTEXT_RESULTS" && "$CONTEXT_RESULTS" != "No results found." ]]; then
+    echo ""
+    echo "Top lessons for ${PROJ_NAME}:"
+    echo "$CONTEXT_RESULTS"
+
+    # Record surfacing events for learning pipeline
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+            "$LESSONS_DB" learn record \
+                --lesson-id "${BASH_REMATCH[1]}" \
+                --hook "session-start" \
+                --context "$PROJ_NAME" \
+                2>>/tmp/lessons-db-errors.log || true
+        fi
+    done <<< "$CONTEXT_RESULTS"
+fi
