@@ -18,7 +18,7 @@ from lessons_db.db import (
     insert_lesson,
     set_scan_state,
 )
-from lessons_db.migrate import parse_lesson_file
+from lessons_db.migrate import import_lesson_file, parse_lesson_file
 from lessons_db.search import search_combined
 
 logger = logging.getLogger(__name__)
@@ -211,6 +211,61 @@ def migrate(ctx, source, db_override, dry_run):
             errors += 1
 
     click.echo(f"Migrated: {migrated}, Skipped: {skipped}, Errors: {errors}")
+
+
+@main.command("import")
+@click.argument("path", type=click.Path(exists=True))
+@click.pass_context
+def import_cmd(ctx, path):
+    """Import YAML-frontmatter lesson file(s) into the database.
+
+    PATH can be a single .md file or a directory. When a directory is given,
+    all files matching [0-9][0-9][0-9][0-9]-*.md are imported.
+
+    Duplicates (matched by markdown_path or title) are skipped gracefully.
+    """
+    conn = ctx.obj["conn"]
+    target = Path(path)
+
+    if target.is_file():
+        candidates = [target]
+    elif target.is_dir():
+        candidates = sorted(target.rglob("[0-9][0-9][0-9][0-9]-*.md"))
+    else:
+        click.echo(f"import: {path!r} is neither a file nor a directory", err=True)
+        ctx.exit(1)
+        return
+
+    if not candidates:
+        click.echo("import: no lesson files found")
+        return
+
+    imported = 0
+    skipped = 0
+    errors = 0
+
+    for f in candidates:
+        try:
+            result = import_lesson_file(conn, f)
+            if result is None:
+                skipped += 1
+                click.echo(f"  skipped (duplicate): {f.name}")
+            else:
+                imported += 1
+                click.echo(f"  imported: {f.name} → DB id {result}")
+        except ValueError as exc:
+            # Non-YAML-frontmatter file — skip with message
+            logger.debug("import: skipping %s — %s", f.name, exc)
+            skipped += 1
+            click.echo(f"  skipped (no frontmatter): {f.name}")
+        except Exception as exc:
+            logger.error("import: failed for %s: %s", f.name, exc)
+            errors += 1
+            click.echo(f"  error: {f.name} — {exc}", err=True)
+
+    click.echo(f"\nImported: {imported}, Skipped: {skipped}, Errors: {errors}")
+    if errors:
+        ctx.exit(1)
 
 
 @main.command()

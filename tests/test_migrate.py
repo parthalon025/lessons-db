@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
-from lessons_db.migrate import parse_lesson_file
+import pytest
+
+from lessons_db.migrate import import_lesson_file, parse_lesson_file
 
 SAMPLE_LESSON = """\
 # Lesson #88: `contextlib.suppress` in Finally Blocks Is a Silent Failure Trap
@@ -112,3 +114,214 @@ def test_handles_missing_fields_gracefully(tmp_path: Path) -> None:
     assert result["corrective_actions"] == []
     assert result["key_takeaway"] == ""
     assert result["description"] == ""
+
+
+# ---------------------------------------------------------------------------
+# YAML frontmatter format (0001-*.md style lessons)
+# ---------------------------------------------------------------------------
+
+YAML_LESSON = """\
+---
+id: 1
+title: "Bare exception swallowing hides failures"
+severity: blocker
+languages: [python]
+scope: [language:python]
+category: silent-failures
+pattern:
+  type: syntactic
+  regex: "^\\\\s*except\\\\s*:"
+  description: "bare except clause without logging"
+fix: "Always log the exception before returning a fallback"
+positive_alternative: "Use 'except Exception as e: logger.error(...)'"
+---
+
+## Observation
+Bare `except:` clauses silently swallow all exceptions.
+
+## Insight
+The root cause is defensive exception handling with no logging.
+
+## Lesson
+Never use bare `except:` — always catch a specific exception class and log.
+"""
+
+YAML_LESSON_CLUSTER_B = """\
+---
+id: 60
+title: "Integration boundary bug hides under passing unit tests"
+severity: should-fix
+languages: [python, shell]
+scope: [language:python, language:bash]
+category: integration-boundaries
+pattern:
+  type: syntactic
+  regex: 'mock\\.patch'
+  description: "over-mocked integration test"
+fix: "Trace one value end-to-end instead of mocking at boundaries"
+---
+
+## Observation
+Each layer's tests pass individually but the integration fails.
+
+## Lesson
+Always run a vertical trace test after unit tests pass.
+"""
+
+
+def _write_yaml_lesson(tmp_path: Path, content: str = YAML_LESSON, name: str = "0001-bare-except.md") -> Path:
+    p = tmp_path / name
+    p.write_text(content)
+    return p
+
+
+class TestImportLessonFile:
+    """Tests for import_lesson_file() — YAML frontmatter format."""
+
+    def test_returns_inserted_id(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        lesson_id = import_lesson_file(conn, path)
+        assert isinstance(lesson_id, int)
+        assert lesson_id > 0
+
+    def test_inserts_title_and_one_liner(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        lesson_id = import_lesson_file(conn, path)
+        row = conn.execute("SELECT * FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        assert row["title"] == "Bare exception swallowing hides failures"
+        assert "log" in row["one_liner"].lower()
+
+    def test_inserts_cluster_from_category(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        lesson_id = import_lesson_file(conn, path)
+        row = conn.execute("SELECT cluster FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        # silent-failures → cluster A
+        assert row["cluster"] == "A"
+
+    def test_inserts_scope(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        lesson_id = import_lesson_file(conn, path)
+        row = conn.execute("SELECT scope FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        assert "language:python" in row["scope"]
+
+    def test_inserts_detection_pattern(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        lesson_id = import_lesson_file(conn, path)
+        patterns = conn.execute("SELECT * FROM detection_patterns WHERE lesson_id = ?", (lesson_id,)).fetchall()
+        assert len(patterns) == 1
+        assert patterns[0]["pattern_type"] == "syntactic"
+        assert "except" in patterns[0]["regex"]
+
+    def test_inserts_markdown_path(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        lesson_id = import_lesson_file(conn, path)
+        row = conn.execute("SELECT markdown_path FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        assert row["markdown_path"] == str(path)
+
+    def test_duplicate_by_path_returns_none(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path)
+        first = import_lesson_file(conn, path)
+        second = import_lesson_file(conn, path)
+        assert first is not None
+        assert second is None  # duplicate — skipped
+
+    def test_duplicate_by_title_returns_none(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path1 = _write_yaml_lesson(tmp_path, name="0001-a.md")
+        path2 = _write_yaml_lesson(tmp_path, name="0001-b.md")  # same title, different path
+        import_lesson_file(conn, path1)
+        second = import_lesson_file(conn, path2)
+        assert second is None
+
+    def test_cluster_b_category_mapping(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = _write_yaml_lesson(tmp_path, content=YAML_LESSON_CLUSTER_B, name="0060-boundary.md")
+        lesson_id = import_lesson_file(conn, path)
+        row = conn.execute("SELECT cluster FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        assert row["cluster"] == "B"
+
+    def test_non_frontmatter_file_raises(self, tmp_path: Path) -> None:
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        path = tmp_path / "old-format.md"
+        path.write_text("# Lesson #88: Old-style lesson\n\n**Date:** 2026-01-01\n")
+        with pytest.raises(ValueError, match="YAML frontmatter"):
+            import_lesson_file(conn, path)
+
+
+class TestImportCLICommand:
+    """Tests for `lessons-db import` CLI command."""
+
+    def test_import_single_file(self, tmp_path: Path) -> None:
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        path = _write_yaml_lesson(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", str(path)])
+        assert result.exit_code == 0, result.output
+        assert "imported" in result.output.lower()
+
+    def test_import_directory(self, tmp_path: Path) -> None:
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        lesson_dir = tmp_path / "lessons"
+        lesson_dir.mkdir()
+        _write_yaml_lesson(lesson_dir, name="0001-bare-except.md")
+        _write_yaml_lesson(lesson_dir, content=YAML_LESSON_CLUSTER_B, name="0060-boundary.md")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", str(lesson_dir)])
+        assert result.exit_code == 0, result.output
+        assert "2" in result.output  # 2 imported
+
+    def test_import_skips_duplicates(self, tmp_path: Path) -> None:
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        path = _write_yaml_lesson(tmp_path)
+        runner = CliRunner()
+        db = str(tmp_path / "test.db")
+        runner.invoke(main, ["--db", db, "import", str(path)])
+        result = runner.invoke(main, ["--db", db, "import", str(path)])
+        assert result.exit_code == 0
+        assert "skipped" in result.output.lower()
+
+    def test_import_missing_path_exits_nonzero(self, tmp_path: Path) -> None:
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "import", str(tmp_path / "nonexistent.md")])
+        assert result.exit_code != 0

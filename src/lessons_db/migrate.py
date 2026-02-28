@@ -4,9 +4,31 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
+from datetime import date
 from pathlib import Path
 
+import yaml
+
 _log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cluster mapping: category name → cluster letter
+# ---------------------------------------------------------------------------
+_CATEGORY_TO_CLUSTER: dict[str, str] = {
+    "silent-failures": "A",
+    "silent_failures": "A",
+    "integration-boundaries": "B",
+    "integration_boundaries": "B",
+    "cold-start": "C",
+    "cold_start": "C",
+    "specification-drift": "D",
+    "specification_drift": "D",
+    "context-retrieval": "E",
+    "context_retrieval": "E",
+    "planning-control-flow": "F",
+    "planning_control_flow": "F",
+}
 
 
 def extract_lesson_number(title_line: str) -> int | None:
@@ -128,3 +150,128 @@ def parse_lesson_file(path: Path) -> dict:
         _log.warning("parse_lesson_file: missing required field in %s", path.name)
     _log.debug("parse_lesson_file: parsed %s", path.name)
     return result
+
+
+# ---------------------------------------------------------------------------
+# YAML frontmatter format (0001-*.md through 0091-*.md)
+# ---------------------------------------------------------------------------
+
+
+def _parse_yaml_frontmatter(path: Path) -> dict:
+    """Extract and parse YAML frontmatter between leading --- delimiters.
+
+    Raises ValueError if no frontmatter is found.
+    """
+    text = path.read_text(encoding="utf-8")
+    m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+    if not m:
+        raise ValueError(f"YAML frontmatter not found in {path.name}")
+    fm = yaml.safe_load(m.group(1)) or {}
+
+    # Parse body sections after frontmatter
+    body = text[m.end() :].strip()
+    body_lines = body.splitlines()
+
+    def _body_section(heading: str) -> str:
+        collecting = False
+        parts: list[str] = []
+        for line in body_lines:
+            if line.startswith("## "):
+                if collecting:
+                    break
+                if line[3:].strip() == heading:
+                    collecting = True
+                    continue
+            elif collecting:
+                parts.append(line)
+        return "\n".join(parts).strip()
+
+    fm["_observation"] = _body_section("Observation")
+    fm["_insight"] = _body_section("Insight")
+    fm["_lesson"] = _body_section("Lesson")
+    return fm
+
+
+def import_lesson_file(conn: sqlite3.Connection, path: Path) -> int | None:
+    """Import a YAML-frontmatter lesson file into the DB.
+
+    Handles the 0001-*.md through 0091-*.md format used by ACT lessons.
+    Returns the new lesson DB id, or None if the lesson was already present
+    (duplicate detected by markdown_path or title).
+
+    Raises ValueError if the file has no YAML frontmatter.
+    """
+    from lessons_db.db import insert_detection_pattern, insert_lesson
+
+    fm = _parse_yaml_frontmatter(path)
+
+    title: str = fm.get("title", path.stem)
+    path_str = str(path)
+
+    # Duplicate check — by path first, then title
+    existing_path = conn.execute("SELECT id FROM lessons WHERE markdown_path = ?", (path_str,)).fetchone()
+    if existing_path:
+        _log.debug("import_lesson_file: skipping %s (path already in DB)", path.name)
+        return None
+
+    existing_title = conn.execute("SELECT id FROM lessons WHERE lower(title) = lower(?)", (title,)).fetchone()
+    if existing_title:
+        _log.debug("import_lesson_file: skipping %s (title '%s' already in DB)", path.name, title)
+        return None
+
+    # Derive cluster letter from category
+    category: str = fm.get("category", "")
+    cluster = _CATEGORY_TO_CLUSTER.get(category, "")
+
+    # Scope: frontmatter stores as list ["language:python", ...] or string
+    scope_raw = fm.get("scope", [])
+    scope = ", ".join(scope_raw) if isinstance(scope_raw, list) else str(scope_raw)
+
+    # one_liner: use fix field, or first 120 chars of lesson body
+    fix = fm.get("fix", "")
+    lesson_body = fm.get("_lesson", "")
+    one_liner = fix or (lesson_body[:120] if lesson_body else "")
+
+    # Description from body sections
+    desc_parts = [p for p in (fm["_observation"], fm["_insight"], fm["_lesson"]) if p]
+    description = "\n\n".join(desc_parts)
+
+    lesson_data = {
+        "title": title,
+        "one_liner": one_liner,
+        "description": description,
+        "cluster": cluster,
+        "tier": "lesson",
+        "category": category,
+        "scope": scope,
+        "created_date": date.today().isoformat(),
+        "source": "imported",
+        "markdown_path": path_str,
+    }
+    lesson_id = insert_lesson(conn, lesson_data)
+
+    # Insert detection pattern from frontmatter pattern: block
+    pattern_block = fm.get("pattern", {})
+    if isinstance(pattern_block, dict) and pattern_block.get("type") == "syntactic":
+        regex = pattern_block.get("regex", "")
+        if regex:
+            # Derive language from languages field
+            languages_raw = fm.get("languages", ["any"])
+            if isinstance(languages_raw, list):
+                language = languages_raw[0] if languages_raw else "any"
+            else:
+                language = str(languages_raw)
+
+            insert_detection_pattern(
+                conn,
+                {
+                    "lesson_id": lesson_id,
+                    "pattern_type": "syntactic",
+                    "regex": regex,
+                    "description": pattern_block.get("description", ""),
+                    "language": language,
+                },
+            )
+
+    _log.debug("import_lesson_file: imported %s → DB id %d", path.name, lesson_id)
+    return lesson_id
