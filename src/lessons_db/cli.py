@@ -18,6 +18,7 @@ from lessons_db.db import (
     insert_lesson,
     set_scan_state,
 )
+from lessons_db.learn import VALID_OUTCOMES
 from lessons_db.migrate import import_lesson_file, parse_lesson_file
 from lessons_db.search import search_combined
 
@@ -968,7 +969,7 @@ def learn():
 @click.option(
     "--outcome",
     default=None,
-    type=click.Choice(["heeded", "dismissed", "false_positive", "recurrence"]),
+    type=click.Choice(list(VALID_OUTCOMES)),
     help="Outcome to record immediately (optional, default: unknown).",
 )
 @click.pass_context
@@ -1385,7 +1386,8 @@ def kpi_dashboard(click_ctx):
     heed_recur = heeded + recurrences
     cutoff_90d = (datetime.now(UTC) - timedelta(seconds=86400 * 90)).isoformat()
     dead_lessons = q(
-        "SELECT COUNT(*) FROM lessons l WHERE NOT EXISTS ("
+        "SELECT COUNT(*) FROM lessons l "
+        "WHERE l.polarity = 'negative' AND NOT EXISTS ("
         "  SELECT 1 FROM surfacing_events se "
         "  WHERE se.lesson_id = l.id AND se.timestamp >= ?"
         ")",
