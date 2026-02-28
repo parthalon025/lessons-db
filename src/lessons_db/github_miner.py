@@ -17,13 +17,13 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
 
 from lessons_db.config import ANALYSIS_MODEL, OLLAMA_QUEUE_URL
-from lessons_db.db import insert_mined_repo, update_mined_repo
+from lessons_db.db import insert_mined_repo, insert_mining_run, update_mined_repo
 
 _log = logging.getLogger(__name__)
 
@@ -137,6 +137,8 @@ def discover_repos(topics: list[str], min_stars: int = 50) -> list[str]:
     import subprocess
 
     repos = set()
+    if len(topics) > 3:
+        _log.debug("discover_repos: limiting to first 3 topics of %d (reduce gh API calls)", len(topics))
     for topic in topics[:3]:  # Limit gh API calls
         try:
             gh_cmd = [  # noqa: S607
@@ -177,25 +179,39 @@ def _process_modification(
     stats: dict,
 ) -> int:
     """Process one file modification from a commit. Returns lesson count extracted."""
-    from lessons_db.capture import capture_from_diff
     from lessons_db.pattern_validator import validate_regex_self_consistency, validate_syntax
 
     lessons_extracted = 0
     candidates = extract_polarized_candidates(conn, diff, repo_name)
     for candidate in candidates:
-        # Gate 0a: syntax check
-        syn = validate_syntax(
-            title=candidate.get("title", ""),
-            one_liner=candidate.get("one_liner", ""),
-            bad_code=candidate.get("bad_code", ""),
-            good_code=candidate.get("good_code", ""),
-            regex=candidate.get("regex"),
-        )
-        if not syn["passed"]:
+        polarity = candidate.get("polarity", "negative")
+
+        # Gate 0a: syntax check — skip for positive candidates.
+        # Positive candidates have bad_code="N/A" by design, which fails the
+        # 2-line minimum check. Only validate required fields for positive.
+        if polarity != "positive":
+            syn = validate_syntax(
+                title=candidate.get("title", ""),
+                one_liner=candidate.get("one_liner", ""),
+                bad_code=candidate.get("bad_code", ""),
+                good_code=candidate.get("good_code", ""),
+                regex=candidate.get("regex"),
+            )
+            if not syn["passed"]:
+                stats["gate0_rejected"] += 1
+                continue
+        # Positive candidates: require title, one_liner, and good_code at minimum.
+        elif not all(
+            [
+                candidate.get("title", "").strip(),
+                candidate.get("one_liner", "").strip(),
+                candidate.get("good_code", "").strip(),
+            ]
+        ):
             stats["gate0_rejected"] += 1
             continue
 
-        # Gate 0b: regex self-consistency
+        # Gate 0b: regex self-consistency — only applies if regex is present.
         if candidate.get("regex"):
             reg = validate_regex_self_consistency(
                 candidate["regex"],
@@ -206,8 +222,30 @@ def _process_modification(
                 stats["gate0_rejected"] += 1
                 continue
 
-        # Feed into existing capture pipeline
-        capture_from_diff(diff, conn)
+        # Insert validated candidate directly into capture_drafts.
+        # capture_from_diff() re-runs the full LLM extraction pipeline from scratch
+        # and throws away the already-validated candidate fields — incorrect.
+        # Instead, serialise the candidate into extracted_data (JSON) to match
+        # the schema used by capture_from_transcript and capture_from_design_doc.
+        try:
+            conn.execute(
+                "INSERT INTO capture_drafts "
+                "(raw_content, extracted_data, status, created_date, source) "
+                "VALUES (?, ?, 'pending', ?, ?)",
+                [
+                    diff[:500],
+                    json.dumps(candidate),
+                    date.today().isoformat(),
+                    f"github_miner:{repo_name}",
+                ],
+            )
+            conn.commit()
+        except Exception as exc:
+            _log.warning("capture_drafts insert failed for %s: %s", repo_name, exc)
+            conn.rollback()
+            stats["error_count"] += 1
+            continue
+
         stats["auto_approved"] += 1
         lessons_extracted += 1
 
@@ -282,4 +320,16 @@ def mine_repos_for_gaps(
             _log.error("repo mining failed for %s: %s", repo_name, exc)
             stats["error_count"] += 1
 
+    run_id = insert_mining_run(
+        conn,
+        repos_searched=stats["repos_searched"],
+        commits_analyzed=stats["commits_analyzed"],
+        gate0_rejected=stats["gate0_rejected"],
+        gate1_rejected=stats["gate1_rejected"],
+        auto_approved=stats["auto_approved"],
+        conflicts_flagged=stats["conflicts_flagged"],
+        error_count=stats["error_count"],
+        duration_seconds=None,  # caller can pass timing if needed
+    )
+    _log.info("mining run %d complete: %s", run_id, stats)
     return stats
