@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from lessons_db.config import LANCE_DIR, SQLITE_PATH
@@ -123,16 +123,20 @@ def create_app(  # noqa: C901, PLR0915
             conn.close()
 
     @app.post("/api/mining/run")
-    def trigger_mining_run(topics: list[str] | None = None) -> dict:
+    def trigger_mining_run(background_tasks: BackgroundTasks, topics: list[str] | None = None) -> dict:
         from lessons_db.github_miner import MiningConfig, mine_repos_for_gaps
 
-        conn = get_conn()
-        try:
-            config = MiningConfig(topics=topics or MiningConfig().topics)
-            stats = mine_repos_for_gaps(conn, _lance_dir, config=config)
-            return {"status": "complete", **stats}
-        finally:
-            conn.close()
+        config = MiningConfig(topics=topics or MiningConfig().topics)
+
+        def _run() -> None:
+            conn = get_conn()
+            try:
+                mine_repos_for_gaps(conn, _lance_dir, config=config)
+            finally:
+                conn.close()
+
+        background_tasks.add_task(_run)
+        return {"status": "queued", "message": "Mining started — check /api/mining/history for results"}
 
     @app.post("/api/security/scan")
     def trigger_security_scan(target: str | None = None) -> dict:

@@ -345,6 +345,21 @@ class TestScanFindings:
         assert open_findings[0]["one_liner"] == "no async without IO"
         conn.close()
 
+    def test_get_open_findings_includes_null_lesson_id(self, db_path):
+        """get_open_findings must return findings with NULL lesson_id (scanner-discovered, not yet linked)."""
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO scan_findings (lesson_id, scan_date, rule_id, file_path, line_number, snippet) "
+            "VALUES (NULL, ?, 'S105', 'src/foo.py', 10, 'secret = \"x\"')",
+            (date.today().isoformat(),),
+        )
+        conn.commit()
+        findings = get_open_findings(conn)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "S105"
+        assert findings[0]["lesson_id"] is None
+        conn.close()
+
 
 class TestSchemaExtension:
     """Tests for v2 schema extension columns and tables."""

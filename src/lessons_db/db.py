@@ -532,7 +532,7 @@ def get_open_findings(conn: sqlite3.Connection) -> list[dict]:
         """
         SELECT sf.*, l.title, l.one_liner
         FROM scan_findings sf
-        JOIN lessons l ON sf.lesson_id = l.id
+        LEFT JOIN lessons l ON sf.lesson_id = l.id
         WHERE sf.status = 'open'
         """,
     ).fetchall()
