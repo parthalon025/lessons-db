@@ -1362,3 +1362,60 @@ def logs(tail, level):
         lines = [l for l in lines if f" {level} " in l]
     for line in lines[-tail:]:
         click.echo(line)
+
+
+@main.command("kpi")
+@click.pass_context
+def kpi_dashboard(click_ctx):
+    """Show all KPI metrics for the lesson learning system."""
+    import time
+
+    conn = click_ctx.obj["conn"]
+
+    def q(sql, params=None):
+        row = conn.execute(sql, params or []).fetchone()
+        return row[0] if row else 0
+
+    total_lessons = q("SELECT COUNT(*) FROM lessons WHERE polarity='negative'")
+    total_surfacings = q("SELECT COUNT(*) FROM surfacing_events")
+    decided = q("SELECT COUNT(*) FROM surfacing_events WHERE outcome != 'unknown'")
+    heeded = q("SELECT COUNT(*) FROM surfacing_events WHERE outcome = 'heeded'")
+    recurrences = q("SELECT COUNT(*) FROM surfacing_events WHERE outcome = 'recurrence'")
+    false_positives = q("SELECT COUNT(*) FROM surfacing_events WHERE outcome = 'false_positive'")
+    heed_recur = heeded + recurrences
+    cutoff_90d = int(time.time()) - 86400 * 90
+    dead_lessons = q(
+        "SELECT COUNT(*) FROM lessons l WHERE NOT EXISTS ("
+        "  SELECT 1 FROM surfacing_events se "
+        "  WHERE se.lesson_id = l.id AND se.timestamp >= ?"
+        ")",
+        [cutoff_90d],
+    )
+    growth_7d = q("SELECT COUNT(*) FROM lessons WHERE created_date >= date('now','-7 days')")
+
+    heed_rate = round(heeded / decided * 100, 1) if decided > 0 else None
+    recurrence_rate = round(recurrences / heed_recur * 100, 1) if heed_recur > 0 else None
+    fp_rate = round(false_positives / decided * 100, 1) if decided > 0 else None
+    dead_pct = round(dead_lessons / total_lessons * 100, 1) if total_lessons > 0 else 0
+
+    def fmt(val, target_ok, unit="%"):
+        if val is None:
+            return "  n/a    (no data yet)"
+        ok = "✓" if target_ok(val) else "✗"
+        return f"  {val}{unit}  {ok}"
+
+    click.echo("")
+    click.echo("  Lessons-DB KPI Dashboard")
+    click.echo("  " + "─" * 44)
+    click.echo(f"  Total lessons          : {total_lessons}")
+    click.echo(f"  Total surfacings       : {total_surfacings}  ({decided} with outcome)")
+    click.echo("")
+    click.echo("  Outcome KPIs (need outcome data to populate):")
+    click.echo(f"  Recurrence Rate        :{fmt(recurrence_rate, lambda v: v < 5)}")
+    click.echo(f"  Heed Rate              :{fmt(heed_rate,        lambda v: v > 50)}")
+    click.echo(f"  False Positive Rate    :{fmt(fp_rate,          lambda v: v < 15)}")
+    click.echo("")
+    click.echo("  System Health:")
+    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'✓' if dead_pct < 10 else '✗'}")
+    click.echo(f"  DB Growth (7d)         :  +{growth_7d} lessons")
+    click.echo("")

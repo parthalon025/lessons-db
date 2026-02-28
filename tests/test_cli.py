@@ -750,3 +750,37 @@ def test_learn_list_since_filters_by_time(tmp_path):
     lines = [line.strip() for line in result.output.strip().splitlines()]
     assert "1" in lines  # exact lesson_id 1, not substring
     assert "2" not in lines  # lesson_id 2 absent, not digit 2
+
+
+def test_kpi_command_runs_and_shows_metrics(tmp_path):
+    """kpi command outputs all expected metric labels."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_outcome, record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Test KPI",
+            "one_liner": "t",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    eid1 = record_surfacing(conn, lid, "plan", "ctx")
+    record_outcome(conn, eid1, "heeded")
+    eid2 = record_surfacing(conn, lid, "edit", "ctx")
+    record_outcome(conn, eid2, "recurrence")
+    eid3 = record_surfacing(conn, lid, "bash", "ctx")
+    record_outcome(conn, eid3, "false_positive")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "kpi"])
+    assert result.exit_code == 0, result.output
+    assert "Recurrence Rate" in result.output
+    assert "Heed Rate" in result.output
+    assert "False Positive Rate" in result.output
+    assert "Dead Lessons" in result.output
+    assert "DB Growth" in result.output
