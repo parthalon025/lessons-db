@@ -20,6 +20,10 @@ from lessons_db.gap_analyzer import get_gap_report
 _log = logging.getLogger(__name__)
 
 
+class StatusUpdate(BaseModel):
+    status: str
+
+
 def create_app(  # noqa: C901, PLR0915
     db_path: Path | None = None,
     lance_dir: Path | None = None,
@@ -73,9 +77,6 @@ def create_app(  # noqa: C901, PLR0915
             return {"lessons": [dict(r) for r in rows], "total": total, "offset": offset}
         finally:
             conn.close()
-
-    class StatusUpdate(BaseModel):
-        status: str
 
     @app.get("/api/lessons/stats")
     def lessons_stats() -> dict:
