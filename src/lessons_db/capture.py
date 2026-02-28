@@ -209,20 +209,29 @@ def capture_from_transcript(
     inserted = []
     try:
         for entry in lessons:
+            one_liner = entry.get("one_liner", "")
+            score = score_one_liner(one_liner)
+            if score < QUALITY_MIN_SCORE:
+                _log.debug(
+                    "capture_from_transcript: skipping low-quality draft (score %d): %s",
+                    score,
+                    one_liner[:80],
+                )
+                continue
             conn.execute(
                 "INSERT INTO capture_drafts "
                 "(raw_content, extracted_data, status, created_date, source) "
                 "VALUES (?, ?, 'pending', ?, ?)",
                 [excerpt[:500], json.dumps(entry), date.today().isoformat(), source],
             )
+            inserted.append(entry)
         conn.commit()
-        inserted = lessons
     except Exception as e:
         _log.warning("capture_from_transcript DB insert failed: %s", e)
         conn.rollback()
         raise
 
-    _log.debug("capture_from_transcript: created %d drafts", len(inserted))
+    _log.debug("capture_from_transcript: created %d drafts (%d filtered)", len(inserted), len(lessons) - len(inserted))
     return cast(list[dict[str, Any]], inserted)
 
 
@@ -266,20 +275,29 @@ def capture_from_diff(diff_text: str, conn: sqlite3.Connection) -> list[dict[str
     inserted = []
     try:
         for entry in lessons:
+            one_liner = entry.get("one_liner", "")
+            score = score_one_liner(one_liner)
+            if score < QUALITY_MIN_SCORE:
+                _log.debug(
+                    "capture_from_diff: skipping low-quality draft (score %d): %s",
+                    score,
+                    one_liner[:80],
+                )
+                continue
             conn.execute(
                 "INSERT INTO capture_drafts "
                 "(raw_content, extracted_data, status, created_date, source) "
                 "VALUES (?, ?, 'pending', ?, 'auto_diff')",
                 [excerpt[:500], json.dumps(entry), date.today().isoformat()],
             )
+            inserted.append(entry)
         conn.commit()
-        inserted = lessons
     except Exception as e:
         _log.warning("capture_from_diff DB insert failed: %s", e)
         conn.rollback()
         raise
 
-    _log.debug("capture_from_diff: created %d drafts", len(inserted))
+    _log.debug("capture_from_diff: created %d drafts (%d filtered)", len(inserted), len(lessons) - len(inserted))
     return cast(list[dict[str, Any]], inserted)
 
 
