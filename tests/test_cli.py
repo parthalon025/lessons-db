@@ -347,3 +347,22 @@ def test_summary_command(tmp_path):
     assert out_file.exists()
     content = out_file.read_text()
     assert "Always log" in content
+
+
+class TestCaptureReview:
+    def test_review_dry_run_exits_cleanly(self, tmp_path):
+        from lessons_db.db import init_db
+
+        conn = init_db(tmp_path / "test.db")
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES ('raw', '{\"one_liner\": \"Never swallow exceptions without logging\"}', "
+            "'pending', '2026-02-27', 'auto_transcript')"
+        )
+        conn.commit()
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(tmp_path / "test.db"), "capture", "review", "--dry-run"])
+
+        assert result.exit_code == 0

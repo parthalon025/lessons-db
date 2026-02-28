@@ -621,6 +621,80 @@ def capture_diff(ctx, diff_file):
         click.echo("No lessons extracted.")
 
 
+@capture.command("review")
+@click.option("--backfill", is_flag=True, help="Process all pending drafts (not just recent).")
+@click.option("--dry-run", is_flag=True, help="Run filter only, skip Claude API call, print summary.")
+@click.pass_context
+def capture_review(ctx, backfill, dry_run):
+    """Run automated triage: noise filter + Claude review → promote/dismiss drafts.
+
+    Processes pending drafts. Writes decisions to ~/.local/share/lessons-db/triage-YYYY-MM-DD.jsonl.
+    """
+    import json as _json
+    import os
+
+    from lessons_db.config import ANTHROPIC_API_KEY, TRIAGE_LOG_DIR
+    from lessons_db.review import claude_review_batch, execute_verdicts, filter_noise
+
+    conn = ctx.obj["conn"]
+
+    # Load pending drafts
+    drafts = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, extracted_data, source FROM capture_drafts WHERE status = 'pending'"
+        ).fetchall()
+    ]
+
+    if not drafts:
+        click.echo("No pending drafts to review.")
+        return
+
+    # Load existing lesson one_liners for dedup
+    existing = [r[0] for r in conn.execute("SELECT one_liner FROM lessons WHERE one_liner IS NOT NULL").fetchall()]
+
+    # Phase 1: noise filter
+    kept, dismissed_noise = filter_noise(drafts, existing_one_liners=existing)
+    click.echo(f"Filter: {len(drafts)} drafts → {len(kept)} kept, {len(dismissed_noise)} noise-dismissed")
+
+    if dry_run:
+        click.echo("[dry-run] Skipping Claude review. Kept drafts:")
+        for d in kept[:10]:
+            data = _json.loads(d.get("extracted_data") or "{}")
+            click.echo(f"  [{d['id']}] {data.get('one_liner', '')[:80]}")
+        return
+
+    # Mark noise-dismissed drafts
+    for d in dismissed_noise:
+        conn.execute("UPDATE capture_drafts SET status='dismissed' WHERE id=?", [d["id"]])
+    conn.commit()
+
+    if not kept:
+        click.echo("All drafts dismissed by noise filter.")
+        return
+
+    api_key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        click.echo("Error: ANTHROPIC_API_KEY not set. Export it or add to ~/.env.", err=True)
+        ctx.exit(1)
+        return
+
+    # Phase 2: Claude review
+    click.echo(f"Sending {len(kept)} drafts to Claude for review...")
+    verdicts = claude_review_batch(kept, existing_titles=existing, api_key=api_key)
+
+    # Phase 3: execute
+    summary = execute_verdicts(conn, verdicts, log_dir=TRIAGE_LOG_DIR)
+    click.echo(
+        f"Done: {summary['promoted']} promoted, {summary['dismissed']} dismissed"
+        + (f", {summary['errors']} errors" if summary.get("errors") else "")
+        + "."
+    )
+    import datetime
+
+    click.echo(f"Log: {TRIAGE_LOG_DIR}/triage-{datetime.date.today().isoformat()}.jsonl")
+
+
 @main.group()
 def cluster():
     """Adaptive cluster discovery and management."""
