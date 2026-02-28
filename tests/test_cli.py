@@ -819,3 +819,28 @@ def test_kpi_command_runs_and_shows_metrics(tmp_path):
     assert "DB Growth" in result.output
     assert "50.0%" in result.output  # recurrence_rate: 1/(1+1)
     assert "33.3%" in result.output  # heed_rate and fp_rate: 1/3 decided
+
+
+def test_kpi_heed_rate_excludes_false_positives(tmp_path):
+    """heed_rate denominator excludes false_positive events (noise)."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_outcome, record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    lid = insert_lesson(
+        conn,
+        {"title": "Test FP", "one_liner": "t", "cluster": "A", "tier": "lesson", "created_date": "2026-01-01"},
+    )
+    eid1 = record_surfacing(conn, lid, "plan", "ctx")
+    record_outcome(conn, eid1, "heeded")  # 1 heeded
+    eid2 = record_surfacing(conn, lid, "edit", "ctx")
+    record_outcome(conn, eid2, "false_positive")  # 1 false_positive (noise)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--db", str(db_path), "kpi"])
+    assert result.exit_code == 0, result.output
+    # actionable = decided(2) - false_positives(1) = 1
+    # heed_rate = 1/1 = 100.0%  ← correct (noise excluded)
+    # old formula: 1/2 = 50.0%  ← incorrect (noise inflates denominator)
+    assert "100.0%" in result.output

@@ -1408,7 +1408,8 @@ def kpi_dashboard(click_ctx):
     )
     growth_7d = q("SELECT COUNT(*) FROM lessons WHERE created_date >= date('now','-7 days')")
 
-    heed_rate = round(heeded / decided * 100, 1) if decided > 0 else None
+    actionable = decided - false_positives  # exclude noise from heed_rate denominator
+    heed_rate = round(heeded / actionable * 100, 1) if actionable > 0 else None
     recurrence_rate = round(recurrences / heed_recur * 100, 1) if heed_recur > 0 else None
     fp_rate = round(false_positives / decided * 100, 1) if decided > 0 else None
     dead_pct = round(dead_lessons / total_lessons * 100, 1) if total_lessons > 0 else 0
