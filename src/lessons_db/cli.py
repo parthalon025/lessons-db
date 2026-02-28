@@ -706,14 +706,27 @@ def capture_triage(ctx, review_log, log_date, override_id):
     conn = ctx.obj["conn"]
 
     if override_id:
-        # Re-promote: reset status to pending, then promote
-        conn.execute("UPDATE capture_drafts SET status='pending' WHERE id=?", [override_id])
+        # Re-promote: only reset dismissed drafts — guard against duplicating approved ones
+        cursor = conn.execute(
+            "UPDATE capture_drafts SET status='pending' WHERE id=? AND status='dismissed'",
+            [override_id],
+        )
         conn.commit()
+        if cursor.rowcount == 0:
+            # Check whether it exists at all vs already approved
+            row = conn.execute("SELECT status FROM capture_drafts WHERE id=?", [override_id]).fetchone()
+            if row is None:
+                click.echo(f"Draft {override_id} not found.")
+            else:
+                click.echo(
+                    f"Draft {override_id} has status '{row['status']}' — only dismissed drafts can be overridden."
+                )
+            return
         lesson_id = promote_draft(conn, override_id)
         if lesson_id:
             click.echo(f"Draft {override_id} re-promoted → lesson #{lesson_id}")
         else:
-            click.echo(f"Draft {override_id} not found or already promoted.")
+            click.echo(f"Draft {override_id}: promote failed unexpectedly.")
         return
 
     if review_log:
@@ -731,7 +744,11 @@ def capture_triage(ctx, review_log, log_date, override_id):
         for line in log_path.read_text().splitlines():
             if not line.strip():
                 continue
-            entry = json.loads(line)
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                click.echo(f"  [warning] Skipping malformed line: {line[:60]!r}", err=True)
+                continue
             if entry["verdict"] == "PROMOTE":
                 promoted.append(entry)
             elif entry["verdict"] == "PROMOTE_FAILED":
