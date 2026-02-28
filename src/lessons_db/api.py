@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from lessons_db.config import LANCE_DIR, SQLITE_PATH
 from lessons_db.db import init_db
@@ -31,7 +32,7 @@ def create_app(  # noqa: C901, PLR0915
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:7684", "http://127.0.0.1:7684"],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["*"],
     )
 
@@ -70,6 +71,41 @@ def create_app(  # noqa: C901, PLR0915
             ).fetchall()
             total = conn.execute(f"SELECT COUNT(*) FROM lessons {where}", params).fetchone()[0]
             return {"lessons": [dict(r) for r in rows], "total": total, "offset": offset}
+        finally:
+            conn.close()
+
+    class StatusUpdate(BaseModel):
+        status: str
+
+    @app.get("/api/lessons/stats")
+    def lessons_stats() -> dict:
+        conn = get_conn()
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+            positive = conn.execute("SELECT COUNT(*) FROM lessons WHERE polarity='positive'").fetchone()[0]
+            negative = conn.execute("SELECT COUNT(*) FROM lessons WHERE polarity='negative'").fetchone()[0]
+            tier_rows = conn.execute(
+                "SELECT tier, COUNT(*) as cnt FROM lessons GROUP BY tier ORDER BY cnt DESC LIMIT 5"
+            ).fetchall()
+            drafts = conn.execute("SELECT COUNT(*) FROM capture_drafts WHERE status='pending'").fetchone()[0]
+            return {
+                "total": total,
+                "positive": positive,
+                "negative": negative,
+                "pending_drafts": drafts,
+                "top_tiers": [{"tier": r["tier"], "count": r["cnt"]} for r in tier_rows],
+            }
+        finally:
+            conn.close()
+
+    @app.get("/api/lessons/categories")
+    def lessons_categories() -> list:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM lessons WHERE category IS NOT NULL AND category != '' ORDER BY category"
+            ).fetchall()
+            return [r["category"] for r in rows]
         finally:
             conn.close()
 
@@ -146,6 +182,50 @@ def create_app(  # noqa: C901, PLR0915
         try:
             target_path = Path(target) if target else None
             return run_full_security_scan(conn, target_path)
+        finally:
+            conn.close()
+
+    @app.patch("/api/security/findings/{finding_id}")
+    def update_finding(finding_id: int, body: StatusUpdate) -> dict:
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT id FROM scan_findings WHERE id=?", (finding_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="finding not found")
+            conn.execute(
+                "UPDATE scan_findings SET status=? WHERE id=?",
+                (body.status, finding_id),
+            )
+            conn.commit()
+            return {"id": finding_id, "status": body.status}
+        finally:
+            conn.close()
+
+    @app.get("/api/capture-drafts")
+    def list_capture_drafts(status: str = "pending", limit: int = Query(50, le=200)) -> list:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM capture_drafts WHERE status=? ORDER BY created_date DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    @app.patch("/api/capture-drafts/{draft_id}")
+    def update_capture_draft(draft_id: int, body: StatusUpdate) -> dict:
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT id FROM capture_drafts WHERE id=?", (draft_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="draft not found")
+            conn.execute(
+                "UPDATE capture_drafts SET status=? WHERE id=?",
+                (body.status, draft_id),
+            )
+            conn.commit()
+            return {"id": draft_id, "status": body.status}
         finally:
             conn.close()
 
