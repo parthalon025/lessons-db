@@ -25,6 +25,6 @@ log "Step 4: github mining"
 "$LESSONS_DB" mine github 2>&1 | tee -a "$LOG" || log "WARN: github mining failed"
 
 log "Step 5: mining history"
-"$LESSONS_DB" mining-history --limit 3 2>&1 | tee -a "$LOG"
+"$LESSONS_DB" mining-history --limit 3 2>&1 | tee -a "$LOG" || log "WARN: mining history failed"
 
 log "=== nightly mining complete ==="
