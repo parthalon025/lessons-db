@@ -1,0 +1,19 @@
+[Unit]
+Description=lessons-db nightly batch capture — extract lessons from new session transcripts
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/projects/lessons-db
+# Use direct Ollama (port 11434) — bypasses ollama-queue to avoid contention
+Environment="LESSONS_DB_OLLAMA_ANALYSIS_URL=http://127.0.0.1:11434"
+ExecStart=/bin/bash -c '\
+  source %h/Documents/projects/lessons-db/.venv/bin/activate && \
+  bash %h/Documents/projects/lessons-db/scripts/batch-capture-transcripts.sh \
+    --since "$(date -d yesterday +%%Y-%%m-%%d)" && \
+  source %h/.env 2>/dev/null || true && \
+  lessons-db capture review'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lessons-db-nightly
+TimeoutStartSec=3600
