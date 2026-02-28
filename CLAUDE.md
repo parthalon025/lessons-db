@@ -102,7 +102,7 @@ language:python, domain:lessons-db
 ## Lessons
 - Check before planning: `/check-lessons`
 - Capture after bugs: `/capture-lesson`
-- Lessons location: `docs/lessons/`
+- Lessons: `lessons-db search` to query, `lessons-db capture` to add. DB is authoritative — never write lesson .md files directly.
 
 ## Local AI Review
 - Code review: `ollama-code-review .`
