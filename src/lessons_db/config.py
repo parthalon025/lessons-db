@@ -101,3 +101,7 @@ VALID_SOURCES = (
     "auto_design_doc",
     "auto_plan",
 )
+
+# Claude API config (for draft triage reviewer)
+CLAUDE_REVIEW_MODEL: str = os.environ.get("LESSONS_DB_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
