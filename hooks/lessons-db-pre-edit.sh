@@ -20,4 +20,17 @@ RESULTS=$("$LESSONS_DB" search "" --content "$NEW_CONTENT" 2>/dev/null || true)
 
 if [[ -n "$RESULTS" && "$RESULTS" != "No results found." ]]; then
     echo "$RESULTS"
+
+    # Record each surfaced lesson for the learning pipeline
+    CONTEXT=$(echo "$NEW_CONTENT" | head -c 100)
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+            LESSON_ID="${BASH_REMATCH[1]}"
+            "$LESSONS_DB" learn record \
+                --lesson-id "$LESSON_ID" \
+                --hook "edit" \
+                --context "$CONTEXT" \
+                2>>/tmp/lessons-db-errors.log || true
+        fi
+    done <<< "$RESULTS"
 fi
