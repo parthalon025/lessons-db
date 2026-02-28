@@ -693,6 +693,81 @@ def capture_review(ctx, dry_run):
     click.echo(f"Log: {TRIAGE_LOG_DIR}/triage-{datetime.date.today().isoformat()}.jsonl")
 
 
+@capture.command("triage")
+@click.option("--review-log", is_flag=True, help="Show triage decisions from the log.")
+@click.option("--date", "log_date", default=None, help="Date to show log for (YYYY-MM-DD). Defaults to today.")
+@click.option("--override", "override_id", type=int, default=None, help="Re-promote a dismissed draft by ID.")
+@click.pass_context
+def capture_triage(ctx, review_log, log_date, override_id):
+    """Audit triage decisions or override a specific dismissed draft."""
+    from lessons_db.capture import promote_draft
+    from lessons_db.config import TRIAGE_LOG_DIR
+
+    conn = ctx.obj["conn"]
+
+    if override_id:
+        # Re-promote: reset status to pending, then promote
+        conn.execute("UPDATE capture_drafts SET status='pending' WHERE id=?", [override_id])
+        conn.commit()
+        lesson_id = promote_draft(conn, override_id)
+        if lesson_id:
+            click.echo(f"Draft {override_id} re-promoted → lesson #{lesson_id}")
+        else:
+            click.echo(f"Draft {override_id} not found or already promoted.")
+        return
+
+    if review_log:
+        import datetime
+
+        target_date = log_date or datetime.date.today().isoformat()
+        log_path = TRIAGE_LOG_DIR / f"triage-{target_date}.jsonl"
+        if not log_path.exists():
+            click.echo(f"No triage log for {target_date}.")
+            return
+
+        promoted = []
+        dismissed = []
+        errors = []
+        for line in log_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry["verdict"] == "PROMOTE":
+                promoted.append(entry)
+            elif entry["verdict"] == "PROMOTE_FAILED":
+                errors.append(entry)
+            else:
+                dismissed.append(entry)
+
+        click.echo(f"\n=== Triage log: {target_date} ===")
+        click.echo(f"Promoted: {len(promoted)} | Dismissed: {len(dismissed)} | Errors: {len(errors)}\n")
+
+        if promoted:
+            click.echo("PROMOTED:")
+            for e in promoted:
+                click.echo(f"  [draft {e['draft_id']} → lesson {e['lesson_id']}] {e.get('one_liner', '')}")
+                click.echo(f"    Reason: {e['reason']}")
+
+        if errors:
+            click.echo("\nPROMOTE FAILURES:")
+            for e in errors:
+                click.echo(f"  [draft {e['draft_id']}] {e['reason']}")
+            click.echo("  To re-promote: lessons-db capture triage --override <draft_id>")
+
+        if dismissed:
+            click.echo(f"\nDISMISSED (first 20 of {len(dismissed)}):")
+            for e in dismissed[:20]:
+                click.echo(f"  [draft {e['draft_id']}] {e.get('one_liner', '') or '(empty)'}")
+                click.echo(f"    Reason: {e['reason']}")
+            if len(dismissed) > 20:
+                click.echo(f"  ... and {len(dismissed) - 20} more")
+
+        click.echo("\nTo override a dismissal: lessons-db capture triage --override <draft_id>")
+        return
+
+    click.echo("Usage: lessons-db capture triage [--review-log [--date DATE] | --override ID]")
+
+
 @main.group()
 def cluster():
     """Adaptive cluster discovery and management."""
