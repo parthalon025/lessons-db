@@ -294,6 +294,21 @@ class TestPromoteDraftPolarity:
         lesson = get_lesson(conn, lesson_id)
         assert lesson["polarity"] == "negative"
 
+    def test_unknown_source_defaults_to_negative(self, db_path):
+        conn = init_db(db_path)
+        entry = {"one_liner": "Some lesson", "tier": "lesson"}
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'pending', '2026-02-27', 'unknown_future_source')",
+            ["raw", json.dumps(entry)],
+        )
+        conn.commit()
+        draft_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        lesson_id = promote_draft(conn, draft_id)
+        lesson = get_lesson(conn, lesson_id)
+        assert lesson["polarity"] == "negative"
+        assert lesson["entry_type"] == "lesson"
+
 
 class TestCapturePositiveManual:
     """Quality gate and lesson creation for manual capture."""
