@@ -176,6 +176,74 @@ class TestLearnRecordCLI:
         assert "hub.py" in events[0]["context"]
 
 
+def test_record_outcome_false_positive(tmp_path):
+    """record_outcome accepts false_positive outcome."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_outcome, record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Test",
+            "one_liner": "test",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    eid = record_surfacing(conn, lid, "plan", "ctx")
+    record_outcome(conn, eid, "false_positive")
+    row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [eid]).fetchone()
+    assert row["outcome"] == "false_positive"
+
+
+def test_record_outcome_recurrence(tmp_path):
+    """record_outcome accepts recurrence outcome."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_outcome, record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Test2",
+            "one_liner": "test2",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    eid = record_surfacing(conn, lid, "bash", "ctx")
+    record_outcome(conn, eid, "recurrence")
+    row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [eid]).fetchone()
+    assert row["outcome"] == "recurrence"
+
+
+def test_record_outcome_rejects_invalid(tmp_path):
+    """record_outcome raises ValueError on unknown outcome."""
+    from lessons_db.db import init_db, insert_lesson
+    from lessons_db.learn import record_outcome, record_surfacing
+
+    db_path = tmp_path / "test.db"
+    conn = init_db(db_path)
+    lid = insert_lesson(
+        conn,
+        {
+            "title": "Test3",
+            "one_liner": "test3",
+            "cluster": "A",
+            "tier": "lesson",
+            "created_date": "2026-01-01",
+        },
+    )
+    eid = record_surfacing(conn, lid, "plan", "ctx")
+    with pytest.raises(ValueError, match="Invalid outcome"):
+        record_outcome(conn, eid, "wrong")
+
+
 class TestSurfacingStats:
     def test_returns_zero_counts_when_empty(self, db_path):
         conn = init_db(db_path)

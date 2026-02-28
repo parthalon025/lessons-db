@@ -7,6 +7,8 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
+_VALID_OUTCOMES = ("heeded", "dismissed", "false_positive", "recurrence")
+
 
 def record_surfacing(
     conn: sqlite3.Connection, lesson_id: int, hook_point: str, context: str = "", session_id: str | None = None
@@ -24,9 +26,9 @@ def record_surfacing(
 
 
 def record_outcome(conn: sqlite3.Connection, event_id: int, outcome: str) -> None:
-    """Update outcome for a surfacing event. outcome must be 'heeded' or 'dismissed'."""
-    if outcome not in ("heeded", "dismissed"):
-        raise ValueError(f"Invalid outcome '{outcome}'. Must be 'heeded' or 'dismissed'.")
+    """Update outcome for a surfacing event. outcome must be one of _VALID_OUTCOMES."""
+    if outcome not in _VALID_OUTCOMES:
+        raise ValueError(f"Invalid outcome '{outcome}'. Must be one of: {', '.join(_VALID_OUTCOMES)}.")
     cursor = conn.execute(
         "UPDATE surfacing_events SET outcome = ? WHERE id = ?",
         [outcome, event_id],
