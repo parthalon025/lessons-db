@@ -340,6 +340,24 @@ def search_by_enforcement(conn: sqlite3.Connection, enforcement: str) -> list[di
     return [dict(r) for r in rows]
 
 
+def insert_detection_pattern(conn: sqlite3.Connection, data: dict) -> int:
+    """Insert a detection pattern for a lesson. Returns new row id."""
+    required = {"lesson_id", "pattern_type", "regex"}
+    missing = required - set(data.keys())
+    if missing:
+        raise ValueError(f"Missing required fields: {missing}")
+    defaults = {"description": None, "language": "any"}
+    row = {**defaults, **data}
+    cols = list(row.keys())
+    cursor = conn.execute(
+        f"INSERT INTO detection_patterns ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+        [row[c] for c in cols],
+    )
+    conn.commit()
+    assert cursor.lastrowid is not None
+    return cursor.lastrowid
+
+
 def insert_corrective_action(conn: sqlite3.Connection, data: dict) -> int:
     """Insert a corrective action. Auto-sets due_date to +7 days if missing."""
     defaults = {
