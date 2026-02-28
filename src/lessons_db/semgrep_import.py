@@ -99,7 +99,13 @@ def import_rule_as_lesson_stub(conn: sqlite3.Connection, rule: dict) -> int:
 def run_delta_import(conn: sqlite3.Connection, delta_only: bool = True) -> dict:
     """Run Semgrep registry import.
 
-    delta_only=True: skip rules already in enforcement_rules table.
+    Fetches all rules from the Semgrep python pack each run (the Semgrep CLI has
+    no incremental API — delta behavior is achieved via idempotency: rules already
+    in enforcement_rules are skipped). On first run ~300 rules are imported; on
+    subsequent runs all are skipped in O(1) per rule via indexed rule_id lookup.
+
+    delta_only=True: skip rules already in enforcement_rules table (default).
+    delta_only=False: reimport all rules (useful for reprocessing).
     Returns {"imported": int, "skipped": int, "errors": int}.
     """
     imported = skipped = errors = 0

@@ -57,3 +57,32 @@ def test_enforcement_rule_recorded(db_path):
     assert rule_row is not None
     assert rule_row["rule_id"] == "python.security.audit.hardcoded-password"
     assert rule_row["rule_type"] == "semgrep"
+
+
+def test_run_delta_import_mocked(db_path):
+    """run_delta_import imports rules and skips duplicates on second call."""
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from lessons_db.semgrep_import import run_delta_import
+
+    conn = init_db(db_path)
+    mock_rules = json.dumps({"rules": [SAMPLE_RULE]})
+
+    mock_result = MagicMock()
+    mock_result.stdout = mock_rules
+    mock_result.returncode = 0
+
+    with patch("subprocess.run", return_value=mock_result):
+        result = run_delta_import(conn, delta_only=False)
+
+    assert result["imported"] == 1
+    assert result["skipped"] == 0
+    assert result["errors"] == 0
+
+    # Second call with delta_only=True — same rule already in DB
+    with patch("subprocess.run", return_value=mock_result):
+        result2 = run_delta_import(conn, delta_only=True)
+
+    assert result2["skipped"] == 1
+    assert result2["imported"] == 0
