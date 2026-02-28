@@ -444,9 +444,11 @@ class TestInsertDetectionPattern:
 
     def test_requires_lesson_id(self, db_path):
         conn = init_db(db_path)
+        import sqlite3
+
         import pytest
 
-        with pytest.raises(ValueError, match="lesson_id"):
+        with pytest.raises(sqlite3.IntegrityError):
             insert_detection_pattern(
                 conn,
                 {
@@ -458,9 +460,11 @@ class TestInsertDetectionPattern:
     def test_requires_pattern_type(self, db_path):
         conn = init_db(db_path)
         lesson_id = insert_lesson(conn, {"title": "test-lesson", "one_liner": "test", "tier": "lesson"})
+        import sqlite3
+
         import pytest
 
-        with pytest.raises(ValueError, match="pattern_type"):
+        with pytest.raises(sqlite3.IntegrityError):
             insert_detection_pattern(
                 conn,
                 {

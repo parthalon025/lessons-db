@@ -342,10 +342,6 @@ def search_by_enforcement(conn: sqlite3.Connection, enforcement: str) -> list[di
 
 def insert_detection_pattern(conn: sqlite3.Connection, data: dict) -> int:
     """Insert a detection pattern for a lesson. Returns new row id."""
-    required = {"lesson_id", "pattern_type", "regex"}
-    missing = required - set(data.keys())
-    if missing:
-        raise ValueError(f"Missing required fields: {missing}")
     defaults = {"description": None, "language": "any"}
     row = {**defaults, **data}
     cols = list(row.keys())
