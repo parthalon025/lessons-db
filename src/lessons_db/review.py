@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 # Noise patterns — one_liners matching these are auto-dismissed
 _NOISE_PATTERNS = [
     re.compile(r"no\s+(coding\s+)?mistakes?\s+were\s+(found|discovered)", re.IGNORECASE),
-    re.compile(r"no\s+bugs?\s+(were\s+)?(found|discovered)", re.IGNORECASE),
+    re.compile(r"no\s+bugs?\s+", re.IGNORECASE),
     re.compile(r"repeated\s+content", re.IGNORECASE),
     re.compile(r"no\s+anti.?patterns?", re.IGNORECASE),
     re.compile(r"transcript\s+(does\s+not|doesn'?t)\s+include", re.IGNORECASE),
@@ -19,13 +19,21 @@ _NOISE_PATTERNS = [
 ]
 
 _MIN_ONE_LINER_LEN = 20
-_JACCARD_THRESHOLD = 0.35
+_JACCARD_THRESHOLD = 0.85
 
 
 def jaccard_similarity(a: str, b: str) -> float:
-    """Token-level Jaccard similarity between two strings."""
-    tokens_a = set(a.lower().split())
-    tokens_b = set(b.lower().split())
+    """Token-level Jaccard similarity between two strings.
+
+    Tokens are lowercased and stripped of non-alphanumeric characters
+    so that 'close()' and 'close' are treated as the same token.
+    """
+
+    def tokenize(s: str) -> set[str]:
+        return {re.sub(r"[^a-z0-9]", "", t) for t in s.lower().split() if re.sub(r"[^a-z0-9]", "", t)}
+
+    tokens_a = tokenize(a)
+    tokens_b = tokenize(b)
     if not tokens_a and not tokens_b:
         return 1.0
     if not tokens_a or not tokens_b:

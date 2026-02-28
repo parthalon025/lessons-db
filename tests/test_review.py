@@ -73,8 +73,8 @@ class TestFilterNoise:
 
     def test_dismisses_duplicate_within_batch(self):
         drafts = [
-            self._draft(1, "Always log before swallowing exceptions to avoid silent failures"),
-            self._draft(2, "Always log before swallowing exceptions silently in production code"),
+            self._draft(1, "Always log exceptions before swallowing them silently"),
+            self._draft(2, "Always log exceptions before swallowing them"),
         ]
         kept, dismissed = filter_noise(drafts, existing_one_liners=[])
         assert len(kept) == 1
@@ -84,3 +84,29 @@ class TestFilterNoise:
         drafts = [self._draft(1, "No bugs found.")]
         _, dismissed = filter_noise(drafts, existing_one_liners=[])
         assert "_dismiss_reason" in dismissed[0]
+
+    def test_dismisses_no_anti_patterns(self):
+        drafts = [self._draft(1, "No anti-patterns were found in the code reviewed.")]
+        kept, dismissed = filter_noise(drafts, existing_one_liners=[])
+        assert len(dismissed) == 1
+
+    def test_dismisses_transcript_does_not_include(self):
+        drafts = [self._draft(1, "The transcript does not include any coding mistakes.")]
+        kept, dismissed = filter_noise(drafts, existing_one_liners=[])
+        assert len(dismissed) == 1
+
+    def test_dismisses_same_questions_presented_twice(self):
+        drafts = [self._draft(1, "The same questions were presented twice in the session.")]
+        kept, dismissed = filter_noise(drafts, existing_one_liners=[])
+        assert len(dismissed) == 1
+
+    def test_malformed_extracted_data_dismissed(self):
+        draft = {"id": 1, "extracted_data": "not-valid-json", "source": "auto_transcript"}
+        kept, dismissed = filter_noise([draft], existing_one_liners=[])
+        assert len(dismissed) == 1
+
+    def test_empty_existing_one_liners_keeps_good_draft(self):
+        drafts = [self._draft(1, "Never use bare except clauses without logging the error first")]
+        kept, dismissed = filter_noise(drafts, existing_one_liners=[])
+        assert len(kept) == 1
+        assert len(dismissed) == 0
