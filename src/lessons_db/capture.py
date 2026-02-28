@@ -70,7 +70,7 @@ def capture_from_design_doc(doc_path: Path, conn: sqlite3.Connection) -> list[di
                 "stream": False,
                 "format": "json",
             },
-            timeout=60,
+            timeout=120,
         )
         data = json.loads(_strip_think(r.json().get("response", "{}")))
         entries = data.get("entries", [])
@@ -183,7 +183,7 @@ def capture_from_transcript(
                 "stream": False,
                 "format": "json",
             },
-            timeout=60,
+            timeout=120,
         )
         r.raise_for_status()
         data = json.loads(_strip_think(r.json().get("response", "{}")))
@@ -240,7 +240,7 @@ def capture_from_diff(diff_text: str, conn: sqlite3.Connection) -> list[dict[str
                 "stream": False,
                 "format": "json",
             },
-            timeout=60,
+            timeout=120,
         )
         r.raise_for_status()
         data = json.loads(_strip_think(r.json().get("response", "{}")))
