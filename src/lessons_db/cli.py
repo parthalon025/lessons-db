@@ -164,9 +164,20 @@ def migrate(ctx, source, db_override, dry_run):
         return
 
     migrated = 0
+    skipped = 0
     errors = 0
+
+    # Build set of markdown_paths already in DB to skip duplicates
+    existing_paths = {
+        row[0] for row in conn.execute("SELECT markdown_path FROM lessons WHERE markdown_path IS NOT NULL").fetchall()
+    }
+
     for f in md_files:
         try:
+            if str(f) in existing_paths:
+                skipped += 1
+                continue
+
             parsed = parse_lesson_file(f)
             lesson_data = {
                 "title": parsed["title"],
@@ -199,7 +210,7 @@ def migrate(ctx, source, db_override, dry_run):
             logger.error("Failed to migrate %s: %s", f.name, exc)
             errors += 1
 
-    click.echo(f"Migrated: {migrated}, Errors: {errors}")
+    click.echo(f"Migrated: {migrated}, Skipped: {skipped}, Errors: {errors}")
 
 
 @main.command()
@@ -631,7 +642,7 @@ def capture_review(ctx, dry_run):
     """
     import os
 
-    from lessons_db.config import ANTHROPIC_API_KEY, TRIAGE_LOG_DIR
+    from lessons_db.config import OPENAI_API_KEY, TRIAGE_LOG_DIR
     from lessons_db.review import claude_review_batch, execute_verdicts, filter_noise
 
     conn = ctx.obj["conn"]
@@ -671,14 +682,14 @@ def capture_review(ctx, dry_run):
         click.echo("All drafts dismissed by noise filter.")
         return
 
-    api_key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        click.echo("Error: ANTHROPIC_API_KEY not set. Export it or add to ~/.env.", err=True)
+        click.echo("Error: OPENAI_API_KEY not set. Export it or add to ~/.env.", err=True)
         ctx.exit(1)
         return
 
-    # Phase 2: Claude review
-    click.echo(f"Sending {len(kept)} drafts to Claude for review...")
+    # Phase 2: OpenAI review
+    click.echo(f"Sending {len(kept)} drafts to OpenAI for review...")
     verdicts = claude_review_batch(kept, existing_titles=existing, api_key=api_key)
 
     # Phase 3: execute

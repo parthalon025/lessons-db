@@ -59,6 +59,85 @@ def test_migrate_dry_run(tmp_path):
     assert "1" in result.output
 
 
+def test_migrate_idempotent(tmp_path):
+    """Running migrate twice does not create duplicate lessons."""
+    lesson_dir = tmp_path / "lessons"
+    lesson_dir.mkdir()
+    lesson_file = lesson_dir / "2026-01-01-test-lesson.md"
+    lesson_file.write_text(
+        "# Lesson #999: Test lesson title\n\n"
+        "**Tier:** observation\n"
+        "**Category:** testing\n"
+        "**Cluster:** A\n\n"
+        "## Observation\nSomething happened.\n"
+    )
+
+    db_path = tmp_path / "test.db"
+    runner = CliRunner()
+    migrate_args = [
+        "--db",
+        str(db_path),
+        "migrate",
+        "--source",
+        str(lesson_dir),
+    ]
+
+    # First run — should insert
+    result1 = runner.invoke(main, migrate_args)
+    assert result1.exit_code == 0
+    assert "Migrated: 1" in result1.output
+
+    # Second run — should skip, not duplicate
+    result2 = runner.invoke(main, migrate_args)
+    assert result2.exit_code == 0
+    assert "Migrated: 0" in result2.output
+    assert "Skipped: 1" in result2.output
+
+    # Verify only 1 row in DB
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+    assert count == 1
+
+
+def test_migrate_adds_new_files_on_rerun(tmp_path):
+    """Re-running migrate picks up new files without duplicating old ones."""
+    lesson_dir = tmp_path / "lessons"
+    lesson_dir.mkdir()
+    first = lesson_dir / "2026-01-01-first-lesson.md"
+    first.write_text("# Lesson: First lesson\n\n" "**Tier:** observation\n\n" "## Observation\nFirst.\n")
+
+    db_path = tmp_path / "test.db"
+    runner = CliRunner()
+    migrate_args = [
+        "--db",
+        str(db_path),
+        "migrate",
+        "--source",
+        str(lesson_dir),
+    ]
+
+    # First run
+    runner.invoke(main, migrate_args)
+
+    # Add a second file
+    second = lesson_dir / "2026-01-02-second-lesson.md"
+    second.write_text("# Lesson: Second lesson\n\n" "**Tier:** insight\n\n" "## Observation\nSecond.\n")
+
+    # Second run — should add 1, skip 1
+    result = runner.invoke(main, migrate_args)
+    assert result.exit_code == 0
+    assert "Migrated: 1" in result.output
+    assert "Skipped: 1" in result.output
+
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+    assert count == 2
+
+
 def test_index_seed_only_backfills_cluster_seed(tmp_path):
     """index --seed-only copies cluster → cluster_seed for existing lessons."""
     from lessons_db.db import init_db, insert_lesson
