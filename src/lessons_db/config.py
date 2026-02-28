@@ -103,5 +103,5 @@ VALID_SOURCES = (
 )
 
 # Claude API config (for draft triage reviewer)
-CLAUDE_REVIEW_MODEL: str = os.environ.get("LESSONS_DB_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_REVIEW_MODEL = os.environ.get("LESSONS_DB_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
