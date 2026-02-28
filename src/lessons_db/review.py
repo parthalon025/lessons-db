@@ -30,7 +30,7 @@ def jaccard_similarity(a: str, b: str) -> float:
     """
 
     def tokenize(s: str) -> set[str]:
-        return {re.sub(r"[^a-z0-9]", "", t) for t in s.lower().split() if re.sub(r"[^a-z0-9]", "", t)}
+        return {cleaned for t in s.lower().split() if (cleaned := re.sub(r"[^a-z0-9]", "", t))}
 
     tokens_a = tokenize(a)
     tokens_b = tokenize(b)
@@ -70,23 +70,23 @@ def filter_noise(
         one_liner = _extract_one_liner(draft)
 
         if not one_liner:
-            draft["_dismiss_reason"] = "empty one_liner"
+            draft = {**draft, "_dismiss_reason": "empty one_liner"}
             dismissed.append(draft)
             continue
 
         similar = any(jaccard_similarity(one_liner, seen) >= _JACCARD_THRESHOLD for seen in seen_one_liners)
         if similar:
-            draft["_dismiss_reason"] = "duplicate (Jaccard)"
+            draft = {**draft, "_dismiss_reason": "duplicate (Jaccard)"}
             dismissed.append(draft)
             continue
 
         if len(one_liner) < _MIN_ONE_LINER_LEN:
-            draft["_dismiss_reason"] = f"too short ({len(one_liner)} chars)"
+            draft = {**draft, "_dismiss_reason": f"too short ({len(one_liner)} chars)"}
             dismissed.append(draft)
             continue
 
         if any(p.search(one_liner) for p in _NOISE_PATTERNS):
-            draft["_dismiss_reason"] = "noise pattern match"
+            draft = {**draft, "_dismiss_reason": "noise pattern match"}
             dismissed.append(draft)
             continue
 
