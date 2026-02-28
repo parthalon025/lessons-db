@@ -35,3 +35,31 @@ def test_conflict_detected_opposite_polarity(db_path, lance_dir):
 def test_conflict_result_fields():
     r = ConflictResult(has_conflict=False, conflicting_lesson_id=None, similarity=0.0, note="")
     assert r.has_conflict is False
+
+
+def test_vector_search_failure_returns_no_conflict(db_path, lance_dir):
+    conn = init_db(db_path)
+    with patch("lessons_db.conflict_detector.semantic_search", side_effect=RuntimeError("embed fail")):
+        result = detect_conflicts(conn, lance_dir, lesson_id=1, snippet="time.sleep(1)")
+    assert result.has_conflict is False
+    assert result.note == "vector search unavailable"
+
+
+def test_no_conflict_below_threshold(db_path, lance_dir):
+    conn = init_db(db_path)
+    lesson_id = insert_lesson(
+        conn,
+        {
+            "title": "Use asyncio",
+            "one_liner": "good",
+            "tier": "tested",
+            "source": "manual",
+            "created_date": "2026-02-28",
+        },
+    )
+    # _distance=0.25 → similarity=0.75 < CONFLICT_THRESHOLD=0.85 → no conflict
+    mock_neighbors = [{"id": lesson_id, "score": 0.75, "_distance": 0.25}]
+    with patch("lessons_db.conflict_detector.semantic_search", return_value=mock_neighbors):
+        with patch("lessons_db.conflict_detector._get_polarity", side_effect=["negative", "positive"]):
+            result = detect_conflicts(conn, lance_dir, lesson_id=99, snippet="time.sleep(1)")
+    assert result.has_conflict is False

@@ -29,7 +29,8 @@ def _get_polarity(conn: sqlite3.Connection, lesson_id: int) -> str:
     try:
         row = conn.execute("SELECT polarity FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
         return row["polarity"] if row and row["polarity"] else "negative"
-    except Exception:
+    except Exception as exc:
+        _log.warning("_get_polarity failed for lesson %d: %s", lesson_id, exc)
         return "negative"
 
 
@@ -55,6 +56,9 @@ def detect_conflicts(
 
     for neighbor in neighbors:
         neighbor_id = neighbor.get("id")
+        if neighbor_id is None:
+            _log.warning("conflict_detector: neighbor missing 'id' field, skipping")
+            continue
         distance = neighbor.get("_distance", 1.0)
         similarity = max(0.0, 1.0 - distance)
 
