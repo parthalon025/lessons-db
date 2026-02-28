@@ -134,7 +134,7 @@ class TestClaudeReviewBatch:
         mock_msg = MagicMock()
         mock_msg.content = [MagicMock(text=json.dumps(mock_response))]
 
-        with patch("lessons_db.review.anthropic.Anthropic") as MockClient:
+        with patch("anthropic.Anthropic") as MockClient:
             MockClient.return_value.messages.create.return_value = mock_msg
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
@@ -160,7 +160,7 @@ class TestClaudeReviewBatch:
         mock_msg = MagicMock()
         mock_msg.content = [MagicMock(text=json.dumps(mock_response))]
 
-        with patch("lessons_db.review.anthropic.Anthropic") as MockClient:
+        with patch("anthropic.Anthropic") as MockClient:
             MockClient.return_value.messages.create.return_value = mock_msg
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
@@ -168,12 +168,12 @@ class TestClaudeReviewBatch:
 
     def test_handles_api_error_gracefully(self):
         drafts = [self._draft(7, "Always log exceptions before swallowing them silently")]
-        with patch("lessons_db.review.anthropic.Anthropic") as MockClient:
+        with patch("anthropic.Anthropic") as MockClient:
             MockClient.return_value.messages.create.side_effect = Exception("API timeout")
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
         assert len(verdicts) == 1
-        assert verdicts[0]["verdict"] == "DISMISS"
+        assert verdicts[0]["verdict"] == "ERROR"
         assert "error" in verdicts[0]["reason"].lower()
 
     def test_processes_multiple_drafts_in_batches(self):
@@ -210,7 +210,7 @@ class TestClaudeReviewBatch:
         mock_msg2 = MagicMock()
         mock_msg2.content = [MagicMock(text=json.dumps(mock_response2))]
 
-        with patch("lessons_db.review.anthropic.Anthropic") as MockClient:
+        with patch("anthropic.Anthropic") as MockClient:
             MockClient.return_value.messages.create.side_effect = [mock_msg1, mock_msg2]
             verdicts = claude_review_batch(drafts, existing_titles=[], api_key="test-key")
 
@@ -240,7 +240,7 @@ class TestClaudeReviewBatch:
             )
         ]
 
-        with patch("lessons_db.review.anthropic.Anthropic") as MockClient:
+        with patch("anthropic.Anthropic") as MockClient:
             MockClient.return_value.messages.create.return_value = mock_msg
             claude_review_batch(drafts, existing_titles=["Never swallow exceptions"], api_key="test-key")
 

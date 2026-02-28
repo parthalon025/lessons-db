@@ -96,8 +96,6 @@ def filter_noise(
     return kept, dismissed
 
 
-import anthropic  # noqa: E402 — imported here to avoid top-level hard dep during filter_noise usage
-
 _REVIEW_PROMPT_TEMPLATE = """\
 You are reviewing draft lessons for a coding lessons-learned system.
 For each draft, decide PROMOTE or DISMISS.
@@ -150,6 +148,8 @@ def claude_review_batch(
         List of verdict dicts with keys: id, verdict, reason, improved_one_liner,
         detection_pattern, semgrep_rule.
     """
+    import anthropic  # lazy import — only needed when calling Claude
+
     from lessons_db.config import CLAUDE_REVIEW_MODEL
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -167,11 +167,17 @@ def claude_review_batch(
         try:
             msg = client.messages.create(
                 model=CLAUDE_REVIEW_MODEL,
-                max_tokens=4096,
+                max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}],
             )
+            if msg.stop_reason == "max_tokens":
+                raise ValueError("Response truncated by max_tokens limit")
             raw = msg.content[0].text.strip()
-            data = json.loads(raw)
+            # Extract JSON object — tolerates preamble/postamble from model
+            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"No JSON object in response: {raw[:200]}")
+            data = json.loads(json_match.group())
             all_verdicts.extend(data.get("reviews", []))
         except Exception as exc:
             _log.warning("claude_review_batch: batch %d failed: %s", i // _BATCH_SIZE, exc)
@@ -179,7 +185,7 @@ def claude_review_batch(
                 all_verdicts.append(
                     {
                         "id": d["id"],
-                        "verdict": "DISMISS",
+                        "verdict": "ERROR",
                         "reason": f"error: {exc}",
                         "improved_one_liner": "",
                         "detection_pattern": "",
