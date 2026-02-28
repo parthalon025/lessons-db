@@ -8,6 +8,8 @@ set -euo pipefail
 LESSONS_DB="$HOME/Documents/projects/lessons-db/.venv/bin/lessons-db"
 LOG="$HOME/.local/share/lessons-db/nightly-mining.log"
 
+mkdir -p "$(dirname "$LOG")"
+
 log() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG"; }
 
 log "=== nightly mining start ==="
