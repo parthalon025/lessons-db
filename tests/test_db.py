@@ -543,3 +543,67 @@ def test_update_mined_repo(db_path):
     repo = get_mined_repo(conn, "owner/repo")
     assert repo["commit_count"] == 15  # 10 + 5
     assert repo["lessons_extracted"] == 3  # 2 + 1
+
+
+def test_scan_findings_lesson_id_nullable(db_path):
+    """scan_findings.lesson_id must accept NULL (scanner findings not yet linked to a lesson)."""
+    conn = init_db(db_path)
+    conn.execute(
+        "INSERT INTO scan_findings (lesson_id, scan_date, rule_id, file_path, line_number, snippet, status) "
+        "VALUES (NULL, '2026-01-01', 'S105', 'src/foo.py', 42, 'password = \"x\"', 'open')"
+    )
+    conn.commit()
+    row = conn.execute("SELECT lesson_id FROM scan_findings WHERE rule_id='S105'").fetchone()
+    assert row["lesson_id"] is None
+
+
+def test_scan_findings_lesson_id_nullable_migration(tmp_path):
+    """Migration must fix a legacy NOT NULL lesson_id constraint on an existing DB."""
+    import sqlite3 as _sqlite3
+
+    db_file = tmp_path / "legacy.db"
+
+    # Simulate the old schema with NOT NULL lesson_id
+    legacy = _sqlite3.connect(str(db_file))
+    legacy.row_factory = _sqlite3.Row
+    legacy.execute("PRAGMA journal_mode=WAL")
+    legacy.executescript("""
+        CREATE TABLE lessons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            tier TEXT NOT NULL DEFAULT 'observation',
+            severity INTEGER NOT NULL DEFAULT 3,
+            confidence TEXT NOT NULL DEFAULT 'emerging',
+            enforcement TEXT NOT NULL DEFAULT 'documentation',
+            recurrence_count INTEGER NOT NULL DEFAULT 0,
+            created_date TEXT NOT NULL
+        );
+        CREATE TABLE scan_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id INTEGER NOT NULL,
+            rule_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            line_number INTEGER,
+            snippet TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            scan_date TEXT NOT NULL
+        );
+    """)
+    legacy.commit()
+    legacy.close()
+
+    # init_db must detect and fix the NOT NULL constraint
+    conn = init_db(db_file)
+    rows = conn.execute("PRAGMA table_info('scan_findings')").fetchall()
+    col = next((r for r in rows if r["name"] == "lesson_id"), None)
+    assert col is not None
+    assert col["notnull"] == 0, "lesson_id should be nullable after migration"
+
+    # Confirm NULL insert works post-migration
+    conn.execute(
+        "INSERT INTO scan_findings (lesson_id, scan_date, rule_id, file_path, status) "
+        "VALUES (NULL, '2026-01-01', 'S105', 'src/bar.py', 'open')"
+    )
+    conn.commit()
+    result = conn.execute("SELECT lesson_id FROM scan_findings WHERE rule_id='S105'").fetchone()
+    assert result["lesson_id"] is None

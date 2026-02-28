@@ -185,6 +185,34 @@ CREATE INDEX IF NOT EXISTS idx_mining_runs_date ON mining_runs(run_date);
 """
 
 
+def _migrate_scan_findings_lesson_id_nullable(conn: sqlite3.Connection) -> None:
+    """Make scan_findings.lesson_id nullable if it was created NOT NULL."""
+    rows = conn.execute("PRAGMA table_info('scan_findings')").fetchall()
+    col = next((r for r in rows if r["name"] == "lesson_id"), None)
+    if col is None or col["notnull"] == 0:
+        return  # already nullable or column doesn't exist — nothing to do
+
+    # Recreate table with nullable lesson_id
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS scan_findings_v2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id INTEGER REFERENCES lessons(id),
+            rule_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            line_number INTEGER,
+            snippet TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            scan_date TEXT NOT NULL
+        );
+        INSERT INTO scan_findings_v2
+            SELECT id, lesson_id, rule_id, file_path, line_number, snippet, status, scan_date
+            FROM scan_findings;
+        DROP TABLE scan_findings;
+        ALTER TABLE scan_findings_v2 RENAME TO scan_findings;
+    """)
+    _log.info("_migrate_scan_findings_lesson_id_nullable: migrated scan_findings to nullable lesson_id")
+
+
 def init_db(db_path: str | Path) -> sqlite3.Connection:
     """Create schema and return connection with Row factory."""
     conn = sqlite3.connect(str(db_path))
@@ -194,6 +222,7 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn.executescript(SCHEMA_SQL)
     _add_extension_columns(conn)
     _seed_scan_state(conn)
+    _migrate_scan_findings_lesson_id_nullable(conn)
     _log.debug("init_db: opened %s", db_path)
     return conn
 
