@@ -13,6 +13,22 @@ from lessons_db.github_miner import (
 )
 
 
+def _make_stats() -> dict:
+    """Return a fully-initialised stats dict matching mine_repos_for_gaps()."""
+    return {
+        "candidates_extracted": 0,
+        "gate0_rejected": 0,
+        "gate1_rejected": 0,
+        "gate2_rejected": 0,
+        "gate3_rejected": 0,
+        "gate4_rejected": 0,
+        "auto_approved": 0,
+        "drafted": 0,
+        "conflicts_flagged": 0,
+        "error_count": 0,
+    }
+
+
 def test_is_bug_fix_conventional_commit():
     assert is_bug_fix_commit("fix(auth): token expiry not checked") is True
     assert is_bug_fix_commit("feat: add login") is False
@@ -95,12 +111,7 @@ def test_positive_candidate_not_gate0_rejected(db_path):
     """
     conn = init_db(db_path)
     mock_diff = "+def process():\n+    await asyncio.sleep(5)\n"
-    stats = {
-        "gate0_rejected": 0,
-        "auto_approved": 0,
-        "drafted": 0,
-        "error_count": 0,
-    }
+    stats = _make_stats()
     with patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama:
         mock_ollama.return_value = [
             {
@@ -128,12 +139,7 @@ def test_process_modification_inserts_draft_directly(db_path):
     not re-extracted via capture_from_diff (which would discard the candidate)."""
     conn = init_db(db_path)
     mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
-    stats = {
-        "gate0_rejected": 0,
-        "auto_approved": 0,
-        "drafted": 0,
-        "error_count": 0,
-    }
+    stats = _make_stats()
     with patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama:
         mock_ollama.return_value = [
             {
@@ -167,7 +173,7 @@ def test_process_modification_gates14_reject_increments_gate1_rejected(db_path, 
     """When verify_candidate returns None (Gates 1-4 reject), gate1_rejected increments."""
     conn = init_db(db_path)
     mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
-    stats = {"gate0_rejected": 0, "auto_approved": 0, "drafted": 0, "gate1_rejected": 0, "error_count": 0}
+    stats = _make_stats()
 
     with (
         patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
@@ -195,7 +201,7 @@ def test_process_modification_gates14_pass_below_threshold_goes_to_drafts(db_pat
     """When Gates 1-4 pass with low confidence, candidate goes to capture_drafts."""
     conn = init_db(db_path)
     mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
-    stats = {"gate0_rejected": 0, "auto_approved": 0, "drafted": 0, "gate1_rejected": 0, "error_count": 0}
+    stats = _make_stats()
 
     from lessons_db.pattern_verify import VerifiedCandidate
 
@@ -237,7 +243,7 @@ def test_process_modification_gates14_pass_above_threshold_auto_approves(db_path
     """When Gates 1-4 pass with high confidence, candidate is auto-promoted to lessons."""
     conn = init_db(db_path)
     mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
-    stats = {"gate0_rejected": 0, "auto_approved": 0, "drafted": 0, "gate1_rejected": 0, "error_count": 0}
+    stats = _make_stats()
 
     from lessons_db.pattern_verify import VerifiedCandidate
 
@@ -275,7 +281,7 @@ def test_process_modification_gates14_pass_above_threshold_auto_approves(db_path
 def test_insert_miner_candidate_no_lance_dir_skips_gates(db_path):
     """Without lance_dir, negative candidates skip Gates 1-4 and go to capture_drafts."""
     conn = init_db(db_path)
-    stats = {"auto_approved": 0, "drafted": 0, "error_count": 0}
+    stats = _make_stats()
     candidate = {
         "polarity": "negative",
         "title": "some pattern",

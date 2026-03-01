@@ -32,6 +32,16 @@ _BUG_FIX_CONVENTIONAL = re.compile(r"^(fix|bug|patch|hotfix|resolve|correction)(
 _BUG_FIX_ISSUE_REF = re.compile(r"(Fixes|Resolves|Closes):\s*#\d+", re.IGNORECASE)
 _BUG_FIX_KEYWORD = re.compile(r"\b(fix|bug|error|patch|correct|resolve)\b", re.IGNORECASE)
 
+# Maps verify_candidate rejection tags → stats dict keys.
+# Lazy imports below keep this module-level dict from causing circular imports;
+# the pattern_extract/pattern_verify imports are deferred to call time.
+_GATE_COUNTER: dict[str, str] = {
+    "dedup": "gate1_rejected",
+    "suppressed": "gate2_rejected",
+    "specificity": "gate3_rejected",
+    "generality": "gate4_rejected",
+}
+
 
 @dataclass
 class MiningConfig:
@@ -285,7 +295,9 @@ def _process_modification(
 
     lessons_extracted = 0
     candidates = extract_polarized_candidates(conn, diff, repo_name)
-    stats.setdefault("candidates_extracted", 0)
+    # stats is expected to be fully initialised by mine_repos_for_gaps() before
+    # _process_modification() is called. Required keys: candidates_extracted,
+    # gate0_rejected, gate1..4_rejected, auto_approved, drafted, error_count.
     stats["candidates_extracted"] += len(candidates)
     for candidate in candidates:
         polarity = candidate.get("polarity", "negative")
@@ -303,12 +315,6 @@ def _process_modification(
             from lessons_db.pattern_extract import CandidatePattern
             from lessons_db.pattern_verify import verify_candidate
 
-            _GATE_COUNTER = {
-                "dedup": "gate1_rejected",
-                "suppressed": "gate2_rejected",
-                "specificity": "gate3_rejected",
-                "generality": "gate4_rejected",
-            }
             cp = CandidatePattern(
                 snippet=candidate.get("bad_code", ""),
                 source_repos=[repo_name],
@@ -317,9 +323,10 @@ def _process_modification(
             )
             verified, rejected_gate = verify_candidate(cp, conn, str(lance_dir))
             if verified is None:
+                if rejected_gate not in _GATE_COUNTER:
+                    _log.warning("verify_candidate: unknown gate tag %r — counting as gate1_rejected", rejected_gate)
                 counter_key = _GATE_COUNTER.get(rejected_gate or "", "gate1_rejected")
-                stats.setdefault(counter_key, 0)
-                stats[counter_key] += 1
+                stats[counter_key] = stats.get(counter_key, 0) + 1
                 continue
             confidence = verified.confidence
 

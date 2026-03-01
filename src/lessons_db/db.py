@@ -172,8 +172,12 @@ CREATE TABLE IF NOT EXISTS mining_runs (
     run_date TEXT NOT NULL,
     repos_searched INTEGER DEFAULT 0,
     commits_analyzed INTEGER DEFAULT 0,
+    candidates_extracted INTEGER DEFAULT 0,
     gate0_rejected INTEGER DEFAULT 0,
     gate1_rejected INTEGER DEFAULT 0,
+    gate2_rejected INTEGER DEFAULT 0,
+    gate3_rejected INTEGER DEFAULT 0,
+    gate4_rejected INTEGER DEFAULT 0,
     auto_approved INTEGER DEFAULT 0,
     drafted INTEGER DEFAULT 0,
     conflicts_flagged INTEGER DEFAULT 0,
@@ -297,14 +301,14 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
             if "duplicate column name" not in str(e):
                 raise
 
-    # v5 per-gate visibility columns on mining_runs
-    mining_runs_columns = [
+    # v5 per-gate visibility columns — now in SCHEMA_SQL; keep ALTER TABLE for
+    # existing DBs upgraded from the previous schema (idempotent, duplicate-safe).
+    for col_name, col_def in [
         ("candidates_extracted", "INTEGER DEFAULT 0"),
         ("gate2_rejected", "INTEGER DEFAULT 0"),
         ("gate3_rejected", "INTEGER DEFAULT 0"),
         ("gate4_rejected", "INTEGER DEFAULT 0"),
-    ]
-    for col_name, col_def in mining_runs_columns:
+    ]:
         try:
             conn.execute(f"ALTER TABLE mining_runs ADD COLUMN {col_name} {col_def}")
             conn.commit()

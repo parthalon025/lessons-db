@@ -61,8 +61,9 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.nearest_lessons", return_value=[{"score": 0.05, "text": "existing"}]),
             patch("lessons_db.pattern_verify.get_embedding", return_value=[0.1] * 768),
         ):
-            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, gate_tag = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
+        assert gate_tag == "dedup"
 
     def test_returns_none_when_specificity_too_low(self, candidate, db_path, tmp_path):
         conn = init_db(db_path)
@@ -73,8 +74,9 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", return_value=mock_resp),
         ):
-            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, gate_tag = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
+        assert gate_tag == "specificity"
 
     def test_returns_verified_candidate_with_confidence(self, candidate, db_path, tmp_path):
         conn = init_db(db_path)
@@ -90,8 +92,9 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", side_effect=lambda *a, **kw: next(responses)),
         ):
-            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, gate_tag = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert isinstance(result, VerifiedCandidate)
+        assert gate_tag is None
         assert abs(result.confidence - 0.86) < 0.01
         assert result.rationale
 
@@ -142,8 +145,9 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.nearest_lessons", return_value=[{"score": 0.9, "text": "far"}]),
             patch("lessons_db.pattern_verify.is_suppressed", return_value=True),
         ):
-            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, gate_tag = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
+        assert gate_tag == "suppressed"
 
     def test_confidence_formula(self, candidate, db_path, tmp_path):
         conn = init_db(db_path)
@@ -172,5 +176,6 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", return_value=mock_resp),
         ):
-            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, gate_tag = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
+        assert gate_tag == "specificity"  # Ollama failure at Gate 3
