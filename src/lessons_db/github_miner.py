@@ -373,10 +373,9 @@ def mine_repos_for_gaps(
         stats["repos_searched"] += 1
         insert_mined_repo(conn, repo_name)
 
+        commits_in_repo = 0
+        lessons_in_repo = 0
         try:
-            commits_in_repo = 0
-            lessons_in_repo = 0
-
             for commit in Repository(
                 f"https://github.com/{repo_name}",
                 since=since,
@@ -404,11 +403,12 @@ def mine_repos_for_gaps(
                             _log.warning("commit error in %s: %s", repo_name, exc)
                             stats["error_count"] += 1
 
-            update_mined_repo(conn, repo_name, commit_count=commits_in_repo, lessons_extracted=lessons_in_repo)
-
         except Exception as exc:
             _log.error("repo mining failed for %s: %s", repo_name, exc)
             stats["error_count"] += 1
+        finally:
+            # Always persist progress — even partial results are valuable.
+            update_mined_repo(conn, repo_name, commit_count=commits_in_repo, lessons_extracted=lessons_in_repo)
 
     duration_seconds = (datetime.now() - _start_time).total_seconds()
     run_id = insert_mining_run(

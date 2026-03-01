@@ -74,6 +74,25 @@ class TestSchemaCreation:
             assert t in tables
         conn2.close()
 
+    def test_add_extension_columns_idempotent(self, db_path):
+        """_add_extension_columns must not raise on a second call (ALTER TABLE duplicate column guard)."""
+        from lessons_db.db import _add_extension_columns
+
+        conn = init_db(db_path)
+        # init_db already called _add_extension_columns once; a second call must be a no-op
+        _add_extension_columns(conn)  # must not raise OperationalError
+        # Verify v5 mining_runs columns are present and correct
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info('mining_runs')").fetchall()}
+        for expected in (
+            "candidates_extracted",
+            "gate2_rejected",
+            "gate3_rejected",
+            "gate4_rejected",
+            "duration_seconds",
+        ):
+            assert expected in cols, f"missing column {expected!r} after double init"
+        conn.close()
+
 
 class TestLessonCRUD:
     """Lesson insert, get, update, and search."""

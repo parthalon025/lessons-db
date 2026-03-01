@@ -2,8 +2,11 @@
 import json
 from unittest.mock import patch
 
-from lessons_db.db import init_db
+import pytest
+
+from lessons_db.db import init_db, insert_mining_run
 from lessons_db.github_miner import (
+    _GATE_COUNTER,
     MiningConfig,
     _insert_miner_candidate,
     _process_modification,
@@ -298,3 +301,92 @@ def test_insert_miner_candidate_no_lance_dir_skips_gates(db_path):
     row = conn.execute("SELECT confidence FROM capture_drafts").fetchone()
     assert row is not None
     assert row["confidence"] is None  # No verification was done
+
+
+# ---------------------------------------------------------------------------
+# T1: _GATE_COUNTER routing — all 4 rejection tags must map to correct stat keys
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "gate_tag,expected_stat",
+    [
+        ("dedup", "gate1_rejected"),
+        ("suppressed", "gate2_rejected"),
+        ("specificity", "gate3_rejected"),
+        ("generality", "gate4_rejected"),
+    ],
+)
+def test_process_modification_gate_counter_all_tags(db_path, tmp_path, gate_tag, expected_stat):
+    """_GATE_COUNTER must route each rejection tag to the correct stats key."""
+    # Verify the tag is in the module-level dict (catches typos in _GATE_COUNTER)
+    assert gate_tag in _GATE_COUNTER, f"'{gate_tag}' missing from _GATE_COUNTER"
+    assert _GATE_COUNTER[gate_tag] == expected_stat
+
+    conn = init_db(db_path)
+    mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
+    stats = _make_stats()
+
+    with (
+        patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=(None, gate_tag)),
+    ):
+        mock_ollama.return_value = [
+            {
+                "polarity": "negative",
+                "title": "bad call",
+                "one_liner": "avoid it",
+                "bad_code": "z = bad_call()\nresult = z",
+                "good_code": "z = safe_call()\nresult = z",
+                "category": "architecture-pattern",
+            }
+        ]
+        count = _process_modification(conn, mock_diff, "owner/repo", MiningConfig(), stats, lance_dir=tmp_path)
+
+    assert count == 0
+    assert stats[expected_stat] == 1, f"gate_tag={gate_tag!r} must increment {expected_stat}"
+    # All other gate counters must remain zero
+    for other_stat in ("gate1_rejected", "gate2_rejected", "gate3_rejected", "gate4_rejected"):
+        if other_stat != expected_stat:
+            assert stats[other_stat] == 0, f"{other_stat} must not be incremented for tag={gate_tag!r}"
+    assert conn.execute("SELECT COUNT(*) FROM capture_drafts").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# T2 + T4: insert_mining_run persists all new columns including duration_seconds
+# ---------------------------------------------------------------------------
+
+
+def test_insert_mining_run_persists_all_columns(db_path):
+    """insert_mining_run must persist all columns to the DB, including the new ones."""
+    conn = init_db(db_path)
+    run_id = insert_mining_run(
+        conn,
+        repos_searched=3,
+        commits_analyzed=120,
+        candidates_extracted=18,
+        gate0_rejected=45,
+        gate1_rejected=7,
+        gate2_rejected=3,
+        gate3_rejected=2,
+        gate4_rejected=1,
+        auto_approved=2,
+        drafted=3,
+        conflicts_flagged=0,
+        error_count=1,
+        duration_seconds=42.75,
+    )
+    row = conn.execute("SELECT * FROM mining_runs WHERE id = ?", (run_id,)).fetchone()
+    assert row is not None
+    assert row["repos_searched"] == 3
+    assert row["commits_analyzed"] == 120
+    assert row["candidates_extracted"] == 18  # T4: new column
+    assert row["gate0_rejected"] == 45
+    assert row["gate1_rejected"] == 7
+    assert row["gate2_rejected"] == 3  # T4: new column
+    assert row["gate3_rejected"] == 2  # T4: new column
+    assert row["gate4_rejected"] == 1  # T4: new column
+    assert row["auto_approved"] == 2
+    assert row["drafted"] == 3
+    assert row["error_count"] == 1
+    assert abs(row["duration_seconds"] - 42.75) < 0.001  # T2: duration_seconds

@@ -371,6 +371,9 @@ LESSON_COLUMNS = {
 
 def insert_lesson(conn: sqlite3.Connection, data: dict) -> int:
     """Insert a lesson with defaults. Returns the new row id."""
+    invalid = set(data.keys()) - LESSON_COLUMNS
+    if invalid:
+        raise ValueError(f"Invalid column names: {invalid}")
     defaults = {
         "title": None,
         "one_liner": None,

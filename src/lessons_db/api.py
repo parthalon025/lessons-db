@@ -213,11 +213,22 @@ def create_app(  # noqa: C901, PLR0915
 
     @app.post("/api/security/scan")
     def trigger_security_scan(target: str | None = None) -> dict:
+        from lessons_db.config import PROJECTS_DIR
         from lessons_db.security_scanner import run_full_security_scan
+
+        target_path: Path | None = None
+        if target:
+            # Restrict scan target to PROJECTS_DIR — prevents path traversal
+            # from any process that can reach localhost:7685.
+            candidate = Path(target).resolve()
+            try:
+                candidate.relative_to(PROJECTS_DIR.resolve())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="target must be within projects directory") from exc
+            target_path = candidate
 
         conn = get_conn()
         try:
-            target_path = Path(target) if target else None
             return run_full_security_scan(conn, target_path)
         finally:
             conn.close()
