@@ -171,83 +171,150 @@ def discover_repos(topics: list[str], min_stars: int = 50) -> list[str]:
     return list(repos)
 
 
+def _insert_miner_candidate(
+    conn: sqlite3.Connection,
+    diff: str,
+    repo_name: str,
+    candidate: dict,
+    confidence: float | None,
+    stats: dict,
+) -> bool:
+    """Insert a validated candidate into capture_drafts or lessons.
+
+    If confidence >= auto_approve_threshold, inserts directly into lessons using
+    full miner metadata (title, one_liner, bad_code, good_code, category).
+    Otherwise inserts into capture_drafts for human review.
+
+    Returns True on success, False on DB error.
+    """
+    from lessons_db.db import get_scan_state, insert_lesson
+    from lessons_db.pattern_triage import DEFAULT_THRESHOLD
+
+    today = date.today().isoformat()
+
+    # Auto-approve to lessons when confidence is high and candidate has full metadata.
+    if (
+        confidence is not None
+        and candidate.get("polarity", "negative") == "negative"
+        and candidate.get("title", "").strip()
+        and candidate.get("one_liner", "").strip()
+    ):
+        threshold_str = get_scan_state(conn, "auto_approve_threshold")
+        try:
+            threshold = float(threshold_str) if threshold_str else DEFAULT_THRESHOLD
+        except ValueError:
+            threshold = DEFAULT_THRESHOLD
+
+        if confidence >= threshold:
+            try:
+                description = json.dumps(
+                    {
+                        "bad_code": candidate.get("bad_code", ""),
+                        "good_code": candidate.get("good_code", ""),
+                        "rationale": candidate.get("one_liner", ""),
+                    }
+                )
+                lesson_id = insert_lesson(
+                    conn,
+                    {
+                        "title": candidate["title"],
+                        "one_liner": candidate["one_liner"],
+                        "description": description,
+                        "polarity": "negative",
+                        "entry_type": "pattern",
+                        "tier": "noticed",
+                        "category": candidate.get("category", "architecture-pattern"),
+                        "created_date": today,
+                        "source": f"github_miner:{repo_name}",
+                    },
+                )
+                _log.info(
+                    "_insert_miner_candidate: auto-approved lesson %d (conf=%.2f, repo=%s)",
+                    lesson_id,
+                    confidence,
+                    repo_name,
+                )
+                stats["auto_approved"] += 1
+                return True
+            except Exception as exc:
+                _log.warning("auto-approve insert_lesson failed for %s: %s", repo_name, exc)
+                # Fall through to capture_drafts insert
+
+    # Insert to capture_drafts — either positive candidate, below threshold,
+    # or fallback from a failed lessons insert.
+    try:
+        conn.execute(
+            "INSERT INTO capture_drafts "
+            "(raw_content, extracted_data, status, created_date, source, confidence) "
+            "VALUES (?, ?, 'pending', ?, ?, ?)",
+            [
+                diff[:500],
+                json.dumps(candidate),
+                today,
+                f"github_miner:{repo_name}",
+                confidence,
+            ],
+        )
+        conn.commit()
+    except Exception as exc:
+        _log.warning("capture_drafts insert failed for %s: %s", repo_name, exc)
+        conn.rollback()
+        stats["error_count"] += 1
+        return False
+
+    stats["drafted"] += 1
+    return True
+
+
 def _process_modification(
     conn: sqlite3.Connection,
     diff: str,
     repo_name: str,
     cfg: MiningConfig,
     stats: dict,
+    lance_dir: Path | None = None,
 ) -> int:
-    """Process one file modification from a commit. Returns lesson count extracted."""
-    from lessons_db.pattern_validator import validate_regex_self_consistency, validate_syntax
+    """Process one file modification from a commit. Returns lesson count extracted.
+
+    Runs Gates 0a and 0b on every candidate.  When lance_dir is provided, negative
+    candidates are also run through Gates 1-4 (verify_candidate) to get a
+    confidence score; high-confidence candidates are auto-approved directly to
+    the lessons table.  Positive candidates always go to capture_drafts.
+    """
+    from lessons_db.pattern_validator import run_gate0
 
     lessons_extracted = 0
     candidates = extract_polarized_candidates(conn, diff, repo_name)
     for candidate in candidates:
         polarity = candidate.get("polarity", "negative")
 
-        # Gate 0a: syntax check — skip for positive candidates.
-        # Positive candidates have bad_code="N/A" by design, which fails the
-        # 2-line minimum check. Only validate required fields for positive.
-        if polarity != "positive":
-            syn = validate_syntax(
-                title=candidate.get("title", ""),
-                one_liner=candidate.get("one_liner", ""),
-                bad_code=candidate.get("bad_code", ""),
-                good_code=candidate.get("good_code", ""),
-                regex=candidate.get("regex"),
-            )
-            if not syn["passed"]:
-                stats["gate0_rejected"] += 1
-                continue
-        # Positive candidates: require title, one_liner, and good_code at minimum.
-        elif not all(
-            [
-                candidate.get("title", "").strip(),
-                candidate.get("one_liner", "").strip(),
-                candidate.get("good_code", "").strip(),
-            ]
-        ):
+        # Gates 0a and 0b: syntax + regex self-consistency.
+        if not run_gate0(candidate):
             stats["gate0_rejected"] += 1
             continue
 
-        # Gate 0b: regex self-consistency — only applies if regex is present.
-        if candidate.get("regex"):
-            reg = validate_regex_self_consistency(
-                candidate["regex"],
-                candidate.get("bad_code", ""),
-                candidate.get("good_code", ""),
+        # Gates 1-4: dedup, suppression, specificity, generality (negative only).
+        # Positive candidates have no bad_code to score — skip verification and
+        # send directly to capture_drafts.
+        confidence: float | None = None
+        if polarity != "positive" and lance_dir is not None:
+            from lessons_db.pattern_extract import CandidatePattern
+            from lessons_db.pattern_verify import verify_candidate
+
+            cp = CandidatePattern(
+                snippet=candidate.get("bad_code", ""),
+                source_repos=[repo_name],
+                source_lesson_id=None,
+                detection_method="github_miner",
             )
-            if not reg["passed"]:
-                stats["gate0_rejected"] += 1
+            verified = verify_candidate(cp, conn, str(lance_dir))
+            if verified is None:
+                stats["gate1_rejected"] += 1
                 continue
+            confidence = verified.confidence
 
-        # Insert validated candidate directly into capture_drafts.
-        # capture_from_diff() re-runs the full LLM extraction pipeline from scratch
-        # and throws away the already-validated candidate fields — incorrect.
-        # Instead, serialise the candidate into extracted_data (JSON) to match
-        # the schema used by capture_from_transcript and capture_from_design_doc.
-        try:
-            conn.execute(
-                "INSERT INTO capture_drafts "
-                "(raw_content, extracted_data, status, created_date, source) "
-                "VALUES (?, ?, 'pending', ?, ?)",
-                [
-                    diff[:500],
-                    json.dumps(candidate),
-                    date.today().isoformat(),
-                    f"github_miner:{repo_name}",
-                ],
-            )
-            conn.commit()
-        except Exception as exc:
-            _log.warning("capture_drafts insert failed for %s: %s", repo_name, exc)
-            conn.rollback()
-            stats["error_count"] += 1
-            continue
-
-        stats["auto_approved"] += 1
-        lessons_extracted += 1
+        if _insert_miner_candidate(conn, diff, repo_name, candidate, confidence, stats):
+            lessons_extracted += 1
 
     return lessons_extracted
 
@@ -272,7 +339,8 @@ def mine_repos_for_gaps(
         "commits_analyzed": 0,
         "gate0_rejected": 0,
         "gate1_rejected": 0,
-        "auto_approved": 0,
+        "auto_approved": 0,  # candidates promoted directly to lessons
+        "drafted": 0,  # candidates queued in capture_drafts for review
         "conflicts_flagged": 0,
         "error_count": 0,
     }
@@ -308,7 +376,7 @@ def mine_repos_for_gaps(
                         continue
 
                     try:
-                        lessons_in_repo += _process_modification(conn, diff, repo_name, cfg, stats)
+                        lessons_in_repo += _process_modification(conn, diff, repo_name, cfg, stats, lance_dir)
                     except Exception as exc:
                         if cfg.capture_errors:
                             _log.warning("commit error in %s: %s", repo_name, exc)
@@ -327,6 +395,7 @@ def mine_repos_for_gaps(
         gate0_rejected=stats["gate0_rejected"],
         gate1_rejected=stats["gate1_rejected"],
         auto_approved=stats["auto_approved"],
+        drafted=stats["drafted"],
         conflicts_flagged=stats["conflicts_flagged"],
         error_count=stats["error_count"],
         duration_seconds=None,  # caller can pass timing if needed

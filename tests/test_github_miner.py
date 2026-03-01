@@ -1,9 +1,11 @@
 # tests/test_github_miner.py
+import json
 from unittest.mock import patch
 
 from lessons_db.db import init_db
 from lessons_db.github_miner import (
     MiningConfig,
+    _insert_miner_candidate,
     _process_modification,
     extract_polarized_candidates,
     filter_diff_by_size,
@@ -96,6 +98,7 @@ def test_positive_candidate_not_gate0_rejected(db_path):
     stats = {
         "gate0_rejected": 0,
         "auto_approved": 0,
+        "drafted": 0,
         "error_count": 0,
     }
     with patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama:
@@ -113,7 +116,7 @@ def test_positive_candidate_not_gate0_rejected(db_path):
         _process_modification(conn, mock_diff, "owner/repo", MiningConfig(), stats)
 
     assert stats["gate0_rejected"] == 0, "positive candidate must not be gate0-rejected"
-    assert stats["auto_approved"] == 1, "positive candidate must be auto_approved"
+    assert stats["drafted"] == 1, "positive candidate must go to capture_drafts (not auto_approved)"
     # Confirm the draft was written to the DB
     row = conn.execute("SELECT extracted_data, source FROM capture_drafts").fetchone()
     assert row is not None, "capture_drafts row must exist"
@@ -128,6 +131,7 @@ def test_process_modification_inserts_draft_directly(db_path):
     stats = {
         "gate0_rejected": 0,
         "auto_approved": 0,
+        "drafted": 0,
         "error_count": 0,
     }
     with patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama:
@@ -145,9 +149,146 @@ def test_process_modification_inserts_draft_directly(db_path):
         count = _process_modification(conn, mock_diff, "owner/repo", MiningConfig(), stats)
 
     assert count == 1
-    assert stats["auto_approved"] == 1
+    assert stats["drafted"] == 1, "no lance_dir → candidate goes to capture_drafts"
+    assert stats["auto_approved"] == 0
     assert stats["gate0_rejected"] == 0
     row = conn.execute("SELECT extracted_data FROM capture_drafts").fetchone()
     assert row is not None
-    data = __import__("json").loads(row["extracted_data"])
+    data = json.loads(row["extracted_data"])
     assert data["title"] == "bad call pattern"
+
+
+# ---------------------------------------------------------------------------
+# Gates 1-4 wiring tests
+# ---------------------------------------------------------------------------
+
+
+def test_process_modification_gates14_reject_increments_gate1_rejected(db_path, tmp_path):
+    """When verify_candidate returns None (Gates 1-4 reject), gate1_rejected increments."""
+    conn = init_db(db_path)
+    mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
+    stats = {"gate0_rejected": 0, "auto_approved": 0, "drafted": 0, "gate1_rejected": 0, "error_count": 0}
+
+    with (
+        patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=None),
+    ):
+        mock_ollama.return_value = [
+            {
+                "polarity": "negative",
+                "title": "bad call",
+                "one_liner": "avoid it",
+                "bad_code": "z = bad_call()\nresult = z",
+                "good_code": "z = safe_call()\nresult = z",
+                "category": "architecture-pattern",
+            }
+        ]
+        count = _process_modification(conn, mock_diff, "owner/repo", MiningConfig(), stats, lance_dir=tmp_path)
+
+    assert count == 0
+    assert stats["gate1_rejected"] == 1
+    assert stats["auto_approved"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM capture_drafts").fetchone()[0] == 0
+
+
+def test_process_modification_gates14_pass_below_threshold_goes_to_drafts(db_path, tmp_path):
+    """When Gates 1-4 pass with low confidence, candidate goes to capture_drafts."""
+    conn = init_db(db_path)
+    mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
+    stats = {"gate0_rejected": 0, "auto_approved": 0, "drafted": 0, "gate1_rejected": 0, "error_count": 0}
+
+    from lessons_db.pattern_verify import VerifiedCandidate
+
+    mock_verified = VerifiedCandidate(
+        snippet="z = bad_call()\nresult = z",
+        source_repos=["owner/repo"],
+        source_lesson_id=None,
+        confidence=0.50,  # Below 0.85 threshold
+        rationale="test rationale",
+    )
+    with (
+        patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=mock_verified),
+    ):
+        mock_ollama.return_value = [
+            {
+                "polarity": "negative",
+                "title": "bad call pattern",
+                "one_liner": "avoid bad_call",
+                "bad_code": "z = bad_call()\nresult = z",
+                "good_code": "z = safe_call()\nresult = z",
+                "category": "architecture-pattern",
+            }
+        ]
+        count = _process_modification(conn, mock_diff, "owner/repo", MiningConfig(), stats, lance_dir=tmp_path)
+
+    assert count == 1
+    assert stats["drafted"] == 1, "below-threshold → candidate goes to capture_drafts"
+    assert stats["auto_approved"] == 0
+    assert stats["gate1_rejected"] == 0
+    row = conn.execute("SELECT confidence, extracted_data FROM capture_drafts").fetchone()
+    assert row is not None
+    assert abs(row["confidence"] - 0.50) < 0.001
+    data = json.loads(row["extracted_data"])
+    assert data["title"] == "bad call pattern"
+
+
+def test_process_modification_gates14_pass_above_threshold_auto_approves(db_path, tmp_path):
+    """When Gates 1-4 pass with high confidence, candidate is auto-promoted to lessons."""
+    conn = init_db(db_path)
+    mock_diff = "+x = 1\n+y = 2\n-z = bad_call()\n"
+    stats = {"gate0_rejected": 0, "auto_approved": 0, "drafted": 0, "gate1_rejected": 0, "error_count": 0}
+
+    from lessons_db.pattern_verify import VerifiedCandidate
+
+    mock_verified = VerifiedCandidate(
+        snippet="z = bad_call()\nresult = z",
+        source_repos=["owner/repo"],
+        source_lesson_id=None,
+        confidence=0.90,  # Above 0.85 threshold
+        rationale="test rationale",
+    )
+    with (
+        patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=mock_verified),
+    ):
+        mock_ollama.return_value = [
+            {
+                "polarity": "negative",
+                "title": "bad call pattern high conf",
+                "one_liner": "avoid bad_call — confirmed across multiple repos",
+                "bad_code": "z = bad_call()\nresult = z",
+                "good_code": "z = safe_call()\nresult = z",
+                "category": "architecture-pattern",
+            }
+        ]
+        count = _process_modification(conn, mock_diff, "owner/repo", MiningConfig(), stats, lance_dir=tmp_path)
+
+    assert count == 1
+    assert stats["auto_approved"] == 1
+    # Should be in lessons table, not just drafts
+    lesson = conn.execute("SELECT title FROM lessons WHERE source LIKE 'github_miner:%'").fetchone()
+    assert lesson is not None
+    assert lesson["title"] == "bad call pattern high conf"
+
+
+def test_insert_miner_candidate_no_lance_dir_skips_gates(db_path):
+    """Without lance_dir, negative candidates skip Gates 1-4 and go to capture_drafts."""
+    conn = init_db(db_path)
+    stats = {"auto_approved": 0, "drafted": 0, "error_count": 0}
+    candidate = {
+        "polarity": "negative",
+        "title": "some pattern",
+        "one_liner": "avoid it",
+        "bad_code": "bad_call()\n",
+        "good_code": "good_call()\n",
+        "category": "testing",
+    }
+    # No lance_dir → confidence=None → goes to capture_drafts regardless
+    result = _insert_miner_candidate(conn, "diff text", "owner/repo", candidate, confidence=None, stats=stats)
+    assert result is True
+    assert stats["drafted"] == 1, "confidence=None → goes to capture_drafts"
+    assert stats["auto_approved"] == 0
+    row = conn.execute("SELECT confidence FROM capture_drafts").fetchone()
+    assert row is not None
+    assert row["confidence"] is None  # No verification was done

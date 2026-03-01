@@ -136,3 +136,42 @@ def validate_regex_self_consistency(
         }
 
     return {"passed": True, "reason": None, "skipped": False}
+
+
+def run_gate0(candidate: dict) -> bool:
+    """Run Gates 0a and 0b on a candidate dict. Returns True if both pass.
+
+    Shared by the GitHub miner and the BugsInPy calibrator so the gate logic
+    lives in one place.
+    """
+    polarity = candidate.get("polarity", "negative")
+
+    if polarity != "positive":
+        result = validate_syntax(
+            title=candidate.get("title", ""),
+            one_liner=candidate.get("one_liner", ""),
+            bad_code=candidate.get("bad_code", ""),
+            good_code=candidate.get("good_code", ""),
+            regex=candidate.get("regex"),
+        )
+        if not result["passed"]:
+            return False
+    elif not all(
+        [
+            candidate.get("title", "").strip(),
+            candidate.get("one_liner", "").strip(),
+            candidate.get("good_code", "").strip(),
+        ]
+    ):
+        return False
+
+    if candidate.get("regex"):
+        reg = validate_regex_self_consistency(
+            candidate["regex"],
+            candidate.get("bad_code", ""),
+            candidate.get("good_code", ""),
+        )
+        if not reg["passed"]:
+            return False
+
+    return True

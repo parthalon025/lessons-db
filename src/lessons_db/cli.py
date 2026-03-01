@@ -1576,6 +1576,50 @@ def mine_github(ctx, topic, limit):
         click.echo(f"  {k}: {v}")
 
 
+@main.group("calibrate")
+@click.pass_context
+def calibrate(ctx):
+    """Calibrate the lesson extraction pipeline against known datasets."""
+
+
+@calibrate.command("bugsInPy")
+@click.option("--sample", default=50, help="Number of bugs to sample (default 50).")
+@click.option("--cache-dir", default=None, help="Directory to cache the BugsInPy clone.")
+@click.option(
+    "--skip-extraction",
+    is_flag=True,
+    default=False,
+    help="Skip Ollama extraction — measure size gate pass rate only.",
+)
+@click.pass_context
+def calibrate_bugsInPy(ctx, sample, cache_dir, skip_extraction):
+    """Calibrate pipeline against the BugsInPy dataset (493 confirmed Python bugs).
+
+    Clones soarsmu/BugsInPy (cached after first run), samples N bugs, runs
+    extraction and gate checks, and prints a pass-rate report.
+
+    Pass rate >= 70%: pipeline is calibrated for live mining.
+    Pass rate < 70%: tune gate thresholds before enabling live mining.
+    """
+    from pathlib import Path
+
+    from lessons_db.bugsInPy_calibrator import DEFAULT_CACHE_DIR, calibrate_pipeline, format_report
+
+    conn = ctx.obj["conn"]
+    lance_dir = ctx.obj.get("lance_dir")
+    resolved_cache = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
+
+    click.echo(f"Running BugsInPy calibration (sample={sample}, skip_extraction={skip_extraction}) …")
+    report = calibrate_pipeline(
+        conn=conn,
+        lance_dir=lance_dir,
+        sample_n=sample,
+        cache_dir=resolved_cache,
+        skip_extraction=skip_extraction,
+    )
+    click.echo(format_report(report))
+
+
 @main.command("gaps")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.pass_context

@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS mining_runs (
     gate0_rejected INTEGER DEFAULT 0,
     gate1_rejected INTEGER DEFAULT 0,
     auto_approved INTEGER DEFAULT 0,
+    drafted INTEGER DEFAULT 0,
     conflicts_flagged INTEGER DEFAULT 0,
     error_count INTEGER DEFAULT 0,
     duration_seconds REAL
@@ -182,6 +183,22 @@ CREATE TABLE IF NOT EXISTS mining_runs (
 
 CREATE INDEX IF NOT EXISTS idx_mined_repos_name ON mined_repos(repo_full_name);
 CREATE INDEX IF NOT EXISTS idx_mining_runs_date ON mining_runs(run_date);
+
+CREATE TABLE IF NOT EXISTS calibration_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date TEXT NOT NULL,
+    dataset TEXT NOT NULL DEFAULT 'BugsInPy',
+    bugs_sampled INTEGER DEFAULT 0,
+    bugs_with_valid_diffs INTEGER DEFAULT 0,
+    extraction_attempted INTEGER DEFAULT 0,
+    extraction_success INTEGER DEFAULT 0,
+    gate0_pass INTEGER DEFAULT 0,
+    gate14_pass INTEGER DEFAULT 0,
+    pass_rate REAL,
+    notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_calibration_runs_date ON calibration_runs(run_date);
 """
 
 
@@ -588,6 +605,7 @@ def insert_mining_run(
     gate0_rejected: int = 0,
     gate1_rejected: int = 0,
     auto_approved: int = 0,
+    drafted: int = 0,
     conflicts_flagged: int = 0,
     error_count: int = 0,
     duration_seconds: float | None = None,
@@ -595,17 +613,52 @@ def insert_mining_run(
     cursor = conn.execute(
         """INSERT INTO mining_runs
            (run_date, repos_searched, commits_analyzed, gate0_rejected,
-            gate1_rejected, auto_approved, conflicts_flagged, error_count, duration_seconds)
-           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?)""",
+            gate1_rejected, auto_approved, drafted, conflicts_flagged, error_count, duration_seconds)
+           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             repos_searched,
             commits_analyzed,
             gate0_rejected,
             gate1_rejected,
             auto_approved,
+            drafted,
             conflicts_flagged,
             error_count,
             duration_seconds,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def insert_calibration_run(
+    conn: sqlite3.Connection,
+    dataset: str = "BugsInPy",
+    bugs_sampled: int = 0,
+    bugs_with_valid_diffs: int = 0,
+    extraction_attempted: int = 0,
+    extraction_success: int = 0,
+    gate0_pass: int = 0,
+    gate14_pass: int = 0,
+    notes: str | None = None,
+) -> int:
+    pass_rate = gate0_pass / bugs_sampled if bugs_sampled else 0.0
+    cursor = conn.execute(
+        """INSERT INTO calibration_runs
+           (run_date, dataset, bugs_sampled, bugs_with_valid_diffs,
+            extraction_attempted, extraction_success, gate0_pass, gate14_pass,
+            pass_rate, notes)
+           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            dataset,
+            bugs_sampled,
+            bugs_with_valid_diffs,
+            extraction_attempted,
+            extraction_success,
+            gate0_pass,
+            gate14_pass,
+            pass_rate,
+            notes,
         ),
     )
     conn.commit()
