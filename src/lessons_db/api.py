@@ -168,6 +168,33 @@ def create_app(  # noqa: C901, PLR0915
         finally:
             conn.close()
 
+    @app.get("/api/calibration/history")
+    def calibration_history(limit: int = Query(20, le=100)) -> list:
+        conn = get_conn()
+        try:
+            rows = conn.execute("SELECT * FROM calibration_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    @app.post("/api/calibration/run")
+    def trigger_calibration_run(
+        background_tasks: BackgroundTasks,
+        sample_n: int = 50,
+        skip_extraction: bool = False,
+    ) -> dict:
+        from lessons_db.bugsInPy_calibrator import calibrate_pipeline
+
+        def _run() -> None:
+            conn = get_conn()
+            try:
+                calibrate_pipeline(conn, lance_dir=_lance_dir, sample_n=sample_n, skip_extraction=skip_extraction)
+            finally:
+                conn.close()
+
+        background_tasks.add_task(_run)
+        return {"status": "queued", "message": "Calibration started — check /api/calibration/history for results"}
+
     @app.post("/api/mining/run")
     def trigger_mining_run(background_tasks: BackgroundTasks, topics: list[str] | None = None) -> dict:
         from lessons_db.github_miner import MiningConfig, mine_repos_for_gaps

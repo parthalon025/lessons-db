@@ -111,3 +111,46 @@ def test_get_lessons_categories(client):
     resp = client.get("/api/lessons/categories")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+# ---------------------------------------------------------------------------
+# Calibration endpoints (Task 15 — BugsInPy calibration feature)
+# ---------------------------------------------------------------------------
+
+
+def test_get_calibration_history_empty(client):
+    resp = client.get("/api/calibration/history")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_get_calibration_history_with_data(client, db_path):
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    conn.execute(
+        "INSERT INTO calibration_runs (run_date, dataset, bugs_sampled, bugs_with_valid_diffs, "
+        "extraction_attempted, extraction_success, gate0_pass, gate14_pass, pass_rate, notes) "
+        "VALUES (date('now'), 'BugsInPy', 50, 45, 40, 35, 32, 10, 0.64, 'test run')"
+    )
+    conn.commit()
+
+    resp = client.get("/api/calibration/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["dataset"] == "BugsInPy"
+    assert data[0]["bugs_sampled"] == 50
+    assert data[0]["pass_rate"] == pytest.approx(0.64)
+
+
+def test_post_calibration_run_queues(client):
+    """POST /api/calibration/run returns queued immediately — does not block."""
+    from unittest.mock import patch
+
+    with patch("lessons_db.bugsInPy_calibrator.calibrate_pipeline"):
+        resp = client.post("/api/calibration/run")
+    assert resp.status_code in (200, 202)
+    data = resp.json()
+    assert data.get("status") == "queued"
