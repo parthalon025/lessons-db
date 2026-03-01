@@ -63,6 +63,17 @@ scripts/batch-capture-transcripts.sh [--dry-run] [--since DATE] [--positive]
 scripts/run-batch-pipeline.sh [--since DATE]
 ```
 
+## API Endpoints
+
+Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub/api/lessons/*`):
+
+- **GET /api/calibration/history** — paginated `calibration_runs` (default: last 20, max 100). Response: `[{id, run_date, dataset, bugs_sampled, pass_rate, gate14_pass, notes, ...}]`
+- **POST /api/calibration/run** — queues `calibrate_pipeline()` as background task. Query params: `sample_n` (default 50), `skip_extraction` (default false). Response: `{status: "queued"}`.
+- **GET /api/mining/history** — paginated `mining_runs`
+- **POST /api/mining/run** — queues GitHub mining task
+- **GET /api/security/findings** — open scan findings
+- **POST /api/security/scan** — trigger Semgrep security scan
+
 ## Deployment
 
 - **Symlink:** `~/.local/bin/lessons-db` → `.venv/bin/lessons-db`
