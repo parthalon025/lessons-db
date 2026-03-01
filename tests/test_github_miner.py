@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lessons_db.db import init_db, insert_mining_run
+from lessons_db.db import init_db, insert_capture_draft, insert_mining_run
 from lessons_db.github_miner import (
     _GATE_COUNTER,
     MiningConfig,
@@ -365,6 +365,7 @@ def test_insert_mining_run_persists_all_columns(db_path):
         repos_searched=3,
         commits_analyzed=120,
         candidates_extracted=18,
+        diff_size_rejected=60,
         gate0_rejected=45,
         gate1_rejected=7,
         gate2_rejected=3,
@@ -381,6 +382,7 @@ def test_insert_mining_run_persists_all_columns(db_path):
     assert row["repos_searched"] == 3
     assert row["commits_analyzed"] == 120
     assert row["candidates_extracted"] == 18  # T4: new column
+    assert row["diff_size_rejected"] == 60  # C2: new counter
     assert row["gate0_rejected"] == 45
     assert row["gate1_rejected"] == 7
     assert row["gate2_rejected"] == 3  # T4: new column
@@ -390,3 +392,30 @@ def test_insert_mining_run_persists_all_columns(db_path):
     assert row["drafted"] == 3
     assert row["error_count"] == 1
     assert abs(row["duration_seconds"] - 42.75) < 0.001  # T2: duration_seconds
+
+
+def test_insert_capture_draft_persists_correctly(db_path):
+    """insert_capture_draft writes all fields to capture_drafts (A2: SQL in db.py)."""
+    conn = init_db(db_path)
+    draft_id = insert_capture_draft(
+        conn,
+        raw_content="diff text snippet",
+        extracted_data='{"title": "test pattern"}',
+        source="github_miner:owner/repo",
+        confidence=0.72,
+    )
+    row = conn.execute("SELECT * FROM capture_drafts WHERE id = ?", (draft_id,)).fetchone()
+    assert row is not None
+    assert row["raw_content"] == "diff text snippet"
+    assert row["extracted_data"] == '{"title": "test pattern"}'
+    assert row["source"] == "github_miner:owner/repo"
+    assert row["status"] == "pending"
+    assert abs(row["confidence"] - 0.72) < 0.001
+
+
+def test_insert_capture_draft_null_confidence(db_path):
+    """insert_capture_draft must accept confidence=None for unverified candidates."""
+    conn = init_db(db_path)
+    insert_capture_draft(conn, raw_content="x", extracted_data="{}", source="test")
+    row = conn.execute("SELECT confidence FROM capture_drafts").fetchone()
+    assert row["confidence"] is None

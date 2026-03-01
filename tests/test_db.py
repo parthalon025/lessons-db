@@ -85,6 +85,7 @@ class TestSchemaCreation:
         cols = {row["name"] for row in conn.execute("PRAGMA table_info('mining_runs')").fetchall()}
         for expected in (
             "candidates_extracted",
+            "diff_size_rejected",
             "gate2_rejected",
             "gate3_rejected",
             "gate4_rejected",

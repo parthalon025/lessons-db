@@ -23,7 +23,7 @@ from pathlib import Path
 import requests
 
 from lessons_db.config import ANALYSIS_MODEL, OLLAMA_QUEUE_URL
-from lessons_db.db import insert_mined_repo, insert_mining_run, update_mined_repo
+from lessons_db.db import insert_capture_draft, insert_mined_repo, insert_mining_run, update_mined_repo
 
 _log = logging.getLogger(__name__)
 
@@ -142,14 +142,24 @@ def extract_polarized_candidates(
     return candidates
 
 
+_SAFE_TOPIC_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$")
+
+
 def discover_repos(topics: list[str], min_stars: int = 50) -> list[str]:
-    """Discover repos via gh CLI. Returns list of 'owner/repo' strings."""
+    """Discover repos via gh CLI. Returns list of 'owner/repo' strings.
+
+    Topics are sanitized to alphanumeric+hyphen before being passed to gh CLI —
+    any topic that doesn't match is logged and skipped.
+    """
     import subprocess
 
     repos = set()
-    if len(topics) > 3:
-        _log.debug("discover_repos: limiting to first 3 topics of %d (reduce gh API calls)", len(topics))
-    for topic in topics[:3]:  # Limit gh API calls
+    for topic in topics:
+        # S3: sanitize topic strings — gh CLI receives the topic as a single
+        # argument (no shell), but garbage topics still produce bad API calls.
+        if not _SAFE_TOPIC_RE.match(topic):
+            _log.warning("discover_repos: skipping unsafe topic %r", topic)
+            continue
         try:
             gh_cmd = [  # noqa: S607
                 "gh",
@@ -253,22 +263,15 @@ def _insert_miner_candidate(
     # Insert to capture_drafts — either positive candidate, below threshold,
     # or fallback from a failed lessons insert.
     try:
-        conn.execute(
-            "INSERT INTO capture_drafts "
-            "(raw_content, extracted_data, status, created_date, source, confidence) "
-            "VALUES (?, ?, 'pending', ?, ?, ?)",
-            [
-                diff[:500],
-                json.dumps(candidate),
-                today,
-                f"github_miner:{repo_name}",
-                confidence,
-            ],
+        insert_capture_draft(
+            conn,
+            raw_content=diff[:500],
+            extracted_data=json.dumps(candidate),
+            source=f"github_miner:{repo_name}",
+            confidence=confidence,
         )
-        conn.commit()
     except Exception as exc:
         _log.warning("capture_drafts insert failed for %s: %s", repo_name, exc)
-        conn.rollback()
         stats["error_count"] += 1
         return False
 
@@ -355,13 +358,16 @@ def mine_repos_for_gaps(
         "repos_searched": 0,
         "commits_analyzed": 0,
         "candidates_extracted": 0,
-        "gate0_rejected": 0,
-        "gate1_rejected": 0,  # dedup (Gate 1)
-        "gate2_rejected": 0,  # suppression (Gate 2)
-        "gate3_rejected": 0,  # specificity (Gate 3)
-        "gate4_rejected": 0,  # generality (Gate 4)
+        "diff_size_rejected": 0,  # diffs rejected by filter_diff_by_size (pre-extraction)
+        "gate0_rejected": 0,  # Gate 0a/0b: syntax + regex self-consistency failures
+        "gate1_rejected": 0,  # Gate 1: dedup (LanceDB nearest-neighbor)
+        "gate2_rejected": 0,  # Gate 2: suppression vector match
+        "gate3_rejected": 0,  # Gate 3: specificity score below threshold
+        "gate4_rejected": 0,  # Gate 4: generality score below threshold
         "auto_approved": 0,  # candidates promoted directly to lessons
         "drafted": 0,  # candidates queued in capture_drafts for review
+        # conflicts_flagged: reserved for future conflict-detection pass
+        # (currently always 0 — not yet implemented)
         "conflicts_flagged": 0,
         "error_count": 0,
     }
@@ -393,7 +399,7 @@ def mine_repos_for_gaps(
                 for mod in commit.modifications:
                     diff = mod.diff or ""
                     if not filter_diff_by_size(diff, cfg.min_diff_lines, cfg.max_diff_lines):
-                        stats["gate0_rejected"] += 1
+                        stats["diff_size_rejected"] += 1
                         continue
 
                     try:
@@ -416,6 +422,7 @@ def mine_repos_for_gaps(
         repos_searched=stats["repos_searched"],
         commits_analyzed=stats["commits_analyzed"],
         candidates_extracted=stats["candidates_extracted"],
+        diff_size_rejected=stats["diff_size_rejected"],
         gate0_rejected=stats["gate0_rejected"],
         gate1_rejected=stats["gate1_rejected"],
         gate2_rejected=stats["gate2_rejected"],

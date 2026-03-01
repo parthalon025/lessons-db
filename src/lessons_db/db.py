@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS mining_runs (
     repos_searched INTEGER DEFAULT 0,
     commits_analyzed INTEGER DEFAULT 0,
     candidates_extracted INTEGER DEFAULT 0,
+    diff_size_rejected INTEGER DEFAULT 0,
     gate0_rejected INTEGER DEFAULT 0,
     gate1_rejected INTEGER DEFAULT 0,
     gate2_rejected INTEGER DEFAULT 0,
@@ -305,6 +306,7 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
     # existing DBs upgraded from the previous schema (idempotent, duplicate-safe).
     for col_name, col_def in [
         ("candidates_extracted", "INTEGER DEFAULT 0"),
+        ("diff_size_rejected", "INTEGER DEFAULT 0"),
         ("gate2_rejected", "INTEGER DEFAULT 0"),
         ("gate3_rejected", "INTEGER DEFAULT 0"),
         ("gate4_rejected", "INTEGER DEFAULT 0"),
@@ -625,6 +627,7 @@ def insert_mining_run(
     repos_searched: int = 0,
     commits_analyzed: int = 0,
     candidates_extracted: int = 0,
+    diff_size_rejected: int = 0,
     gate0_rejected: int = 0,
     gate1_rejected: int = 0,
     gate2_rejected: int = 0,
@@ -639,13 +642,15 @@ def insert_mining_run(
     cursor = conn.execute(
         """INSERT INTO mining_runs
            (run_date, repos_searched, commits_analyzed, candidates_extracted,
-            gate0_rejected, gate1_rejected, gate2_rejected, gate3_rejected, gate4_rejected,
+            diff_size_rejected, gate0_rejected,
+            gate1_rejected, gate2_rejected, gate3_rejected, gate4_rejected,
             auto_approved, drafted, conflicts_flagged, error_count, duration_seconds)
-           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             repos_searched,
             commits_analyzed,
             candidates_extracted,
+            diff_size_rejected,
             gate0_rejected,
             gate1_rejected,
             gate2_rejected,
@@ -659,6 +664,25 @@ def insert_mining_run(
         ),
     )
     conn.commit()
+    return cursor.lastrowid
+
+
+def insert_capture_draft(
+    conn: sqlite3.Connection,
+    raw_content: str,
+    extracted_data: str,
+    source: str,
+    confidence: float | None = None,
+) -> int:
+    """Insert a pending capture draft. Returns the new row id."""
+    cursor = conn.execute(
+        "INSERT INTO capture_drafts "
+        "(raw_content, extracted_data, status, created_date, source, confidence) "
+        "VALUES (?, ?, 'pending', date('now'), ?, ?)",
+        [raw_content, extracted_data, source, confidence],
+    )
+    conn.commit()
+    assert cursor.lastrowid is not None
     return cursor.lastrowid
 
 
