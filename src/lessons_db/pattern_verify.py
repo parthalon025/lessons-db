@@ -197,10 +197,11 @@ def verify_candidate(
     candidate: CandidatePattern,
     conn: sqlite3.Connection,
     lance_dir: str,
-) -> VerifiedCandidate | None:
+) -> tuple[VerifiedCandidate | None, str | None]:
     """Run a CandidatePattern through all verification gates.
 
-    Returns a VerifiedCandidate on success, None if any gate rejects.
+    Returns (VerifiedCandidate, None) on success, (None, gate_tag) if any gate rejects.
+    gate_tag is one of: "dedup", "suppressed", "specificity", "generality".
 
     Gate order:
     1. LanceDB dedup (distance < DEDUP_DISTANCE_THRESHOLD → reject)
@@ -215,12 +216,12 @@ def verify_candidate(
     neighbors = nearest_lessons(snippet, lance_dir)
     if neighbors and neighbors[0]["score"] < DEDUP_DISTANCE_THRESHOLD:
         _log.debug("verify_candidate: dedup match (score=%.3f), skipping", neighbors[0]["score"])
-        return None
+        return None, "dedup"
 
     # Gate 2: Suppression
     if is_suppressed(snippet, conn, lance_dir):
         _log.debug("verify_candidate: suppressed snippet, skipping")
-        return None
+        return None, "suppressed"
 
     # Gate 3: Specificity via Ollama
     spec_prompt = _specificity_prompt(snippet, neighbors)
@@ -235,11 +236,11 @@ def verify_candidate(
         specificity = _parse_float(spec_text.strip())
     except Exception as exc:
         _log.warning("verify_candidate: specificity Ollama call failed: %s", exc)
-        return None
+        return None, "specificity"
 
     if specificity < SPECIFICITY_MIN:
         _log.debug("verify_candidate: specificity %.2f below threshold, skipping", specificity)
-        return None
+        return None, "specificity"
 
     # Gate 4: Generality via Ollama
     if candidate.source_lesson_id is not None:
@@ -267,7 +268,7 @@ def verify_candidate(
         generality, rationale = _parse_score_and_rationale(gen_text.strip())
     except Exception as exc:
         _log.warning("verify_candidate: generality Ollama call failed: %s", exc)
-        return None
+        return None, "generality"
 
     # Gate 5: Confidence
     confidence = round(specificity * 0.4 + generality * 0.6, 6)
@@ -278,4 +279,4 @@ def verify_candidate(
         source_lesson_id=candidate.source_lesson_id,
         confidence=confidence,
         rationale=rationale,
-    )
+    ), None

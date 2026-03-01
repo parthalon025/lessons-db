@@ -244,7 +244,7 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def _add_extension_columns(conn: sqlite3.Connection) -> None:
+def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
     """Add v2 extension columns to lessons table (idempotent).
 
     SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS — catch OperationalError instead."""
@@ -292,6 +292,21 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:
     for col_name, col_def in why_columns:
         try:
             conn.execute(f"ALTER TABLE lessons ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
+
+    # v5 per-gate visibility columns on mining_runs
+    mining_runs_columns = [
+        ("candidates_extracted", "INTEGER DEFAULT 0"),
+        ("gate2_rejected", "INTEGER DEFAULT 0"),
+        ("gate3_rejected", "INTEGER DEFAULT 0"),
+        ("gate4_rejected", "INTEGER DEFAULT 0"),
+    ]
+    for col_name, col_def in mining_runs_columns:
+        try:
+            conn.execute(f"ALTER TABLE mining_runs ADD COLUMN {col_name} {col_def}")
             conn.commit()
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e):
@@ -602,8 +617,12 @@ def insert_mining_run(
     conn: sqlite3.Connection,
     repos_searched: int = 0,
     commits_analyzed: int = 0,
+    candidates_extracted: int = 0,
     gate0_rejected: int = 0,
     gate1_rejected: int = 0,
+    gate2_rejected: int = 0,
+    gate3_rejected: int = 0,
+    gate4_rejected: int = 0,
     auto_approved: int = 0,
     drafted: int = 0,
     conflicts_flagged: int = 0,
@@ -612,14 +631,19 @@ def insert_mining_run(
 ) -> int:
     cursor = conn.execute(
         """INSERT INTO mining_runs
-           (run_date, repos_searched, commits_analyzed, gate0_rejected,
-            gate1_rejected, auto_approved, drafted, conflicts_flagged, error_count, duration_seconds)
-           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (run_date, repos_searched, commits_analyzed, candidates_extracted,
+            gate0_rejected, gate1_rejected, gate2_rejected, gate3_rejected, gate4_rejected,
+            auto_approved, drafted, conflicts_flagged, error_count, duration_seconds)
+           VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             repos_searched,
             commits_analyzed,
+            candidates_extracted,
             gate0_rejected,
             gate1_rejected,
+            gate2_rejected,
+            gate3_rejected,
+            gate4_rejected,
             auto_approved,
             drafted,
             conflicts_flagged,

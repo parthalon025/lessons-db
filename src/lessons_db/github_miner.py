@@ -285,6 +285,8 @@ def _process_modification(
 
     lessons_extracted = 0
     candidates = extract_polarized_candidates(conn, diff, repo_name)
+    stats.setdefault("candidates_extracted", 0)
+    stats["candidates_extracted"] += len(candidates)
     for candidate in candidates:
         polarity = candidate.get("polarity", "negative")
 
@@ -301,15 +303,23 @@ def _process_modification(
             from lessons_db.pattern_extract import CandidatePattern
             from lessons_db.pattern_verify import verify_candidate
 
+            _GATE_COUNTER = {
+                "dedup": "gate1_rejected",
+                "suppressed": "gate2_rejected",
+                "specificity": "gate3_rejected",
+                "generality": "gate4_rejected",
+            }
             cp = CandidatePattern(
                 snippet=candidate.get("bad_code", ""),
                 source_repos=[repo_name],
                 source_lesson_id=None,
                 detection_method="github_miner",
             )
-            verified = verify_candidate(cp, conn, str(lance_dir))
+            verified, rejected_gate = verify_candidate(cp, conn, str(lance_dir))
             if verified is None:
-                stats["gate1_rejected"] += 1
+                counter_key = _GATE_COUNTER.get(rejected_gate or "", "gate1_rejected")
+                stats.setdefault(counter_key, 0)
+                stats[counter_key] += 1
                 continue
             confidence = verified.confidence
 
@@ -337,8 +347,12 @@ def mine_repos_for_gaps(
     stats = {
         "repos_searched": 0,
         "commits_analyzed": 0,
+        "candidates_extracted": 0,
         "gate0_rejected": 0,
-        "gate1_rejected": 0,
+        "gate1_rejected": 0,  # dedup (Gate 1)
+        "gate2_rejected": 0,  # suppression (Gate 2)
+        "gate3_rejected": 0,  # specificity (Gate 3)
+        "gate4_rejected": 0,  # generality (Gate 4)
         "auto_approved": 0,  # candidates promoted directly to lessons
         "drafted": 0,  # candidates queued in capture_drafts for review
         "conflicts_flagged": 0,
@@ -346,6 +360,7 @@ def mine_repos_for_gaps(
     }
 
     since = datetime.now() - timedelta(days=cfg.max_age_days)
+    _start_time = datetime.now()
 
     for repo_name in repos:
         stats["repos_searched"] += 1
@@ -388,17 +403,22 @@ def mine_repos_for_gaps(
             _log.error("repo mining failed for %s: %s", repo_name, exc)
             stats["error_count"] += 1
 
+    duration_seconds = (datetime.now() - _start_time).total_seconds()
     run_id = insert_mining_run(
         conn,
         repos_searched=stats["repos_searched"],
         commits_analyzed=stats["commits_analyzed"],
+        candidates_extracted=stats["candidates_extracted"],
         gate0_rejected=stats["gate0_rejected"],
         gate1_rejected=stats["gate1_rejected"],
+        gate2_rejected=stats["gate2_rejected"],
+        gate3_rejected=stats["gate3_rejected"],
+        gate4_rejected=stats["gate4_rejected"],
         auto_approved=stats["auto_approved"],
         drafted=stats["drafted"],
         conflicts_flagged=stats["conflicts_flagged"],
         error_count=stats["error_count"],
-        duration_seconds=None,  # caller can pass timing if needed
+        duration_seconds=duration_seconds,
     )
     _log.info("mining run %d complete: %s", run_id, stats)
     return stats

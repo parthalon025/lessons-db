@@ -61,7 +61,7 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.nearest_lessons", return_value=[{"score": 0.05, "text": "existing"}]),
             patch("lessons_db.pattern_verify.get_embedding", return_value=[0.1] * 768),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
 
     def test_returns_none_when_specificity_too_low(self, candidate, db_path, tmp_path):
@@ -73,7 +73,7 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", return_value=mock_resp),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
 
     def test_returns_verified_candidate_with_confidence(self, candidate, db_path, tmp_path):
@@ -90,7 +90,7 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", side_effect=lambda *a, **kw: next(responses)),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert isinstance(result, VerifiedCandidate)
         assert abs(result.confidence - 0.86) < 0.01
         assert result.rationale
@@ -133,7 +133,7 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", side_effect=lambda *a, **kw: next(responses)),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result.rationale
 
     def test_returns_none_when_suppressed(self, candidate, db_path, tmp_path):
@@ -142,7 +142,7 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.nearest_lessons", return_value=[{"score": 0.9, "text": "far"}]),
             patch("lessons_db.pattern_verify.is_suppressed", return_value=True),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
 
     def test_confidence_formula(self, candidate, db_path, tmp_path):
@@ -158,7 +158,7 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", side_effect=lambda *a, **kw: next(responses)),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         # 0.6*0.4 + 1.0*0.6 = 0.84
         assert abs(result.confidence - 0.84) < 0.01
 
@@ -172,5 +172,5 @@ class TestVerifyCandidate:
             patch("lessons_db.pattern_verify.is_suppressed", return_value=False),
             patch("lessons_db.pattern_verify.requests.post", return_value=mock_resp),
         ):
-            result = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
+            result, _ = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None

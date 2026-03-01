@@ -144,7 +144,7 @@ def _run_gate14(candidate: dict, conn: sqlite3.Connection, lance_dir: str) -> bo
         source_lesson_id=None,
         detection_method="calibration",
     )
-    verified = verify_candidate(cp, conn, lance_dir)
+    verified, _ = verify_candidate(cp, conn, lance_dir)
     return verified is not None
 
 

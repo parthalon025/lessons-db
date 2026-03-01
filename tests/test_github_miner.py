@@ -171,7 +171,7 @@ def test_process_modification_gates14_reject_increments_gate1_rejected(db_path, 
 
     with (
         patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
-        patch("lessons_db.pattern_verify.verify_candidate", return_value=None),
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=(None, "dedup")),
     ):
         mock_ollama.return_value = [
             {
@@ -208,7 +208,7 @@ def test_process_modification_gates14_pass_below_threshold_goes_to_drafts(db_pat
     )
     with (
         patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
-        patch("lessons_db.pattern_verify.verify_candidate", return_value=mock_verified),
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=(mock_verified, None)),
     ):
         mock_ollama.return_value = [
             {
@@ -250,7 +250,7 @@ def test_process_modification_gates14_pass_above_threshold_auto_approves(db_path
     )
     with (
         patch("lessons_db.github_miner._call_ollama_extract") as mock_ollama,
-        patch("lessons_db.pattern_verify.verify_candidate", return_value=mock_verified),
+        patch("lessons_db.pattern_verify.verify_candidate", return_value=(mock_verified, None)),
     ):
         mock_ollama.return_value = [
             {
