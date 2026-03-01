@@ -43,12 +43,20 @@ def create_app(  # noqa: C901, PLR0915
     def get_conn() -> sqlite3.Connection:
         return init_db(_db_path)
 
+    _SORT_MAP = {
+        "id_asc": "id ASC",
+        "severity": "tier ASC, id DESC",
+        "recurrence_count": "recurrence_count DESC, id DESC",
+    }
+    _SORT_DEFAULT = "id DESC"
+
     @app.get("/api/lessons")
     def list_lessons(
         q: str | None = None,
         category: str | None = None,
         tier: str | None = None,
         polarity: str | None = None,
+        sort: str | None = None,
         limit: int = Query(50, le=200),
         offset: int = 0,
     ) -> dict:
@@ -69,8 +77,9 @@ def create_app(  # noqa: C901, PLR0915
                 clauses.append("polarity = ?")
                 params.append(polarity)
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            order = _SORT_MAP.get(sort or "", _SORT_DEFAULT)
             rows = conn.execute(
-                f"SELECT * FROM lessons {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"SELECT * FROM lessons {where} ORDER BY {order} LIMIT ? OFFSET ?",
                 params + [limit, offset],
             ).fetchall()
             total = conn.execute(f"SELECT COUNT(*) FROM lessons {where}", params).fetchone()[0]
