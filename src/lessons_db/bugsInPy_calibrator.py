@@ -220,6 +220,24 @@ def _score_candidates(
         report.gate14_pass += 1
 
 
+def _insert_run_safe(conn: sqlite3.Connection, report: CalibrationReport) -> None:
+    """Insert calibration run record, suppressing DB errors so callers always return."""
+    try:
+        insert_calibration_run(
+            conn,
+            dataset=report.dataset,
+            bugs_sampled=report.bugs_sampled,
+            bugs_with_valid_diffs=report.bugs_with_valid_diffs,
+            extraction_attempted=report.extraction_attempted,
+            extraction_success=report.extraction_success,
+            gate0_pass=report.gate0_pass,
+            gate14_pass=report.gate14_pass,
+            notes=report.notes,
+        )
+    except Exception as exc:
+        _log.warning("calibration_runs insert failed: %s", exc)
+
+
 def calibrate_pipeline(
     conn: sqlite3.Connection,
     lance_dir: Path | str | None = None,
@@ -245,11 +263,13 @@ def calibrate_pipeline(
     except RuntimeError as exc:
         report.notes = f"Clone failed: {exc}"
         _log.error("BugsInPy clone failed: %s", exc)
+        _insert_run_safe(conn, report)
         return report
 
     all_bugs = list_bugs(repo_dir)
     if not all_bugs:
         report.notes = "No bugs found in BugsInPy repo"
+        _insert_run_safe(conn, report)
         return report
 
     sample = all_bugs[:sample_n]
@@ -262,21 +282,7 @@ def calibrate_pipeline(
         "≥ 70% — pipeline calibrated" if report.threshold_met else "< 70% — tune gate thresholds before live mining"
     )
 
-    try:
-        insert_calibration_run(
-            conn,
-            dataset=report.dataset,
-            bugs_sampled=report.bugs_sampled,
-            bugs_with_valid_diffs=report.bugs_with_valid_diffs,
-            extraction_attempted=report.extraction_attempted,
-            extraction_success=report.extraction_success,
-            gate0_pass=report.gate0_pass,
-            gate14_pass=report.gate14_pass,
-            notes=report.notes,
-        )
-    except Exception as exc:
-        _log.warning("calibration_runs insert failed: %s", exc)
-
+    _insert_run_safe(conn, report)
     return report
 
 
