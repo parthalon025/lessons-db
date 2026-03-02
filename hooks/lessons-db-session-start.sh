@@ -57,6 +57,86 @@ if [[ "${POS_COUNT:-0}" -gt 0 ]]; then
     echo "Positive patterns available: ${POS_COUNT}"
 fi
 
+# SFBT exception reporting: surface internalized anti-patterns (variable-ratio, 30%)
+# Uses variable-ratio probability gate (30%, Skinner schedule).
+# Write to temp file to avoid $() heredoc paren-counting issues in bash.
+EXCEPTION_TMP=$(mktemp /tmp/lessons-exceptions.XXXXXX 2>/dev/null || echo "")
+if [[ -n "$EXCEPTION_TMP" ]]; then
+    python3 - "$EXCEPTION_TMP" <<'PYEOF' 2>/dev/null || true
+import sqlite3, random, pathlib, sys
+
+outfile = sys.argv[1]
+db = pathlib.Path.home() / ".local/share/lessons-db/lessons.db"
+if not db.exists():
+    sys.exit(0)
+
+# Variable-ratio scheduling: 30% probability gate
+random.seed()
+if random.random() >= 0.3:
+    sys.exit(0)
+
+conn = sqlite3.connect(str(db))
+conn.row_factory = sqlite3.Row
+
+# Get 5 most recent distinct session_ids
+recent = conn.execute(
+    "SELECT session_id, MAX(timestamp) AS latest "
+    "FROM surfacing_events WHERE session_id IS NOT NULL "
+    "GROUP BY session_id ORDER BY latest DESC LIMIT 5"
+).fetchall()
+
+if not recent:
+    conn.close()
+    sys.exit(0)
+
+session_ids = [r["session_id"] for r in recent]
+num_recent = len(session_ids)
+placeholders = ", ".join(["?"] * num_recent)
+
+# Find negative lessons dismissed historically but absent from recent sessions
+historically = conn.execute(
+    "SELECT DISTINCT se.lesson_id, l.title, l.category "
+    "FROM surfacing_events se JOIN lessons l ON l.id = se.lesson_id "
+    "WHERE se.outcome = 'dismissed' AND l.polarity = 'negative'"
+).fetchall()
+
+found = []
+for row in historically:
+    lid = row["lesson_id"]
+    cnt = conn.execute(
+        "SELECT COUNT(DISTINCT session_id) FROM surfacing_events "
+        "WHERE lesson_id = ? AND outcome = 'dismissed' AND session_id IN (%s)" % placeholders,
+        [lid] + session_ids
+    ).fetchone()[0]
+    if cnt == 0:
+        cat = row["category"] or "uncategorized"
+        found.append([lid, row["title"], cat, num_recent])
+
+if found:
+    with open(outfile, "w") as f:
+        for item in sorted(found, key=lambda e: [-e[3], e[0]]):
+            lid, title, cat, n = item
+            f.write("%d-session streak: zero %s issues — [#%d] %s\n" % (n, cat, lid, title))
+            # Record surfacing event with outcome=exception_noted
+            conn.execute(
+                "INSERT INTO surfacing_events "
+                "(lesson_id, hook_point, context, outcome, timestamp) "
+                "VALUES (?, 'session_start_exception', ?, 'exception_noted', datetime('now'))",
+                [lid, "absent_%d_sessions" % n]
+            )
+    conn.commit()
+
+conn.close()
+PYEOF
+
+    if [[ -s "$EXCEPTION_TMP" ]]; then
+        echo ""
+        echo "Internalized patterns (SFBT exceptions):"
+        cat "$EXCEPTION_TMP"
+    fi
+    rm -f "$EXCEPTION_TMP"
+fi
+
 # Pattern scan counts (cross-project pattern detection v3)
 PATTERN_STATUS=$(lessons-db pattern status 2>/dev/null || echo "")
 PATTERN_AUTO=$(echo "$PATTERN_STATUS" | grep -oP '\d+(?= auto-captured)' || echo "0")

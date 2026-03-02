@@ -1091,7 +1091,19 @@ def learn():
     "--hook",
     "hook_point",
     required=True,
-    type=click.Choice(["read", "edit", "plan", "bash", "session_start", "commit", "stop"]),
+    type=click.Choice(
+        [
+            "read",
+            "edit",
+            "plan",
+            "bash",
+            "session_start",
+            "session_start_fsrs",
+            "session_start_exception",
+            "commit",
+            "stop",
+        ]
+    ),
 )
 @click.option("--context", "hook_context", default="", help="File path, query, or error text.")
 @click.option(
@@ -1269,6 +1281,32 @@ def learn_list(click_ctx, since, output_format, outcome_filter):
             click.echo(
                 f"{row['id']:>6}  {row['lesson_id']:>5}  {row['hook_point']:<14}  " f"{row['outcome']:<14}  {title}"
             )
+
+
+@learn.command("find-exceptions")
+@click.option("--lookback", default=5, type=int, help="Number of recent sessions to check (default: 5).")
+@click.pass_context
+def learn_find_exceptions(click_ctx, lookback):
+    """Find anti-patterns absent from recent sessions (SFBT exception-finding).
+
+    Identifies negative lessons that previously recurred but have been absent
+    from recent sessions — evidence of internalized learning.
+    """
+    from lessons_db.learn import find_exceptions
+
+    conn = click_ctx.obj["conn"]
+    exceptions = find_exceptions(conn, lookback_sessions=lookback)
+
+    if not exceptions:
+        click.echo("No exceptions found — no previously-dismissed anti-patterns absent from recent sessions.")
+        return
+
+    click.echo(f"Found {len(exceptions)} internalized pattern(s):")
+    for exc in exceptions:
+        click.echo(
+            f"  {exc['absent_sessions']}-session streak: zero {exc['category']} "
+            f"issues — [#{exc['lesson_id']}] {exc['title']}"
+        )
 
 
 @main.group()
@@ -1624,8 +1662,10 @@ def logs(tail, level):
 @main.command("kpi")
 @click.pass_context
 def kpi_dashboard(click_ctx):
-    """Show all KPI metrics for the lesson learning system."""
+    """Show learning KPI dashboard with profile, stability, streaks, and ZPD."""
     from datetime import UTC, datetime, timedelta
+
+    from lessons_db.fsrs import get_fading_level
 
     conn = click_ctx.obj["conn"]
 
@@ -1660,12 +1700,12 @@ def kpi_dashboard(click_ctx):
     def fmt(val, target_ok, unit="%"):
         if val is None:
             return "  n/a    (no data yet)"
-        ok = "✓" if target_ok(val) else "✗"
+        ok = "+" if target_ok(val) else "-"
         return f"  {val}{unit}  {ok}"
 
     click.echo("")
-    click.echo("  Lessons-DB KPI Dashboard")
-    click.echo("  " + "─" * 44)
+    click.echo("=== Learning KPI Dashboard ===")
+    click.echo("")
     click.echo(f"  Total lessons          : {total_lessons}")
     click.echo(f"  Total surfacings       : {total_surfacings}  ({decided} with outcome)")
     click.echo("")
@@ -1675,8 +1715,126 @@ def kpi_dashboard(click_ctx):
     click.echo(f"  False Positive Rate    :{fmt(fp_rate,          lambda v: v < 15)}")
     click.echo("")
     click.echo("  System Health:")
-    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'✓' if dead_pct < 10 else '✗'}")
+    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'+'  if dead_pct < 10 else '-'}")
     click.echo(f"  DB Growth (7d)         :  +{growth_7d} lessons")
+    click.echo("")
+
+    # --- Section: Heeded Rate by Category ---
+    click.echo("Heeded Rate by Category:")
+    cat_rows = conn.execute(
+        "SELECT COALESCE(NULLIF(l.cluster, ''), '(unclustered)') AS cluster_label, "
+        "  SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded_count, "
+        "  COUNT(*) AS total_count "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON se.lesson_id = l.id "
+        "WHERE se.outcome != 'unknown' "
+        "GROUP BY cluster_label "
+        "ORDER BY total_count DESC"
+    ).fetchall()
+    if cat_rows:
+        for row in cat_rows:
+            cluster = row["cluster_label"]
+            h = row["heeded_count"]
+            t = row["total_count"]
+            pct = round(h / t * 100) if t > 0 else 0
+            click.echo(f"  {cluster}: {pct}% ({h}/{t})")
+    else:
+        click.echo("  (no surfacing data)")
+    click.echo("")
+
+    # --- Section: Stability Distribution ---
+    click.echo("Stability Distribution:")
+    stability_rows = conn.execute("SELECT stability FROM lessons WHERE stability IS NOT NULL").fetchall()
+    level_counts = {"full": 0, "brief": 0, "silent": 0, "enforced": 0}
+    for row in stability_rows:
+        level = get_fading_level(row["stability"])
+        level_counts[level] += 1
+    click.echo(
+        f"  full: {level_counts['full']}  "
+        f"brief: {level_counts['brief']}  "
+        f"silent: {level_counts['silent']}  "
+        f"enforced: {level_counts['enforced']}"
+    )
+    click.echo("")
+
+    # --- Section: Positive/Negative Ratio ---
+    click.echo("Positive/Negative Ratio:")
+    pos_count = q("SELECT COUNT(*) FROM lessons WHERE polarity = 'positive'")
+    neg_count = q("SELECT COUNT(*) FROM lessons WHERE polarity = 'negative'")
+    click.echo(f"  positive: {pos_count}  negative: {neg_count}")
+    if pos_count + neg_count > 0:
+        ratio = round(pos_count / (pos_count + neg_count) * 100, 1)
+        click.echo(f"  positive ratio: {ratio}%")
+    click.echo("")
+
+    # --- Section: Win Streaks ---
+    click.echo("Win Streaks:")
+    streak_rows = conn.execute(
+        "SELECT category, current_streak, longest_streak "
+        "FROM win_streaks "
+        "ORDER BY longest_streak DESC, current_streak DESC "
+        "LIMIT 10"
+    ).fetchall()
+    if streak_rows:
+        for row in streak_rows:
+            click.echo(f"  {row['category']}: " f"current={row['current_streak']} " f"longest={row['longest_streak']}")
+    else:
+        click.echo("  (no win streak data)")
+    click.echo("")
+
+    # --- Section: Learning Velocity ---
+    click.echo("Learning Velocity (30d):")
+    cutoff_30d = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
+    velocity_rows = conn.execute(
+        "SELECT id, title, stability, last_review_date "
+        "FROM lessons "
+        "WHERE last_review_date IS NOT NULL "
+        "  AND last_review_date >= ? "
+        "  AND stability IS NOT NULL "
+        "ORDER BY last_review_date DESC",
+        [cutoff_30d],
+    ).fetchall()
+    if velocity_rows:
+        click.echo(f"  {len(velocity_rows)} lesson(s) reviewed in last 30 days:")
+        for row in velocity_rows[:10]:
+            level = get_fading_level(row["stability"])
+            click.echo(f"    #{row['id']} {row['title'][:40]} -> {level} (S={row['stability']:.1f})")
+        if len(velocity_rows) > 10:
+            click.echo(f"    ... and {len(velocity_rows) - 10} more")
+    else:
+        click.echo("  (no reviews in last 30 days)")
+    click.echo("")
+
+    # --- Section: ZPD Identification (Vygotsky) ---
+    click.echo("ZPD Identification (50-80% heeded rate):")
+    zpd_rows = conn.execute(
+        "SELECT l.id, l.title, l.cluster, "
+        "  SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded_count, "
+        "  COUNT(*) AS total_count "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON se.lesson_id = l.id "
+        "WHERE se.outcome != 'unknown' "
+        "GROUP BY l.id "
+        "HAVING total_count >= 2 "
+        "ORDER BY total_count DESC"
+    ).fetchall()
+    zpd_found = []
+    for row in zpd_rows:
+        rate = row["heeded_count"] / row["total_count"]
+        if 0.50 <= rate <= 0.80:
+            zpd_found.append(row)
+    if zpd_found:
+        for row in zpd_found[:10]:
+            h = row["heeded_count"]
+            t = row["total_count"]
+            pct = round(h / t * 100)
+            cluster = row["cluster"] or ""
+            label = f" [{cluster}]" if cluster else ""
+            click.echo(f"  #{row['id']} {row['title'][:40]}{label}: {pct}% ({h}/{t})")
+        if len(zpd_found) > 10:
+            click.echo(f"  ... and {len(zpd_found) - 10} more")
+    else:
+        click.echo("  (no lessons in ZPD range, or insufficient surfacing data)")
     click.echo("")
 
 
@@ -1779,7 +1937,7 @@ def mine_github(ctx, topic, limit):
 @main.group("calibrate")
 @click.pass_context
 def calibrate(ctx):
-    """Calibrate the lesson extraction pipeline against known datasets."""
+    """Calibrate the lesson extraction pipeline and view strength profiles."""
 
 
 @calibrate.command("bugsInPy")
@@ -1818,6 +1976,83 @@ def calibrate_bugsInPy(ctx, sample, cache_dir, skip_extraction):
         skip_extraction=skip_extraction,
     )
     click.echo(format_report(report))
+
+
+@calibrate.command("profile")
+@click.option(
+    "--min-events",
+    default=5,
+    type=int,
+    help="Minimum surfacing events per category to include (default: 5).",
+)
+@click.pass_context
+def calibrate_profile(ctx, min_events):
+    """Show calibration feedback: strength profile based on heeded/dismissed ratios per category.
+
+    Groups surfacing events by lesson category to identify strengths (highest
+    heeded rate) and growth areas (lowest heeded rate). Categories with fewer
+    than --min-events events are excluded and listed separately.
+    """
+    conn = ctx.obj["conn"]
+
+    # Query per-category heeded/total counts (exclude unknown outcomes)
+    rows = conn.execute(
+        "SELECT COALESCE(NULLIF(l.category, ''), l.cluster, 'uncategorized') AS cat, "
+        "  SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded, "
+        "  COUNT(*) AS total "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON se.lesson_id = l.id "
+        "WHERE se.outcome IN ('heeded', 'dismissed') "
+        "GROUP BY cat "
+        "ORDER BY total DESC"
+    ).fetchall()
+
+    if not rows:
+        click.echo("No surfacing outcome data yet. More data needed to generate a strength profile.")
+        click.echo("Record surfacing events with: lessons-db learn record")
+        return
+
+    qualified = []
+    insufficient = []
+
+    for row in rows:
+        cat = row["cat"]
+        total = row["total"]
+        heeded = row["heeded"]
+        if total >= min_events:
+            rate = heeded / total
+            qualified.append({"category": cat, "heeded": heeded, "total": total, "rate": rate})
+        else:
+            insufficient.append(cat)
+
+    if not qualified:
+        click.echo(f"No categories have {min_events}+ events yet. More data needed to generate a strength profile.")
+        if insufficient:
+            click.echo(f"\nCategories with insufficient data (<{min_events} events): {', '.join(sorted(insufficient))}")
+        return
+
+    # Sort by heeded rate descending for strengths, ascending for growth areas
+    by_rate_desc = sorted(qualified, key=lambda x: x["rate"], reverse=True)
+    by_rate_asc = sorted(qualified, key=lambda x: x["rate"])
+
+    strengths = by_rate_desc[:3]
+    growth_areas = by_rate_asc[:3]
+
+    click.echo("=== Strength Profile ===")
+    click.echo("")
+    click.echo("Strengths:")
+    for i, entry in enumerate(strengths, 1):
+        pct = round(entry["rate"] * 100)
+        click.echo(f"  {i}. {entry['category']}: {pct}% heeded ({entry['heeded']}/{entry['total']})")
+
+    click.echo("")
+    click.echo("Growth Areas:")
+    for i, entry in enumerate(growth_areas, 1):
+        pct = round(entry["rate"] * 100)
+        click.echo(f"  {i}. {entry['category']}: {pct}% heeded ({entry['heeded']}/{entry['total']})")
+
+    if insufficient:
+        click.echo(f"\nCategories with insufficient data (<{min_events} events): {', '.join(sorted(insufficient))}")
 
 
 @main.command("gaps")

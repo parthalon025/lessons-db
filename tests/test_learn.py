@@ -772,3 +772,224 @@ class TestShouldSurfacePositive:
         ratio = sum(results) / len(results)
         # Allow +-5% tolerance around 0.3
         assert 0.25 <= ratio <= 0.35, f"Expected ~30% True, got {ratio:.1%}"
+
+
+class TestFindExceptions:
+    """Tests for find_exceptions — SFBT exception-finding for internalized anti-patterns."""
+
+    def test_no_data_returns_empty(self, db_path):
+        """With no surfacing events at all, find_exceptions returns empty list."""
+        from lessons_db.learn import find_exceptions
+
+        conn = init_db(db_path)
+        result = find_exceptions(conn)
+        assert result == []
+
+    def test_identifies_absent_antipatterns(self, db_path):
+        """A dismissed lesson absent from recent sessions is identified as an exception."""
+        from lessons_db.learn import find_exceptions
+
+        conn = init_db(db_path)
+        # Create a negative lesson
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "category": "error-handling",
+                "polarity": "negative",
+                "created_date": "2026-02-26",
+            },
+        )
+
+        # Create an old session where this lesson was dismissed (far in the past)
+        conn.execute(
+            "INSERT INTO surfacing_events "
+            "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+            "VALUES (?, 'edit', 'ctx', 'dismissed', '2026-01-01T10:00:00', 'old-session-1')",
+            [lid],
+        )
+
+        # Create 5 recent sessions WITHOUT this lesson being dismissed.
+        # Using 5 sessions ensures the old session falls outside the lookback window.
+        for i in range(5):
+            other_lid = insert_lesson(
+                conn,
+                {
+                    "title": f"Other lesson {i}",
+                    "one_liner": f"Other {i}",
+                    "polarity": "negative",
+                    "created_date": "2026-02-26",
+                },
+            )
+            conn.execute(
+                "INSERT INTO surfacing_events "
+                "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+                "VALUES (?, 'read', 'ctx', 'heeded', ?, ?)",
+                [other_lid, f"2026-02-2{3+i}T10:00:00", f"recent-session-{i}"],
+            )
+        conn.commit()
+
+        result = find_exceptions(conn, lookback_sessions=5)
+        assert len(result) == 1
+        assert result[0]["lesson_id"] == lid
+        assert result[0]["title"] == "No bare except"
+        assert result[0]["category"] == "error-handling"
+        assert result[0]["absent_sessions"] == 5  # 5 recent sessions checked
+
+    def test_excludes_patterns_that_appeared_recently(self, db_path):
+        """A dismissed lesson that was also dismissed in a recent session is NOT an exception."""
+        from lessons_db.learn import find_exceptions
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "category": "error-handling",
+                "polarity": "negative",
+                "created_date": "2026-02-26",
+            },
+        )
+
+        # Create an old session where this lesson was dismissed
+        conn.execute(
+            "INSERT INTO surfacing_events "
+            "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+            "VALUES (?, 'edit', 'ctx', 'dismissed', '2026-02-20T10:00:00', 'old-session-1')",
+            [lid],
+        )
+
+        # Create a recent session where this lesson was ALSO dismissed
+        conn.execute(
+            "INSERT INTO surfacing_events "
+            "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+            "VALUES (?, 'edit', 'ctx', 'dismissed', '2026-02-28T10:00:00', 'recent-session-1')",
+            [lid],
+        )
+        conn.commit()
+
+        result = find_exceptions(conn, lookback_sessions=5)
+        assert len(result) == 0
+
+    def test_positive_lessons_excluded(self, db_path):
+        """Positive lessons should never appear as exceptions even if historically dismissed."""
+        from lessons_db.learn import find_exceptions
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Good pattern",
+                "one_liner": "Use this pattern",
+                "category": "patterns",
+                "polarity": "positive",
+                "created_date": "2026-02-26",
+            },
+        )
+
+        # Create dismissed event for a positive lesson (unusual, but possible)
+        conn.execute(
+            "INSERT INTO surfacing_events "
+            "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+            "VALUES (?, 'edit', 'ctx', 'dismissed', '2026-02-20T10:00:00', 'old-session-1')",
+            [lid],
+        )
+        # Recent session without this lesson
+        other_lid = insert_lesson(
+            conn,
+            {
+                "title": "Other",
+                "one_liner": "Other",
+                "polarity": "negative",
+                "created_date": "2026-02-26",
+            },
+        )
+        conn.execute(
+            "INSERT INTO surfacing_events "
+            "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+            "VALUES (?, 'read', 'ctx', 'heeded', '2026-02-28T10:00:00', 'recent-session-1')",
+            [other_lid],
+        )
+        conn.commit()
+
+        result = find_exceptions(conn, lookback_sessions=5)
+        assert len(result) == 0
+
+
+class TestFindExceptionsCLI:
+    """CLI tests for 'learn find-exceptions'."""
+
+    def test_help_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["learn", "find-exceptions", "--help"])
+        assert result.exit_code == 0
+        assert "find-exceptions" in result.output or "SFBT" in result.output
+
+    def test_no_exceptions_message(self, db_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "find-exceptions"],
+        )
+        assert result.exit_code == 0
+        assert "No exceptions found" in result.output
+
+    def test_lookback_flag(self, db_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "find-exceptions", "--lookback", "3"],
+        )
+        assert result.exit_code == 0
+
+    def test_reports_exceptions(self, db_path):
+        """With proper data, CLI should report internalized patterns."""
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "category": "error-handling",
+                "polarity": "negative",
+                "created_date": "2026-02-26",
+            },
+        )
+        # Old dismissed event (far in the past)
+        conn.execute(
+            "INSERT INTO surfacing_events "
+            "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+            "VALUES (?, 'edit', 'ctx', 'dismissed', '2026-01-01T10:00:00', 'old-session-1')",
+            [lid],
+        )
+        # Create 5 recent sessions without this lesson (pushes old session outside lookback)
+        for i in range(5):
+            other_lid = insert_lesson(
+                conn,
+                {
+                    "title": f"Other {i}",
+                    "one_liner": f"Other {i}",
+                    "polarity": "negative",
+                    "created_date": "2026-02-26",
+                },
+            )
+            conn.execute(
+                "INSERT INTO surfacing_events "
+                "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
+                "VALUES (?, 'read', 'ctx', 'heeded', ?, ?)",
+                [other_lid, f"2026-02-2{3+i}T10:00:00", f"recent-session-{i}"],
+            )
+        conn.commit()
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "find-exceptions"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "internalized" in result.output.lower()
+        assert "error-handling" in result.output
+        assert "No bare except" in result.output

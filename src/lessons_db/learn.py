@@ -9,7 +9,7 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-VALID_OUTCOMES = ("heeded", "dismissed", "false_positive", "recurrence")
+VALID_OUTCOMES = ("heeded", "dismissed", "false_positive", "recurrence", "exception_noted")
 
 
 def record_surfacing(
@@ -281,3 +281,76 @@ def _recurrence_score(conn: sqlite3.Connection, lesson_id: int) -> float:
         return 0.0
     raw = (row["recurrence_count"] or 0) + (row["nm"] or 0)
     return min(raw / 10.0, 1.0)
+
+
+def find_exceptions(conn: sqlite3.Connection, lookback_sessions: int = 5) -> list[dict]:
+    """Find anti-patterns absent from recent sessions that previously appeared (SFBT exception-finding).
+
+    Returns list of dicts with: lesson_id, title, category, absent_sessions
+    (consecutive sessions without this pattern).
+
+    Logic:
+    - Get distinct session_ids from surfacing_events ordered by timestamp DESC,
+      limit to lookback_sessions.
+    - For each negative lesson that has been surfaced at least once historically
+      with outcome='dismissed':
+      - Check if it appeared (outcome='dismissed') in any of the recent sessions.
+      - If absent from ALL recent sessions, it's an "exception" (internalized pattern).
+    - Return sorted by absent_sessions descending (most consistently absent first).
+    """
+    # Get the N most recent distinct session_ids
+    recent_sessions = conn.execute(
+        "SELECT session_id, MAX(timestamp) AS latest "
+        "FROM surfacing_events "
+        "WHERE session_id IS NOT NULL "
+        "GROUP BY session_id "
+        "ORDER BY latest DESC "
+        "LIMIT ?",
+        [lookback_sessions],
+    ).fetchall()
+
+    if not recent_sessions:
+        return []
+
+    recent_session_ids = [r["session_id"] for r in recent_sessions]
+    num_recent = len(recent_session_ids)
+
+    # Find all negative lessons that have ever been dismissed (i.e., anti-pattern recurred)
+    historically_dismissed = conn.execute(
+        "SELECT DISTINCT se.lesson_id, l.title, l.category "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON l.id = se.lesson_id "
+        "WHERE se.outcome = 'dismissed' AND l.polarity = 'negative'"
+    ).fetchall()
+
+    if not historically_dismissed:
+        return []
+
+    exceptions: list[dict] = []
+
+    for row in historically_dismissed:
+        lesson_id = row["lesson_id"]
+
+        # Count how many of the recent sessions had this lesson dismissed
+        placeholders = ", ".join("?" for _ in recent_session_ids)
+        dismissed_in_recent = conn.execute(
+            f"SELECT COUNT(DISTINCT session_id) FROM surfacing_events "
+            f"WHERE lesson_id = ? AND outcome = 'dismissed' "
+            f"AND session_id IN ({placeholders})",
+            [lesson_id, *recent_session_ids],
+        ).fetchone()[0]
+
+        # If absent from ALL recent sessions, it's an exception
+        if dismissed_in_recent == 0:
+            exceptions.append(
+                {
+                    "lesson_id": lesson_id,
+                    "title": row["title"],
+                    "category": row["category"] or "uncategorized",
+                    "absent_sessions": num_recent,
+                }
+            )
+
+    # Sort by absent_sessions descending (all are equal here, but stable for future extension)
+    exceptions.sort(key=lambda e: (-e["absent_sessions"], e["lesson_id"]))
+    return exceptions
