@@ -52,6 +52,8 @@ class MiningConfig:
     max_commits_per_repo: int = 500
     capture_positive: bool = True  # Always capture positive novel methods
     capture_errors: bool = True  # Always log errors as lesson candidates
+    verify_workers: int = 4  # P1: threads for parallel Gates 1-4 verification
+    clone_cache_dir: Path | None = None  # P2: local git clone cache; None → GitHub URL
     topics: list[str] = field(
         default_factory=lambda: [
             "asyncio",
@@ -191,6 +193,116 @@ def discover_repos(topics: list[str], min_stars: int = 50) -> list[str]:
     return list(repos)
 
 
+def _get_db_path(conn: sqlite3.Connection) -> str | None:
+    """Return the filesystem path of the main database, or None for in-memory DBs."""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row is not None:
+            # PRAGMA database_list: seq INTEGER, name TEXT, file TEXT
+            file_path = row[2]  # positional — works regardless of row_factory
+            return file_path if file_path else None
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("_get_db_path: PRAGMA database_list failed: %s", exc)
+    return None
+
+
+def _verify_one_candidate(
+    candidate: dict,
+    repo_name: str,
+    db_path: str,
+    lance_dir_str: str,
+) -> tuple[dict, float | None, str | None]:
+    """Run Gates 1-4 (verify_candidate) in a worker thread.
+
+    Returns (candidate, confidence, rejected_gate).
+    On rejection:  confidence=None, rejected_gate=<gate-tag>.
+    On acceptance: confidence=<float>, rejected_gate=None.
+    On error:      confidence=None, rejected_gate="error".
+    """
+    import sqlite3 as _sqlite3
+
+    from lessons_db.pattern_extract import CandidatePattern
+    from lessons_db.pattern_verify import verify_candidate
+
+    _conn = _sqlite3.connect(db_path)
+    _conn.row_factory = _sqlite3.Row
+    try:
+        cp = CandidatePattern(
+            snippet=candidate.get("bad_code", ""),
+            source_repos=[repo_name],
+            source_lesson_id=None,
+            detection_method="github_miner",
+        )
+        verified, rejected_gate = verify_candidate(cp, _conn, lance_dir_str)
+        if verified is None:
+            return candidate, None, rejected_gate
+        return candidate, verified.confidence, None
+    except Exception as exc:
+        _log.warning("_verify_one_candidate failed for %s: %s", repo_name, exc)
+        return candidate, None, "error"
+    finally:
+        _conn.close()
+
+
+def _get_or_update_local_repo(repo_name: str, cache_dir: Path) -> Path | None:
+    """Clone or update a repo in the local cache. Returns local path, or None on failure.
+
+    Uses shallow clones (--depth=500) to cap disk usage per repo.  Subsequent
+    calls do a fetch + reset to pull in new commits without re-cloning.
+    """
+    import subprocess
+
+    safe_name = repo_name.replace("/", "_")
+    local_path = cache_dir / safe_name
+
+    try:
+        if local_path.exists():
+            result = subprocess.run(  # noqa: S603
+                [  # noqa: S607
+                    "git",
+                    "-C",
+                    str(local_path),
+                    "fetch",
+                    "--depth=500",
+                    "origin",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                _log.warning("cache fetch failed for %s: %s", repo_name, result.stderr.strip())
+                return None
+            subprocess.run(  # noqa: S603
+                ["git", "-C", str(local_path), "reset", "--hard", "FETCH_HEAD"],  # noqa: S607
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+        else:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(  # noqa: S603
+                [  # noqa: S607
+                    "git",
+                    "clone",
+                    "--depth=500",
+                    f"https://github.com/{repo_name}",
+                    str(local_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode != 0:
+                _log.warning("cache clone failed for %s: %s", repo_name, result.stderr.strip())
+                return None
+        return local_path
+    except Exception as exc:
+        _log.warning("_get_or_update_local_repo failed for %s: %s", repo_name, exc)
+        return None
+
+
 def _insert_miner_candidate(
     conn: sqlite3.Connection,
     diff: str,
@@ -279,7 +391,7 @@ def _insert_miner_candidate(
     return True
 
 
-def _process_modification(
+def _process_modification(  # noqa: C901
     conn: sqlite3.Connection,
     diff: str,
     repo_name: str,
@@ -289,10 +401,10 @@ def _process_modification(
 ) -> int:
     """Process one file modification from a commit. Returns lesson count extracted.
 
-    Runs Gates 0a and 0b on every candidate.  When lance_dir is provided, negative
-    candidates are also run through Gates 1-4 (verify_candidate) to get a
-    confidence score; high-confidence candidates are auto-approved directly to
-    the lessons table.  Positive candidates always go to capture_drafts.
+    Runs Gates 0a and 0b on every candidate.  When lance_dir is provided,
+    negative candidates are run through Gates 1-4 (verify_candidate) in parallel
+    via a ThreadPoolExecutor; high-confidence candidates are auto-approved directly
+    to the lessons table.  Positive candidates always go to capture_drafts.
     """
     from lessons_db.pattern_validator import run_gate0
 
@@ -302,44 +414,128 @@ def _process_modification(
     # _process_modification() is called. Required keys: candidates_extracted,
     # gate0_rejected, gate1..4_rejected, auto_approved, drafted, error_count.
     stats["candidates_extracted"] += len(candidates)
-    for candidate in candidates:
-        polarity = candidate.get("polarity", "negative")
 
-        # Gates 0a and 0b: syntax + regex self-consistency.
+    # Gate 0: syntax + regex self-consistency (sequential, fast).
+    gate0_passed = []
+    for candidate in candidates:
         if not run_gate0(candidate):
             stats["gate0_rejected"] += 1
-            continue
+        else:
+            gate0_passed.append(candidate)
 
-        # Gates 1-4: dedup, suppression, specificity, generality (negative only).
-        # Positive candidates have no bad_code to score — skip verification and
-        # send directly to capture_drafts.
-        confidence: float | None = None
-        if polarity != "positive" and lance_dir is not None:
-            from lessons_db.pattern_extract import CandidatePattern
-            from lessons_db.pattern_verify import verify_candidate
+    if not gate0_passed:
+        return 0
 
-            cp = CandidatePattern(
-                snippet=candidate.get("bad_code", ""),
-                source_repos=[repo_name],
-                source_lesson_id=None,
-                detection_method="github_miner",
-            )
-            verified, rejected_gate = verify_candidate(cp, conn, str(lance_dir))
-            if verified is None:
+    # Positive candidates skip Gates 1-4 — go straight to capture_drafts.
+    pos_candidates = [c for c in gate0_passed if c.get("polarity") == "positive"]
+    neg_candidates = [c for c in gate0_passed if c.get("polarity", "negative") != "positive"]
+
+    for candidate in pos_candidates:
+        if _insert_miner_candidate(conn, diff, repo_name, candidate, None, stats):
+            lessons_extracted += 1
+
+    if not neg_candidates:
+        return lessons_extracted
+
+    if lance_dir is None:
+        # No verification — skip Gates 1-4 and go straight to capture_drafts.
+        for candidate in neg_candidates:
+            if _insert_miner_candidate(conn, diff, repo_name, candidate, None, stats):
+                lessons_extracted += 1
+        return lessons_extracted
+
+    # Gates 1-4 via ThreadPoolExecutor (P1: parallel I/O-bound verification).
+    # Each worker opens its own read-only SQLite connection to avoid contention.
+    db_path = _get_db_path(conn)
+    if db_path is None:
+        # In-memory DB — fall back to sequential verification using the shared conn.
+        return lessons_extracted + _verify_neg_sequential(conn, diff, repo_name, stats, neg_candidates, str(lance_dir))
+
+    return lessons_extracted + _verify_neg_parallel(
+        conn, diff, repo_name, cfg, stats, neg_candidates, db_path, str(lance_dir)
+    )
+
+
+def _verify_neg_sequential(
+    conn: sqlite3.Connection,
+    diff: str,
+    repo_name: str,
+    stats: dict,
+    neg_candidates: list[dict],
+    lance_dir_str: str,
+) -> int:
+    """Run Gates 1-4 sequentially (in-memory DB fallback). Returns lessons_extracted."""
+    from lessons_db.pattern_extract import CandidatePattern
+    from lessons_db.pattern_verify import verify_candidate
+
+    lessons_extracted = 0
+    for candidate in neg_candidates:
+        cp = CandidatePattern(
+            snippet=candidate.get("bad_code", ""),
+            source_repos=[repo_name],
+            source_lesson_id=None,
+            detection_method="github_miner",
+        )
+        verified, rejected_gate = verify_candidate(cp, conn, lance_dir_str)
+        if verified is None:
+            if rejected_gate not in _GATE_COUNTER:
+                _log.warning(
+                    "verify_candidate: unknown gate tag %r — counting as gate1_rejected",
+                    rejected_gate,
+                )
+            counter_key = _GATE_COUNTER.get(rejected_gate or "", "gate1_rejected")
+            stats[counter_key] = stats.get(counter_key, 0) + 1
+        elif _insert_miner_candidate(conn, diff, repo_name, candidate, verified.confidence, stats):
+            lessons_extracted += 1
+    return lessons_extracted
+
+
+def _verify_neg_parallel(
+    conn: sqlite3.Connection,
+    diff: str,
+    repo_name: str,
+    cfg: MiningConfig,
+    stats: dict,
+    neg_candidates: list[dict],
+    db_path: str,
+    lance_dir_str: str,
+) -> int:
+    """Run Gates 1-4 in parallel via ThreadPoolExecutor. Returns lessons_extracted."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    lessons_extracted = 0
+    with ThreadPoolExecutor(max_workers=cfg.verify_workers) as executor:
+        futures = {
+            executor.submit(_verify_one_candidate, c, repo_name, db_path, lance_dir_str): c for c in neg_candidates
+        }
+        for future in as_completed(futures):
+            try:
+                candidate, confidence, rejected_gate = future.result()
+            except Exception as exc:
+                _log.warning("verify worker raised exception: %s", exc)
+                stats["error_count"] += 1
+                continue
+
+            if rejected_gate == "error":
+                # Worker already logged the error; tally and skip.
+                stats["error_count"] += 1
+                continue
+
+            if rejected_gate is not None:
                 if rejected_gate not in _GATE_COUNTER:
-                    _log.warning("verify_candidate: unknown gate tag %r — counting as gate1_rejected", rejected_gate)
+                    _log.warning(
+                        "verify_candidate: unknown gate tag %r — counting as gate1_rejected",
+                        rejected_gate,
+                    )
                 counter_key = _GATE_COUNTER.get(rejected_gate or "", "gate1_rejected")
                 stats[counter_key] = stats.get(counter_key, 0) + 1
-                continue
-            confidence = verified.confidence
-
-        if _insert_miner_candidate(conn, diff, repo_name, candidate, confidence, stats):
-            lessons_extracted += 1
+            elif _insert_miner_candidate(conn, diff, repo_name, candidate, confidence, stats):
+                lessons_extracted += 1
 
     return lessons_extracted
 
 
-def mine_repos_for_gaps(
+def mine_repos_for_gaps(  # noqa: C901
     conn: sqlite3.Connection,
     lance_dir: Path,
     gap_categories: list[str] | None = None,
@@ -379,11 +575,18 @@ def mine_repos_for_gaps(
         stats["repos_searched"] += 1
         insert_mined_repo(conn, repo_name)
 
+        # Use local clone cache when configured (P2); fall back to GitHub URL.
+        repo_source: str = f"https://github.com/{repo_name}"
+        if cfg.clone_cache_dir is not None:
+            local = _get_or_update_local_repo(repo_name, cfg.clone_cache_dir)
+            if local is not None:
+                repo_source = str(local)
+
         commits_in_repo = 0
         lessons_in_repo = 0
         try:
             for commit in Repository(
-                f"https://github.com/{repo_name}",
+                repo_source,
                 since=since,
                 only_no_merge=True,
                 only_modifications_with_file_types=[".py"],

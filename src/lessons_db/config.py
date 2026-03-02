@@ -25,6 +25,9 @@ LESSONS_SOURCE_DIR = Path(
 # Cross-project scanner
 PROJECTS_DIR = Path(os.environ.get("LESSONS_DB_PROJECTS_DIR", str(Path.home() / "Documents" / "projects")))
 
+# Local clone cache — avoids re-cloning repos on every nightly mining run
+REPO_CACHE_DIR = Path(os.environ.get("LESSONS_DB_REPO_CACHE_DIR", str(DATA_DIR / "repo-cache")))
+
 # Ollama queue API (generation / analysis tasks) — used for queue-aware callers
 OLLAMA_QUEUE_URL = os.environ.get("LESSONS_DB_OLLAMA_QUEUE_URL", "http://127.0.0.1:7683")
 
