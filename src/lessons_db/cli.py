@@ -2407,33 +2407,66 @@ def meta():
     pass
 
 
+def _warm_model(queue_url: str, model_name: str) -> bool:
+    """Send a trivial prompt to ensure the model is loaded in Ollama's memory.
+
+    Returns True if the model responded, False on error. This prevents
+    cold-load timeouts on the first real request — large models (9GB+)
+    can take >120s to load from disk, exceeding the queue proxy timeout.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    click.echo(f"  Warming model {model_name}...", nl=False)
+    payload = _json.dumps({"model": model_name, "prompt": "hi", "stream": False}).encode("utf-8")
+    try:
+        req = urllib.request.Request(  # noqa: S310
+            f"{queue_url}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
+            resp.read()
+        click.echo(" ready.")
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+        click.echo(f" failed ({exc})")
+        return False
+
+
 @meta.command("extract-principles")
 @click.option("--batch-size", default=10, type=int, help="Number of lessons to process per batch (default: 10).")
 @click.option("--dry-run", is_flag=True, help="Preview extracted principles without updating the database.")
 @click.option(
     "--model",
     default=None,
-    help="Ollama model to use (default: from config ANALYSIS_MODEL).",
+    help="Ollama model to use (default: deepseek-r1:8b-0528-qwen3-q4_K_M for reasoning).",
 )
 @click.pass_context
 def meta_extract_principles(ctx, batch_size, dry_run, model):
     """Extract domain-independent principles from lessons via LLM.
 
-    Reads lessons that have no principle set, constructs a prompt from
-    one_liner + description, and calls Ollama (via ollama-queue) to generate
-    a concise, domain-independent principle statement.
+    Uses a reasoning model (deepseek-r1) to abstract concrete coding lessons
+    into universal principles that transfer across technologies and projects.
 
     Example: "Subscriber lifecycle management" -> "Resources acquired in
-    callbacks must be explicitly released"
+    callbacks must be explicitly released in a symmetric teardown path"
     """
     import json as _json
+    import re as _re
     import urllib.error
     import urllib.request
 
-    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_QUEUE_URL
+    from lessons_db.config import OLLAMA_QUEUE_URL
+
+    # Reasoning model for abstraction — deepseek-r1 chain-of-thought
+    # produces better principles than general-purpose models
+    META_REASONING_MODEL = "deepseek-r1:8b-0528-qwen3-q4_K_M"
 
     conn = ctx.obj["conn"]
-    effective_model = model or ANALYSIS_MODEL
+    effective_model = model or META_REASONING_MODEL
 
     # Find lessons without a principle
     rows = conn.execute(
@@ -2446,6 +2479,8 @@ def meta_extract_principles(ctx, batch_size, dry_run, model):
         return
 
     click.echo(f"Processing {len(rows)} lessons (model: {effective_model})...")
+    if not dry_run:
+        _warm_model(OLLAMA_QUEUE_URL, effective_model)
 
     updated = 0
     errors = 0
@@ -2462,7 +2497,7 @@ def meta_extract_principles(ctx, batch_size, dry_run, model):
         if one_liner:
             context_parts.append(f"One-liner: {one_liner}")
         if description:
-            context_parts.append(f"Description: {description}")
+            context_parts.append(f"Description: {description[:500]}")
 
         if not context_parts:
             click.echo(f"  #{lesson_id}: SKIP (no title/one_liner/description)")
@@ -2471,11 +2506,23 @@ def meta_extract_principles(ctx, batch_size, dry_run, model):
         lesson_context = "\n".join(context_parts)
 
         prompt = (
-            "Extract a single domain-independent principle from this coding lesson. "
-            "The principle should be a concise, universal statement that applies beyond "
-            "the specific technology or context described. Return ONLY the principle "
-            "statement, nothing else. No quotes, no explanation, no preamble.\n\n"
-            f"{lesson_context}"
+            "You are extracting a transferable principle from a specific coding lesson.\n\n"
+            "A GOOD principle:\n"
+            "- Names the structural pattern, not the technology (e.g., 'acquired/release symmetry' not 'close the file')\n"
+            "- Is falsifiable — someone could violate it\n"
+            "- Applies to at least 3 different domains (not just the one described)\n"
+            "- Is one sentence, 10-25 words\n\n"
+            "Examples of good principles:\n"
+            "- 'Resources acquired in callbacks must be released in a symmetric teardown path.'\n"
+            "- 'When two representations of the same data exist, one must be designated authoritative.'\n"
+            "- 'Silent fallbacks that return default values mask upstream failures indefinitely.'\n"
+            "- 'Integration boundaries require end-to-end value tracing, not per-layer unit tests.'\n\n"
+            "Examples of BAD principles (too vague or just restating the lesson):\n"
+            "- 'Always handle errors properly.' (not falsifiable, no structure)\n"
+            "- 'Log errors before discarding them.' (restates the fix, not the principle)\n"
+            "- 'Be careful with async code.' (too vague)\n\n"
+            f"Lesson:\n{lesson_context}\n\n"
+            "Return ONLY the principle statement. One sentence. No quotes, no explanation."
         )
 
         payload = _json.dumps(
@@ -2493,13 +2540,20 @@ def meta_extract_principles(ctx, batch_size, dry_run, model):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=180) as resp:  # noqa: S310
                 result = _json.loads(resp.read().decode("utf-8"))
             principle = result.get("response", "").strip()
+            # Strip <think>...</think> blocks from reasoning models
+            principle = _re.sub(r"<think>.*?</think>", "", principle, flags=_re.DOTALL).strip()
+            # Clean up any remaining artifacts
+            principle = principle.strip("\"'").strip()
             if not principle:
                 click.echo(f"  #{lesson_id}: SKIP (empty LLM response)")
                 errors += 1
                 continue
+            # Truncate if model was too verbose (keep first sentence)
+            if ". " in principle and len(principle) > 200:
+                principle = principle[: principle.index(". ") + 1]
         except (urllib.error.URLError, urllib.error.HTTPError, OSError, _json.JSONDecodeError) as exc:
             click.echo(f"  #{lesson_id}: ERROR ({exc})", err=True)
             errors += 1
@@ -2533,29 +2587,34 @@ def meta_extract_principles(ctx, batch_size, dry_run, model):
 @click.option(
     "--model",
     default=None,
-    help="Ollama model to use (default: from config ANALYSIS_MODEL).",
+    help="Ollama model to use (default: deepseek-r1:8b-0528-qwen3-q4_K_M for reasoning).",
 )
 @click.pass_context
 def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
     """Generate double-loop meta-lessons from clusters of related lessons.
 
-    Finds clusters of lessons sharing the same cluster_seed (minimum --min-cluster-size),
-    then uses an LLM to generate a meta-lesson that questions the governing variables
-    behind recurrent patterns.
+    Uses a reasoning model (deepseek-r1) to analyze WHY patterns recur —
+    identifying governing variables (Argyris double-loop learning), not
+    just repeating the fix.
 
-    Example: 5 async lessons -> "Why do async lifecycle errors recur?
-    Governing variable: no systematic resource-cleanup protocol"
+    Example: 5 async lessons -> "Governing variable: no symmetric
+    acquire/release protocol enforced at the framework level"
     """
     import json as _json
     import re as _re
     import urllib.error
     import urllib.request
 
-    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_ANALYSIS_URL
+    from lessons_db.config import OLLAMA_QUEUE_URL
     from lessons_db.db import insert_lesson
 
+    # deepseek-r1 chain-of-thought reasoning compensates for smaller size —
+    # it thinks through the double-loop analysis in <think> tags before answering.
+    # 5.2GB loads within the queue's 120s proxy timeout even on cold start.
+    META_REASONING_MODEL = "deepseek-r1:8b-0528-qwen3-q4_K_M"
+
     conn = ctx.obj["conn"]
-    effective_model = model or ANALYSIS_MODEL
+    effective_model = model or META_REASONING_MODEL
 
     # Step 1: Find clusters of lessons sharing the same cluster_seed
     clusters = find_meta_lesson_clusters(conn, min_cluster_size)
@@ -2565,6 +2624,8 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
         return
 
     click.echo(f"Found {len(clusters)} cluster(s) (model: {effective_model})...")
+    if not dry_run:
+        _warm_model(OLLAMA_QUEUE_URL, effective_model)
 
     generated = 0
     skipped = 0
@@ -2594,18 +2655,35 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
         cluster_context = "\n".join(lesson_summaries)
 
         prompt = (
-            "You are analyzing a cluster of recurring coding lessons that share a common theme. "
-            "Your task is to generate a DOUBLE-LOOP meta-lesson that questions the governing "
-            "variables (assumptions, mental models, policies) behind WHY this pattern recurs.\n\n"
-            "Single-loop learning asks: 'How do we fix this error?'\n"
-            "Double-loop learning asks: 'What assumption or process gap causes this error to keep happening?'\n\n"
-            f"Cluster seed: {seed}\n"
-            f"Lessons in this cluster:\n{cluster_context}\n\n"
+            "You are performing double-loop learning analysis (Argyris) on a cluster of "
+            "recurring coding lessons.\n\n"
+            "SINGLE-LOOP (wrong): 'Fix: add error logging.' — restates the solution.\n"
+            "DOUBLE-LOOP (correct): 'Governing variable: the team assumes stdlib error "
+            "propagation is sufficient, so no explicit logging protocol exists at the "
+            "framework level.' — identifies the hidden assumption that causes recurrence.\n\n"
+            "Your task: identify the GOVERNING VARIABLE — the unquestioned assumption, "
+            "mental model, or missing protocol that allows this class of bug to keep "
+            "appearing despite individual fixes.\n\n"
+            f"Cluster: {seed}\n"
+            f"Lessons ({len(lessons)}):\n{cluster_context}\n\n"
             "Return a JSON object with exactly these fields:\n"
-            '{"title": "short title for the meta-lesson", '
-            '"one_liner": "single sentence identifying the governing variable", '
-            '"description": "2-3 sentences explaining why this pattern recurs and what systemic change would prevent it"}\n\n'
-            "Return ONLY the JSON object. No preamble, no explanation."
+            "{\n"
+            '  "title": "Governing Variable: <specific name>",\n'
+            '  "one_liner": "The assumption that <X> causes <Y> to recur because <Z>.",\n'
+            '  "description": "2-3 sentences: (1) the hidden assumption, (2) why individual '
+            "fixes don't prevent recurrence, (3) what systemic change would.\"\n"
+            "}\n\n"
+            "BAD one_liner examples (too vague, rejected):\n"
+            '- "Silent errors persist because of unlogged failures." (restates symptom)\n'
+            '- "Standardize conflict resolution." (action, not governing variable)\n\n'
+            "GOOD one_liner examples:\n"
+            '- "The assumption that each layer owns its own error handling causes '
+            "cross-boundary failures to vanish — no layer claims responsibility for "
+            'errors that originate elsewhere."\n'
+            '- "The absence of a symmetric acquire/release protocol means resource '
+            "cleanup depends on developer memory rather than framework enforcement, "
+            'guaranteeing eventual leaks."\n\n'
+            "Return ONLY the JSON object."
         )
 
         if dry_run:
@@ -2626,13 +2704,13 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
         ).encode("utf-8")
 
         try:
-            req = urllib.request.Request(  # noqa: S310 — localhost Ollama
-                f"{OLLAMA_ANALYSIS_URL}/api/generate",
+            req = urllib.request.Request(  # noqa: S310 — localhost Ollama queue
+                f"{OLLAMA_QUEUE_URL}/api/generate",
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
                 result = _json.loads(resp.read().decode("utf-8"))
 
             raw_response = result.get("response", "").strip()

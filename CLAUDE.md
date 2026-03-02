@@ -1,6 +1,6 @@
 # lessons-db
 
-Automated lessons-learned prevention system. Captures coding mistakes, surfaces them at decision points, and generates Semgrep rules that prevent recurrence.
+Automated lessons-learned system with human-like learning. Captures mistakes and successes, surfaces them via FSRS spaced repetition, tracks outcomes, and adapts presentation through 8 learning science mechanisms.
 
 **Repo:** https://github.com/parthalon025/lessons-db (private)
 
@@ -9,12 +9,15 @@ Automated lessons-learned prevention system. Captures coding mistakes, surfaces 
 ```
 src/lessons_db/
   __init__.py
-  cli.py              # Click CLI: capture, search, scan, rule, index, export, summary, status, migrate
+  cli.py              # Click CLI: capture, search, scan, rule, index, export, summary, status, migrate, fsrs, learn, kpi, calibrate, transfer, reuse, meta
   config.py            # Paths, Ollama URLs (queue/embed/analysis), env var overrides (incl. REPO_CACHE_DIR)
-  db.py                # SQLite schema, migrations, CRUD
+  db.py                # SQLite schema, migrations, CRUD (incl. win_streaks, surfacing_events)
+  fsrs.py              # FSRS-6 spaced repetition: retrievability, stability, difficulty, adaptive fading
+  learn.py             # Surfacing events, outcome recording, feedback loop, exception-finding (SFBT)
+  prevention.py        # Velocity detection, fix queue, content checking
   github_miner.py      # GitHub mining pipeline: discover_repos, mine_repos_for_gaps, MiningConfig
   vectors.py           # LanceDB + Ollama embedding via ollama-queue
-  capture.py           # Auto-capture from transcript/diff/test
+  capture.py           # Auto-capture from transcript/diff/test + win detection
   search.py            # Semantic search + file-path lookup + content match
   enforce.py           # Escalation ladder, recurrence tracking
   rulegen.py           # Generate Semgrep rules from lessons
@@ -59,6 +62,30 @@ lessons-db rule generate <id>
 lessons-db rule test
 lessons-db scan
 
+# FSRS spaced repetition
+lessons-db fsrs init                      # backfill FSRS defaults on all lessons
+lessons-db fsrs due                       # list lessons due for review (R < 0.9)
+lessons-db fsrs due --threshold 0.8       # custom threshold
+lessons-db fsrs stats                     # stability distribution + review forecast
+
+# Learning & feedback
+lessons-db learn evaluate-commit          # evaluate recent surfacing events against commit diff
+lessons-db learn find-exceptions          # SFBT: find internalized patterns (absent anti-patterns)
+lessons-db learn record ID --hook pre_edit  # record a surfacing event
+
+# Metacognition
+lessons-db kpi                            # learning KPI dashboard (heeded rates, ZPD, streaks)
+lessons-db calibrate profile              # per-category strength/growth areas
+
+# Positive patterns
+lessons-db reuse record ID                # record positive pattern reuse
+lessons-db capture detect-wins            # detect wins from recent session
+lessons-db transfer find "context"        # cross-project analogical matching
+
+# Meta-learning (Ollama)
+lessons-db meta extract-principles        # batch-extract transferable principles
+lessons-db meta generate-meta-lessons     # generate double-loop meta-lessons from clusters
+
 # Batch scripts
 scripts/batch-capture-transcripts.sh [--dry-run] [--since DATE] [--positive]
 scripts/run-batch-pipeline.sh [--since DATE]
@@ -80,12 +107,14 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 - **Symlink:** `~/.local/bin/lessons-db` → `.venv/bin/lessons-db`
 - **Data:** `~/.local/share/lessons-db/` (lessons.db + lance/ + rules/)
 - **Hooks:** `hooks/` in repo; deployed to `~/.claude/hooks/`
-  - `lessons-db-session-start.sh` — SessionStart
-  - `lessons-db-pre-read.sh` — PreToolUse:Read
-  - `lessons-db-pre-edit.sh` — PreToolUse:Edit|Write|MultiEdit
-  - `lessons-db-enter-plan.sh` — PreToolUse:EnterPlanMode (semantic search)
-  - `lessons-db-post-bash.sh` — PostToolUse:Bash (test failure diagnostics)
-  - `lessons-db-stop.sh` — Stop (auto-capture from diff)
+  - `lessons-db-session-start.sh` — SessionStart (FSRS due lessons + exception reporting + feedforward)
+  - `lessons-db-pre-read.sh` — PreToolUse:Read (feedforward formatting)
+  - `lessons-db-pre-edit.sh` — PreToolUse:Edit|Write|MultiEdit (positive reuse detection + surfacing)
+  - `lessons-db-enter-plan.sh` — PreToolUse:EnterPlanMode (semantic search + pro-mortem + bright spots)
+  - `lessons-db-post-bash.sh` — PostToolUse:Bash (test failure diagnostics + feedforward)
+  - `lessons-db-post-commit.sh` — post-commit (evaluate-commit outcome recording)
+  - `lessons-db-stop.sh` — Stop (auto-capture + win detection + AAR sustain prompt)
+  - `_feedforward-format.sh` — shared helper (SUGGESTION/PROVEN PATTERN formatting)
 - **Nightly timer:** `~/.config/systemd/user/lessons-db-nightly.timer` — 03:30 daily
 
 ## Key Decisions
@@ -94,7 +123,29 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 - **LanceDB** for semantic vector search — embedded, no server
 - **Semgrep** for pattern detection — reused, not rebuilt
 - **Ollama** via ollama-queue for generation tasks; direct for embeddings (nomic-embed-text, 768 dims) and analysis (default: qwen3:8b)
+- **FSRS-6** implemented directly (~500 lines, no external deps) — power-law forgetting curve R=(1+F*t/S)^DECAY with 19 optimized parameters
 - **Click CLI** with subcommands matching design doc
+
+## Learning System (8 Mechanisms)
+
+| Mechanism | Implementation | Key Component |
+|-----------|---------------|--------------|
+| M1 Encoding via Effort | Bjork interleaving in session-start | `interleave_due_lessons()` |
+| M2 Spaced Repetition | FSRS-6 power-law forgetting curve | `compute_retrievability()`, `record_review()` |
+| M3 Feedback Loop | Post-commit outcome recording | `evaluate_commit()`, post-commit hook |
+| M4 Transfer | Principle extraction + cross-project matching | `transfer find` CLI |
+| M5 Metacognition | KPI dashboard + calibration profiles | `kpi`, `calibrate profile` |
+| M6 Amplification | Positive pattern detection + reuse recording | `detect_wins()`, `reuse record` |
+| M7 Reinforcement | Variable-ratio 30% probability gate | `should_surface_positive()`, win_streaks |
+| M8 Evolution | Adaptive fading: full→brief→silent→enforced | `get_fading_level()` |
+
+**Adaptive fading thresholds** (Kalyuga expertise reversal):
+- S < 2.0 → `full` (complete lesson text + code example)
+- 2.0 ≤ S < 10.0 → `brief` (one-liner reminder)
+- 10.0 ≤ S < 50.0 → `silent` (Semgrep rule only)
+- S ≥ 50.0 → `enforced` (automated, never shown)
+
+**Polarity differentiation**: Positive lessons start with S=3.0 (identity consolidation), negative with S=1.0. Positive surfacing uses 30% variable-ratio gate (Skinner) to prevent habituation.
 
 ## Scope Tags
 language:python, domain:lessons-db
