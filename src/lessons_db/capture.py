@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -331,3 +331,89 @@ def capture_positive_manual(
             "created_date": date.today().isoformat(),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Win detection — aggressive positive capture from session signals
+# ---------------------------------------------------------------------------
+
+#: Minimum fraction of heeded outcomes to declare a "heeded lessons" win.
+_HEED_THRESHOLD = 0.7
+
+#: Minimum number of surfacing events to evaluate heed rate.
+_MIN_EVENTS_FOR_HEED = 1
+
+
+def detect_wins(
+    conn: sqlite3.Connection,
+    lookback_hours: int = 4,
+) -> list[dict[str, Any]]:
+    """Detect positive session signals worth capturing.
+
+    Checks three independent heuristics over the lookback window:
+
+    1. **All-heeded** — surfacing events in the window had a heed rate >= 70%.
+       Indicates the developer internalized the surfaced lessons.
+    2. **No anti-pattern hits** — session had surfacing events but zero
+       ``dismissed`` or ``recurrence`` outcomes (clean session).
+    3. **Positive pattern reused** — a positive-polarity lesson was surfaced
+       and heeded, meaning an established good pattern was actively applied.
+
+    Returns a list of win dicts, each with ``win_type``, ``detail``, and
+    optional ``lesson_ids``.  Empty list means no wins detected.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(hours=lookback_hours)).isoformat()
+
+    events = conn.execute(
+        "SELECT se.id, se.lesson_id, se.outcome, l.polarity "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON l.id = se.lesson_id "
+        "WHERE se.timestamp >= ? "
+        "ORDER BY se.timestamp DESC",
+        [cutoff],
+    ).fetchall()
+
+    if not events:
+        return []
+
+    wins: list[dict[str, Any]] = []
+
+    # Partition outcomes
+    total = len(events)
+    heeded = [e for e in events if e["outcome"] == "heeded"]
+    negative = [e for e in events if e["outcome"] in ("dismissed", "recurrence")]
+    positive_heeded = [e for e in events if e["polarity"] == "positive" and e["outcome"] == "heeded"]
+
+    # --- Win 1: High heed rate ---
+    if total >= _MIN_EVENTS_FOR_HEED:
+        heed_rate = len(heeded) / total
+        if heed_rate >= _HEED_THRESHOLD:
+            wins.append(
+                {
+                    "win_type": "all_heeded",
+                    "detail": (f"{len(heeded)}/{total} surfaced lessons heeded " f"({heed_rate:.0%} heed rate)"),
+                    "lesson_ids": sorted({e["lesson_id"] for e in heeded}),
+                }
+            )
+
+    # --- Win 2: Clean session (no anti-pattern hits) ---
+    if total >= _MIN_EVENTS_FOR_HEED and len(negative) == 0:
+        wins.append(
+            {
+                "win_type": "no_anti_pattern_hits",
+                "detail": (f"{total} lessons surfaced, zero anti-pattern violations"),
+                "lesson_ids": sorted({e["lesson_id"] for e in events}),
+            }
+        )
+
+    # --- Win 3: Positive pattern reused ---
+    if positive_heeded:
+        wins.append(
+            {
+                "win_type": "positive_pattern_reused",
+                "detail": (f"{len(positive_heeded)} positive pattern(s) actively applied"),
+                "lesson_ids": sorted({e["lesson_id"] for e in positive_heeded}),
+            }
+        )
+
+    return wins

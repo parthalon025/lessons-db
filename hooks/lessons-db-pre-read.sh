@@ -8,6 +8,11 @@ if [[ -z "$LESSONS_DB" ]]; then
     exit 0
 fi
 
+# Source shared feedforward formatting
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hooks/_feedforward-format.sh
+source "${HOOK_DIR}/_feedforward-format.sh"
+
 # The file path comes from the tool input (Claude Code passes it as JSON on stdin)
 FILE_PATH=$(cat | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))" 2>/dev/null || echo "")
 
@@ -19,11 +24,11 @@ fi
 RESULTS=$("$LESSONS_DB" search "" --file "$FILE_PATH" 2>/dev/null || true)
 
 if [[ -n "$RESULTS" && "$RESULTS" != "No results found." ]]; then
-    echo "$RESULTS"
+    feedforward_format "$RESULTS"
 
     # Record each surfaced lesson for the learning pipeline
     while IFS= read -r line; do
-        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+        if [[ "$line" =~ \[#([0-9]+)\] ]]; then
             LESSON_ID="${BASH_REMATCH[1]}"
             "$LESSONS_DB" learn record \
                 --lesson-id "$LESSON_ID" \

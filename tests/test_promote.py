@@ -1,7 +1,9 @@
 """Tests for positive entry promotion ladder."""
 
 import pytest
+from click.testing import CliRunner
 
+from lessons_db.cli import main
 from lessons_db.db import get_lesson, init_db, insert_lesson
 from lessons_db.promote import apply_template, list_templates, record_reuse
 
@@ -126,3 +128,78 @@ class TestApplyTemplate:
         conn.commit()
         content = apply_template(conn, lid)
         assert content == "second content"
+
+
+class TestReuseCLI:
+    """Tests for the 'lessons-db reuse record' CLI command."""
+
+    def test_reuse_record_help(self):
+        """CLI wiring: 'reuse record --help' exits 0."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["reuse", "record", "--help"])
+        assert result.exit_code == 0
+        assert "LESSON_ID" in result.output
+
+    def test_reuse_record_promotes_and_echoes_tier(self, db_path, conn_with_positive):
+        """CLI records reuse, echoes new tier, and updates DB."""
+        conn, lid = conn_with_positive
+        conn.close()  # CLI opens its own connection
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "reuse", "record", str(lid)])
+        assert result.exit_code == 0
+        assert "tier: tested" in result.output
+        assert f"lesson #{lid}" in result.output
+
+    def test_reuse_record_shows_one_liner(self, db_path, conn_with_positive):
+        """CLI echoes the lesson's one_liner after recording reuse."""
+        conn, lid = conn_with_positive
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "reuse", "record", str(lid)])
+        assert result.exit_code == 0
+        assert "Dual-axis" in result.output
+
+    def test_reuse_record_creates_surfacing_event(self, db_path, conn_with_positive):
+        """CLI creates a surfacing event with outcome='heeded' for the learning pipeline."""
+        conn, lid = conn_with_positive
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "reuse", "record", str(lid)])
+        assert result.exit_code == 0
+
+        # Reopen and verify surfacing event was created
+        check_conn = init_db(db_path)
+        events = check_conn.execute("SELECT * FROM surfacing_events WHERE lesson_id = ?", [lid]).fetchall()
+        assert len(events) == 1
+        assert events[0]["hook_point"] == "edit"
+        assert events[0]["context"] == "positive_reuse"
+        assert events[0]["outcome"] == "heeded"
+        check_conn.close()
+
+    def test_reuse_record_nonexistent_lesson(self, db_path):
+        """CLI exits with error for a non-existent lesson ID."""
+        conn = init_db(db_path)
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_path), "reuse", "record", "99999"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_reuse_record_successive_promotions(self, db_path, conn_with_positive):
+        """CLI correctly reports tier progression across successive calls."""
+        conn, lid = conn_with_positive
+        conn.close()
+
+        runner = CliRunner()
+        r1 = runner.invoke(main, ["--db", str(db_path), "reuse", "record", str(lid)])
+        assert "tier: tested" in r1.output
+
+        r2 = runner.invoke(main, ["--db", str(db_path), "reuse", "record", str(lid)])
+        assert "tier: proven" in r2.output
+
+        r3 = runner.invoke(main, ["--db", str(db_path), "reuse", "record", str(lid)])
+        assert "tier: standard" in r3.output

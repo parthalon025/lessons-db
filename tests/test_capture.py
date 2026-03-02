@@ -1,7 +1,7 @@
 """Tests for positive knowledge capture."""
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +9,7 @@ import pytest
 from lessons_db.capture import (
     capture_from_design_doc,
     capture_positive_manual,
+    detect_wins,
     list_drafts,
     promote_draft,
     score_one_liner,
@@ -456,3 +457,147 @@ class TestCaptureDesignDocCLI:
 
         assert result.exit_code == 0, result.output
         assert "No positive" in result.output
+
+
+# ---------------------------------------------------------------------------
+# detect_wins() tests
+# ---------------------------------------------------------------------------
+
+
+def _insert_lesson(conn, polarity="negative"):
+    """Helper: insert a minimal lesson and return its id."""
+    cursor = conn.execute(
+        "INSERT INTO lessons (title, one_liner, tier, created_date, polarity) " "VALUES (?, ?, 'observation', ?, ?)",
+        [f"Test lesson ({polarity})", "one-liner", date.today().isoformat(), polarity],
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def _insert_surfacing(conn, lesson_id, outcome, hours_ago=1):
+    """Helper: insert a surfacing event with a timestamp hours_ago in the past."""
+    ts = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
+    conn.execute(
+        "INSERT INTO surfacing_events (lesson_id, hook_point, context, outcome, timestamp) "
+        "VALUES (?, 'stop', 'test-ctx', ?, ?)",
+        [lesson_id, outcome, ts],
+    )
+    conn.commit()
+
+
+class TestDetectWins:
+    """Win detection from session surfacing events."""
+
+    def test_returns_empty_when_no_events(self, db_path):
+        conn = init_db(db_path)
+        wins = detect_wins(conn, lookback_hours=4)
+        assert wins == []
+
+    def test_all_heeded_win(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=2)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "all_heeded" in types
+
+    def test_no_anti_pattern_hits_win(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "no_anti_pattern_hits" in types
+
+    def test_dismissed_prevents_clean_session(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+        _insert_surfacing(conn, lid, "dismissed", hours_ago=2)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "no_anti_pattern_hits" not in types
+
+    def test_recurrence_prevents_clean_session(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+        _insert_surfacing(conn, lid, "recurrence", hours_ago=2)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "no_anti_pattern_hits" not in types
+
+    def test_low_heed_rate_no_all_heeded_win(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        # 1 heeded, 3 dismissed = 25% heed rate (below 70% threshold)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+        _insert_surfacing(conn, lid, "dismissed", hours_ago=1)
+        _insert_surfacing(conn, lid, "dismissed", hours_ago=2)
+        _insert_surfacing(conn, lid, "dismissed", hours_ago=2)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "all_heeded" not in types
+
+    def test_positive_pattern_reused_win(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn, polarity="positive")
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "positive_pattern_reused" in types
+        # Verify lesson_ids are present
+        reuse_win = next(w for w in wins if w["win_type"] == "positive_pattern_reused")
+        assert lid in reuse_win["lesson_ids"]
+
+    def test_negative_heeded_no_positive_reuse(self, db_path):
+        """A heeded negative lesson should not trigger positive_pattern_reused."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn, polarity="negative")
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        assert "positive_pattern_reused" not in types
+
+    def test_events_outside_lookback_ignored(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        # Event 10 hours ago, lookback is 4 hours
+        _insert_surfacing(conn, lid, "heeded", hours_ago=10)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        assert wins == []
+
+    def test_win_detail_contains_counts(self, db_path):
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=2)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        heeded_win = next(w for w in wins if w["win_type"] == "all_heeded")
+        assert "2/2" in heeded_win["detail"]
+
+    def test_unknown_outcomes_count_toward_total(self, db_path):
+        """Unknown outcomes dilute the heed rate but don't count as anti-pattern hits."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_surfacing(conn, lid, "heeded", hours_ago=1)
+        _insert_surfacing(conn, lid, "unknown", hours_ago=2)
+        _insert_surfacing(conn, lid, "unknown", hours_ago=2)
+        _insert_surfacing(conn, lid, "unknown", hours_ago=3)
+
+        wins = detect_wins(conn, lookback_hours=4)
+        types = [w["win_type"] for w in wins]
+        # 1/4 = 25% heed rate — below threshold
+        assert "all_heeded" not in types
+        # But no dismissed/recurrence, so clean session still applies
+        assert "no_anti_pattern_hits" in types

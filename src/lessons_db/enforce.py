@@ -14,6 +14,14 @@ _log = logging.getLogger(__name__)
 # recurrence 3 → semgrep_error/core
 # recurrence 4+ → semgrep_autofix/core
 
+BLOCKING_ENFORCEMENT: frozenset[str] = frozenset({"semgrep_error", "semgrep_autofix"})
+
+
+def should_block(enforcement: str) -> bool:
+    """Return True if this enforcement level should block a pre-edit action."""
+    return enforcement in BLOCKING_ENFORCEMENT
+
+
 _TIERS = {
     1: {"enforcement": "documentation", "confidence": "emerging"},
     2: {"enforcement": "semgrep_warning", "confidence": "established"},

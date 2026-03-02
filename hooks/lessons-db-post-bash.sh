@@ -10,6 +10,11 @@ if [[ -z "${LESSONS_DB}" ]]; then
     exit 0
 fi
 
+# Source shared feedforward formatting
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hooks/_feedforward-format.sh
+source "${HOOK_DIR}/_feedforward-format.sh"
+
 # Read full JSON from stdin
 INPUT=$(cat)
 
@@ -65,15 +70,15 @@ RESULTS=$("${LESSONS_DB}" search "${QUERY}" --top 3 2>/dev/null || echo "")
 
 if [[ -n "${RESULTS}" ]]; then
     echo ""
-    echo "## Lessons-DB: Relevant lessons for this failure"
+    echo "## Lessons-DB: Suggestions for this failure"
     echo "\`\`\`"
-    echo "${RESULTS}"
+    feedforward_format "${RESULTS}"
     echo "\`\`\`"
     echo ""
 
     # Record each surfaced lesson for the learning pipeline (Lesson #65: wire call sites)
     while IFS= read -r line; do
-        if [[ "${line}" =~ ^\[#([0-9]+)\] ]]; then
+        if [[ "${line}" =~ \[#([0-9]+)\] ]]; then
             LESSON_ID="${BASH_REMATCH[1]}"
             "${LESSONS_DB}" learn record \
                 --lesson-id "${LESSON_ID}" \

@@ -490,16 +490,19 @@ def scan(ctx):
     "--target", type=click.Path(), default=None, help="Target directory to scan (default: ~/Documents/projects/)"
 )
 @click.option("--baseline", default=None, help="Git commit hash for diff-aware scanning.")
+@click.option(
+    "--populate-fixes/--no-populate-fixes", default=True, help="Auto-populate fix queue after scan (default: on)."
+)
 @click.pass_context
-def scan_run(ctx, rules_dir, target, baseline):
+def scan_run(ctx, rules_dir, target, baseline, populate_fixes):
     """Run Semgrep scan against all lessons rules and record findings."""
     from lessons_db.db import insert_scan_finding
-    from lessons_db.enforce import check_escalation
+    from lessons_db.prevention import assess_and_enforce, populate_fix_queue
     from lessons_db.scan import run_scan
 
     rules = Path(rules_dir) if rules_dir else RULES_DIR
     if not rules.exists() or not any(rules.rglob("*.yaml")):
-        click.echo("No rules found. Run: lessons-db rule generate <id>")
+        click.echo("No rules found. Run: lessons-db prevent bulk-generate")
         return
 
     target_path = Path(target) if target else Path.home() / "Documents" / "projects"
@@ -517,9 +520,12 @@ def scan_run(ctx, rules_dir, target, baseline):
         return
 
     saved = 0
+    blocked = 0
+    escalated = 0
+
     for f in findings:
         rule_id = f.get("rule_id", "")
-        click.echo(f"  [{rule_id}] {f.get('file_path')}:{f.get('line_number')}")
+        file_path = f.get("file_path", "")
 
         # Parse lesson_id from rule_id suffix (format: lessons-db.<lang>.<slug>-NNN)
         lesson_id = None
@@ -540,22 +546,40 @@ def scan_run(ctx, rules_dir, target, baseline):
                 {
                     "lesson_id": lesson_id,
                     "rule_id": rule_id,
-                    "file_path": f.get("file_path", ""),
+                    "file_path": file_path,
                     "line_number": f.get("line_number"),
                     "snippet": f.get("message", ""),
                 },
             )
             saved += 1
-            action = check_escalation(conn, lesson_id)
-            if action["recurrence_count"] >= 2:
-                click.echo(
-                    f"  [ESCALATED] lesson {lesson_id} → {action['level']}"
-                    f" (recurrence #{action['recurrence_count']})"
-                )
+
+            # Full enforcement cycle: log recurrence event, velocity check, escalate if needed
+            decision = assess_and_enforce(
+                conn,
+                lesson_id,
+                hook_point="scan",
+                trigger_type="semgrep",
+                file_path=file_path,
+                rules_dir=rules,
+            )
+
+            status = f"  [{rule_id}] {file_path}:{f.get('line_number')}"
+            if decision.escalated:
+                status += f"  → ESCALATED to {decision.enforcement_level}"
+                escalated += 1
+            if decision.should_block:
+                status += "  [BLOCKING]"
+                blocked += 1
+            click.echo(status)
+
         except Exception as exc:
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
-    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved to DB")
+    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved" f" | escalated={escalated} blocking={blocked}")
+
+    if populate_fixes and saved > 0:
+        fix_result = populate_fix_queue(conn)
+        click.echo(f"Fix queue: +{fix_result['added']} added" f" ({fix_result['skipped_duplicate']} already queued)")
 
 
 @scan.command("security")
@@ -942,6 +966,53 @@ def capture_triage(ctx, review_log, log_date, override_id):
     click.echo("Usage: lessons-db capture triage [--review-log [--date DATE] | --override ID]")
 
 
+@capture.command("detect-wins")
+@click.option("--lookback", type=int, default=4, help="Hours to look back for surfacing events.")
+@click.pass_context
+def capture_detect_wins_cmd(ctx, lookback):
+    """Detect positive session wins from surfacing event patterns.
+
+    Checks for heeded lessons, clean sessions (no anti-pattern hits),
+    and positive pattern reuse. Routes detected wins through the draft
+    capture pipeline for sustain-oriented knowledge retention.
+    """
+    from lessons_db.capture import detect_wins
+
+    conn = ctx.obj["conn"]
+    wins = detect_wins(conn, lookback_hours=lookback)
+
+    if not wins:
+        click.echo("No wins detected this session.")
+        return
+
+    click.echo(f"Detected {len(wins)} win(s):")
+    for win in wins:
+        click.echo(f"  [{win['win_type']}] {win['detail']}")
+
+    # Route wins through draft capture pipeline
+    for win in wins:
+        try:
+            conn.execute(
+                "INSERT INTO capture_drafts "
+                "(raw_content, extracted_data, status, created_date, source) "
+                "VALUES (?, ?, 'pending', date('now'), 'auto_win_detection')",
+                [
+                    win["detail"],
+                    json.dumps(
+                        {
+                            "one_liner": win["detail"],
+                            "win_type": win["win_type"],
+                            "lesson_ids": win.get("lesson_ids", []),
+                        }
+                    ),
+                ],
+            )
+        except Exception as exc:
+            logger.warning("detect-wins: draft insert failed: %s", exc)
+    conn.commit()
+    click.echo(f"Queued {len(wins)} win draft(s). Review with: lessons-db capture drafts")
+
+
 @main.group()
 def cluster():
     """Adaptive cluster discovery and management."""
@@ -1020,7 +1091,19 @@ def learn():
     "--hook",
     "hook_point",
     required=True,
-    type=click.Choice(["read", "edit", "plan", "bash", "session_start", "commit"]),
+    type=click.Choice(
+        [
+            "read",
+            "edit",
+            "plan",
+            "bash",
+            "session_start",
+            "session_start_fsrs",
+            "session_start_exception",
+            "commit",
+            "stop",
+        ]
+    ),
 )
 @click.option("--context", "hook_context", default="", help="File path, query, or error text.")
 @click.option(
@@ -1039,6 +1122,78 @@ def learn_record(click_ctx, lesson_id, hook_point, hook_context, outcome):
     if outcome is not None:
         record_outcome(conn, event_id, outcome)
     click.echo(f"Recorded surfacing event {event_id}")
+
+
+@learn.command("evaluate-commit")
+@click.option("--hours", default=24, type=int, help="Lookback window in hours (default: 24).")
+@click.option("--dry-run", is_flag=True, help="Preview outcomes without updating the database.")
+@click.option(
+    "--diff-text",
+    default=None,
+    help="Provide diff text directly (bypasses git). For testing or piped input.",
+)
+@click.pass_context
+def learn_evaluate_commit(click_ctx, hours, dry_run, diff_text):
+    """Evaluate whether recently-surfaced lessons were heeded or dismissed.
+
+    Reads surfacing events with outcome='unknown' from the last N hours,
+    gets the latest git diff (HEAD~1..HEAD), and checks if each lesson's
+    anti-pattern appears in the diff.
+
+    If anti-pattern present: outcome = 'dismissed' (recurrence).
+    If anti-pattern absent: outcome = 'heeded'.
+    """
+    import subprocess
+
+    from lessons_db.learn import evaluate_commit
+
+    conn = click_ctx.obj["conn"]
+
+    if diff_text is None:
+        # Get the latest commit diff
+        try:
+            result = subprocess.run(
+                ["git", "diff", "HEAD~1..HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                click.echo(f"git diff failed: {result.stderr.strip()}", err=True)
+                click_ctx.exit(1)
+                return
+            diff_text = result.stdout
+        except FileNotFoundError:
+            click.echo("git not found on PATH.", err=True)
+            click_ctx.exit(1)
+            return
+        except subprocess.TimeoutExpired:
+            click.echo("git diff timed out.", err=True)
+            click_ctx.exit(1)
+            return
+
+    if not diff_text.strip():
+        click.echo("Empty diff — nothing to evaluate.")
+        return
+
+    results = evaluate_commit(conn, diff_text, hours=hours, dry_run=dry_run)
+
+    if not results:
+        click.echo("No unknown surfacing events with detection patterns in window.")
+        return
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    click.echo(f"{prefix}Evaluated {len(results)} surfacing event(s):")
+    for r in results:
+        marker = "X" if r["outcome"] == "dismissed" else "."
+        click.echo(
+            f"  [{marker}] event={r['event_id']} lesson=#{r['lesson_id']} "
+            f"outcome={r['outcome']} ({r['pattern_source']})"
+        )
+
+    heeded = sum(1 for r in results if r["outcome"] == "heeded")
+    dismissed = sum(1 for r in results if r["outcome"] == "dismissed")
+    click.echo(f"\nSummary: {heeded} heeded, {dismissed} dismissed")
 
 
 @learn.command("dismiss")
@@ -1126,6 +1281,75 @@ def learn_list(click_ctx, since, output_format, outcome_filter):
             click.echo(
                 f"{row['id']:>6}  {row['lesson_id']:>5}  {row['hook_point']:<14}  " f"{row['outcome']:<14}  {title}"
             )
+
+
+@learn.command("find-exceptions")
+@click.option("--lookback", default=5, type=int, help="Number of recent sessions to check (default: 5).")
+@click.pass_context
+def learn_find_exceptions(click_ctx, lookback):
+    """Find anti-patterns absent from recent sessions (SFBT exception-finding).
+
+    Identifies negative lessons that previously recurred but have been absent
+    from recent sessions — evidence of internalized learning.
+    """
+    from lessons_db.learn import find_exceptions
+
+    conn = click_ctx.obj["conn"]
+    exceptions = find_exceptions(conn, lookback_sessions=lookback)
+
+    if not exceptions:
+        click.echo("No exceptions found — no previously-dismissed anti-patterns absent from recent sessions.")
+        return
+
+    click.echo(f"Found {len(exceptions)} internalized pattern(s):")
+    for exc in exceptions:
+        click.echo(
+            f"  {exc['absent_sessions']}-session streak: zero {exc['category']} "
+            f"issues — [#{exc['lesson_id']}] {exc['title']}"
+        )
+
+
+@main.group()
+def reuse():
+    """Positive reuse tracking — record pattern reuse to advance promotion tier."""
+    pass
+
+
+@reuse.command("record")
+@click.argument("lesson_id", type=int)
+@click.pass_context
+def reuse_record(ctx, lesson_id):
+    """Record a positive pattern reuse for LESSON_ID.
+
+    Increments reuse_count and promotes the lesson through tiers:
+    noticed -> tested (1) -> proven (2, template generated) -> standard (3).
+
+    Also records a surfacing event with outcome='reused' for the learning pipeline.
+    """
+    from lessons_db.promote import record_reuse
+
+    conn = ctx.obj["conn"]
+    try:
+        new_tier = record_reuse(conn, lesson_id)
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return
+
+    # Record a surfacing event so the learning pipeline tracks positive reuse
+    from lessons_db.learn import record_surfacing
+
+    event_id = record_surfacing(conn, lesson_id, "edit", "positive_reuse")
+    # Mark outcome as 'heeded' — reuse of a positive pattern is always a good outcome
+    from lessons_db.learn import record_outcome
+
+    record_outcome(conn, event_id, "heeded")
+
+    lesson = conn.execute("SELECT one_liner FROM lessons WHERE id = ?", [lesson_id]).fetchone()
+    one_liner = lesson["one_liner"] if lesson else ""
+    click.echo(f"Recorded reuse for lesson #{lesson_id} — tier: {new_tier}")
+    if one_liner:
+        click.echo(f"  {one_liner}")
 
 
 @main.group()
@@ -1438,8 +1662,10 @@ def logs(tail, level):
 @main.command("kpi")
 @click.pass_context
 def kpi_dashboard(click_ctx):
-    """Show all KPI metrics for the lesson learning system."""
+    """Show learning KPI dashboard with profile, stability, streaks, and ZPD."""
     from datetime import UTC, datetime, timedelta
+
+    from lessons_db.fsrs import get_fading_level
 
     conn = click_ctx.obj["conn"]
 
@@ -1474,12 +1700,12 @@ def kpi_dashboard(click_ctx):
     def fmt(val, target_ok, unit="%"):
         if val is None:
             return "  n/a    (no data yet)"
-        ok = "✓" if target_ok(val) else "✗"
+        ok = "+" if target_ok(val) else "-"
         return f"  {val}{unit}  {ok}"
 
     click.echo("")
-    click.echo("  Lessons-DB KPI Dashboard")
-    click.echo("  " + "─" * 44)
+    click.echo("=== Learning KPI Dashboard ===")
+    click.echo("")
     click.echo(f"  Total lessons          : {total_lessons}")
     click.echo(f"  Total surfacings       : {total_surfacings}  ({decided} with outcome)")
     click.echo("")
@@ -1489,8 +1715,126 @@ def kpi_dashboard(click_ctx):
     click.echo(f"  False Positive Rate    :{fmt(fp_rate,          lambda v: v < 15)}")
     click.echo("")
     click.echo("  System Health:")
-    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'✓' if dead_pct < 10 else '✗'}")
+    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'+'  if dead_pct < 10 else '-'}")
     click.echo(f"  DB Growth (7d)         :  +{growth_7d} lessons")
+    click.echo("")
+
+    # --- Section: Heeded Rate by Category ---
+    click.echo("Heeded Rate by Category:")
+    cat_rows = conn.execute(
+        "SELECT COALESCE(NULLIF(l.cluster, ''), '(unclustered)') AS cluster_label, "
+        "  SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded_count, "
+        "  COUNT(*) AS total_count "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON se.lesson_id = l.id "
+        "WHERE se.outcome != 'unknown' "
+        "GROUP BY cluster_label "
+        "ORDER BY total_count DESC"
+    ).fetchall()
+    if cat_rows:
+        for row in cat_rows:
+            cluster = row["cluster_label"]
+            h = row["heeded_count"]
+            t = row["total_count"]
+            pct = round(h / t * 100) if t > 0 else 0
+            click.echo(f"  {cluster}: {pct}% ({h}/{t})")
+    else:
+        click.echo("  (no surfacing data)")
+    click.echo("")
+
+    # --- Section: Stability Distribution ---
+    click.echo("Stability Distribution:")
+    stability_rows = conn.execute("SELECT stability FROM lessons WHERE stability IS NOT NULL").fetchall()
+    level_counts = {"full": 0, "brief": 0, "silent": 0, "enforced": 0}
+    for row in stability_rows:
+        level = get_fading_level(row["stability"])
+        level_counts[level] += 1
+    click.echo(
+        f"  full: {level_counts['full']}  "
+        f"brief: {level_counts['brief']}  "
+        f"silent: {level_counts['silent']}  "
+        f"enforced: {level_counts['enforced']}"
+    )
+    click.echo("")
+
+    # --- Section: Positive/Negative Ratio ---
+    click.echo("Positive/Negative Ratio:")
+    pos_count = q("SELECT COUNT(*) FROM lessons WHERE polarity = 'positive'")
+    neg_count = q("SELECT COUNT(*) FROM lessons WHERE polarity = 'negative'")
+    click.echo(f"  positive: {pos_count}  negative: {neg_count}")
+    if pos_count + neg_count > 0:
+        ratio = round(pos_count / (pos_count + neg_count) * 100, 1)
+        click.echo(f"  positive ratio: {ratio}%")
+    click.echo("")
+
+    # --- Section: Win Streaks ---
+    click.echo("Win Streaks:")
+    streak_rows = conn.execute(
+        "SELECT category, current_streak, longest_streak "
+        "FROM win_streaks "
+        "ORDER BY longest_streak DESC, current_streak DESC "
+        "LIMIT 10"
+    ).fetchall()
+    if streak_rows:
+        for row in streak_rows:
+            click.echo(f"  {row['category']}: " f"current={row['current_streak']} " f"longest={row['longest_streak']}")
+    else:
+        click.echo("  (no win streak data)")
+    click.echo("")
+
+    # --- Section: Learning Velocity ---
+    click.echo("Learning Velocity (30d):")
+    cutoff_30d = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
+    velocity_rows = conn.execute(
+        "SELECT id, title, stability, last_review_date "
+        "FROM lessons "
+        "WHERE last_review_date IS NOT NULL "
+        "  AND last_review_date >= ? "
+        "  AND stability IS NOT NULL "
+        "ORDER BY last_review_date DESC",
+        [cutoff_30d],
+    ).fetchall()
+    if velocity_rows:
+        click.echo(f"  {len(velocity_rows)} lesson(s) reviewed in last 30 days:")
+        for row in velocity_rows[:10]:
+            level = get_fading_level(row["stability"])
+            click.echo(f"    #{row['id']} {row['title'][:40]} -> {level} (S={row['stability']:.1f})")
+        if len(velocity_rows) > 10:
+            click.echo(f"    ... and {len(velocity_rows) - 10} more")
+    else:
+        click.echo("  (no reviews in last 30 days)")
+    click.echo("")
+
+    # --- Section: ZPD Identification (Vygotsky) ---
+    click.echo("ZPD Identification (50-80% heeded rate):")
+    zpd_rows = conn.execute(
+        "SELECT l.id, l.title, l.cluster, "
+        "  SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded_count, "
+        "  COUNT(*) AS total_count "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON se.lesson_id = l.id "
+        "WHERE se.outcome != 'unknown' "
+        "GROUP BY l.id "
+        "HAVING total_count >= 2 "
+        "ORDER BY total_count DESC"
+    ).fetchall()
+    zpd_found = []
+    for row in zpd_rows:
+        rate = row["heeded_count"] / row["total_count"]
+        if 0.50 <= rate <= 0.80:
+            zpd_found.append(row)
+    if zpd_found:
+        for row in zpd_found[:10]:
+            h = row["heeded_count"]
+            t = row["total_count"]
+            pct = round(h / t * 100)
+            cluster = row["cluster"] or ""
+            label = f" [{cluster}]" if cluster else ""
+            click.echo(f"  #{row['id']} {row['title'][:40]}{label}: {pct}% ({h}/{t})")
+        if len(zpd_found) > 10:
+            click.echo(f"  ... and {len(zpd_found) - 10} more")
+    else:
+        click.echo("  (no lessons in ZPD range, or insufficient surfacing data)")
     click.echo("")
 
 
@@ -1593,7 +1937,7 @@ def mine_github(ctx, topic, limit):
 @main.group("calibrate")
 @click.pass_context
 def calibrate(ctx):
-    """Calibrate the lesson extraction pipeline against known datasets."""
+    """Calibrate the lesson extraction pipeline and view strength profiles."""
 
 
 @calibrate.command("bugsInPy")
@@ -1634,6 +1978,83 @@ def calibrate_bugsInPy(ctx, sample, cache_dir, skip_extraction):
     click.echo(format_report(report))
 
 
+@calibrate.command("profile")
+@click.option(
+    "--min-events",
+    default=5,
+    type=int,
+    help="Minimum surfacing events per category to include (default: 5).",
+)
+@click.pass_context
+def calibrate_profile(ctx, min_events):
+    """Show calibration feedback: strength profile based on heeded/dismissed ratios per category.
+
+    Groups surfacing events by lesson category to identify strengths (highest
+    heeded rate) and growth areas (lowest heeded rate). Categories with fewer
+    than --min-events events are excluded and listed separately.
+    """
+    conn = ctx.obj["conn"]
+
+    # Query per-category heeded/total counts (exclude unknown outcomes)
+    rows = conn.execute(
+        "SELECT COALESCE(NULLIF(l.category, ''), l.cluster, 'uncategorized') AS cat, "
+        "  SUM(CASE WHEN se.outcome = 'heeded' THEN 1 ELSE 0 END) AS heeded, "
+        "  COUNT(*) AS total "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON se.lesson_id = l.id "
+        "WHERE se.outcome IN ('heeded', 'dismissed') "
+        "GROUP BY cat "
+        "ORDER BY total DESC"
+    ).fetchall()
+
+    if not rows:
+        click.echo("No surfacing outcome data yet. More data needed to generate a strength profile.")
+        click.echo("Record surfacing events with: lessons-db learn record")
+        return
+
+    qualified = []
+    insufficient = []
+
+    for row in rows:
+        cat = row["cat"]
+        total = row["total"]
+        heeded = row["heeded"]
+        if total >= min_events:
+            rate = heeded / total
+            qualified.append({"category": cat, "heeded": heeded, "total": total, "rate": rate})
+        else:
+            insufficient.append(cat)
+
+    if not qualified:
+        click.echo(f"No categories have {min_events}+ events yet. More data needed to generate a strength profile.")
+        if insufficient:
+            click.echo(f"\nCategories with insufficient data (<{min_events} events): {', '.join(sorted(insufficient))}")
+        return
+
+    # Sort by heeded rate descending for strengths, ascending for growth areas
+    by_rate_desc = sorted(qualified, key=lambda x: x["rate"], reverse=True)
+    by_rate_asc = sorted(qualified, key=lambda x: x["rate"])
+
+    strengths = by_rate_desc[:3]
+    growth_areas = by_rate_asc[:3]
+
+    click.echo("=== Strength Profile ===")
+    click.echo("")
+    click.echo("Strengths:")
+    for i, entry in enumerate(strengths, 1):
+        pct = round(entry["rate"] * 100)
+        click.echo(f"  {i}. {entry['category']}: {pct}% heeded ({entry['heeded']}/{entry['total']})")
+
+    click.echo("")
+    click.echo("Growth Areas:")
+    for i, entry in enumerate(growth_areas, 1):
+        pct = round(entry["rate"] * 100)
+        click.echo(f"  {i}. {entry['category']}: {pct}% heeded ({entry['heeded']}/{entry['total']})")
+
+    if insufficient:
+        click.echo(f"\nCategories with insufficient data (<{min_events} events): {', '.join(sorted(insufficient))}")
+
+
 @main.command("gaps")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
 @click.pass_context
@@ -1670,3 +2091,840 @@ def mining_history(ctx, limit):
             f"commits={row['commits_analyzed']} approved={row['auto_approved']} "
             f"errors={row['error_count']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# fix — actionable fix queue for Claude and GitHub Issues
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def fix():
+    """Manage the fix queue — actionable items for Claude or GitHub Issues."""
+    pass
+
+
+@fix.command("next")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON for scripting.")
+@click.pass_context
+def fix_next(ctx, json_output):
+    """Print the highest-priority pending fix in a Claude-actionable format."""
+    import json as _json
+
+    from lessons_db.db import get_next_fix
+
+    conn = ctx.obj["conn"]
+    fix_item = get_next_fix(conn)
+    if fix_item is None:
+        click.echo("Fix queue is empty — no pending fixes.")
+        return
+
+    if json_output:
+        click.echo(_json.dumps(fix_item, indent=2, default=str))
+        return
+
+    click.echo(f"\nFix #{fix_item['id']} — Lesson #{fix_item['lesson_id']}: {fix_item['title']}")
+    click.echo(f"Enforcement: {fix_item['enforcement']}  |  Severity: {fix_item.get('severity', '?')}")
+    click.echo(
+        f"\nFile: {fix_item['file_path']}" + (f":{fix_item['line_number']}" if fix_item.get("line_number") else "")
+    )
+    if fix_item.get("snippet"):
+        click.echo(f"\nDetected pattern:\n  {fix_item['snippet']}")
+    if fix_item.get("suggested_fix"):
+        click.echo(f"\nSuggested fix:\n  {fix_item['suggested_fix']}")
+    click.echo("\nAfter fixing, run:")
+    click.echo(f"  lessons-db fix done {fix_item['id']}")
+    click.echo(f"  lessons-db fix skip {fix_item['id']}   (to skip)")
+
+
+@fix.command("list")
+@click.option(
+    "--status",
+    default="pending",
+    type=click.Choice(["pending", "applied", "skipped", "issue_created", "wont_fix"]),
+    help="Filter by status.",
+)
+@click.option("--limit", default=20, help="Max rows to show.")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def fix_list(ctx, status, limit, json_output):
+    """List fix queue entries."""
+    import json as _json
+
+    from lessons_db.db import get_fix_queue
+
+    conn = ctx.obj["conn"]
+    items = get_fix_queue(conn, status=status, limit=limit)
+    if not items:
+        click.echo(f"No {status} fixes in queue.")
+        return
+
+    if json_output:
+        click.echo(_json.dumps(items, indent=2, default=str))
+        return
+
+    click.echo(f"\n{'ID':>4}  {'Sev':>3}  {'Lesson':>6}  {'File':40s}  {'Status':14s}")
+    click.echo("-" * 80)
+    for item in items:
+        path = item["file_path"]
+        if len(path) > 38:
+            path = "…" + path[-37:]
+        click.echo(
+            f"{item['id']:>4}  {item.get('severity', '?'):>3}  "
+            f"#{item['lesson_id']:>5}  {path:40s}  {item['status']:14s}"
+        )
+
+
+@fix.command("done")
+@click.argument("fix_id", type=int)
+@click.pass_context
+def fix_done(ctx, fix_id):
+    """Mark a fix as applied."""
+    from lessons_db.db import update_fix_status
+
+    conn = ctx.obj["conn"]
+    row = conn.execute("SELECT id FROM fix_queue WHERE id=?", (fix_id,)).fetchone()
+    if not row:
+        click.echo(f"Fix #{fix_id} not found.", err=True)
+        ctx.exit(1)
+        return
+    update_fix_status(conn, fix_id, "applied")
+    click.echo(f"Fix #{fix_id} marked as applied.")
+
+
+@fix.command("skip")
+@click.argument("fix_id", type=int)
+@click.pass_context
+def fix_skip(ctx, fix_id):
+    """Mark a fix as skipped (won't fix)."""
+    from lessons_db.db import update_fix_status
+
+    conn = ctx.obj["conn"]
+    row = conn.execute("SELECT id FROM fix_queue WHERE id=?", (fix_id,)).fetchone()
+    if not row:
+        click.echo(f"Fix #{fix_id} not found.", err=True)
+        ctx.exit(1)
+        return
+    update_fix_status(conn, fix_id, "skipped")
+    click.echo(f"Fix #{fix_id} marked as skipped.")
+
+
+@fix.command("populate")
+@click.option(
+    "--min-severity",
+    default=3,
+    type=int,
+    help="Minimum lesson severity to include (default: 3).",
+)
+@click.pass_context
+def fix_populate(ctx, min_severity):
+    """Populate fix queue from open scan findings."""
+    from lessons_db.prevention import populate_fix_queue
+
+    conn = ctx.obj["conn"]
+    result = populate_fix_queue(conn, min_severity=min_severity)
+    click.echo(
+        f"Populated: added={result['added']}  "
+        f"skipped_duplicate={result['skipped_duplicate']}  "
+        f"skipped_severity={result['skipped_severity']}  "
+        f"skipped_no_lesson={result['skipped_no_lesson']}"
+    )
+
+
+@fix.command("issues")
+@click.option("--repo", default=None, help="GitHub repo (owner/name). Defaults to current origin.")
+@click.option(
+    "--min-severity",
+    default=4,
+    type=int,
+    help="Minimum severity to create an issue for (default: 4).",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would be created without calling gh.")
+@click.pass_context
+def fix_issues(ctx, repo, min_severity, dry_run):
+    """Create GitHub issues for pending high-severity fixes."""
+    from lessons_db.prevention import create_github_issues
+
+    conn = ctx.obj["conn"]
+    result = create_github_issues(conn, repo=repo, min_severity=min_severity, dry_run=dry_run)
+    prefix = "[DRY RUN] " if dry_run else ""
+    click.echo(
+        f"{prefix}Issues: created={result['created']}  "
+        f"skipped_existing={result['skipped_existing']}  "
+        f"skipped_severity={result['skipped_severity']}  "
+        f"errors={result['errors']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# prevent — enforcement cycle, rule generation, content checks
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def prevent():
+    """Run the prevention pipeline — enforce, generate rules, check content."""
+    pass
+
+
+@prevent.command("check-content")
+@click.option("--content", "-c", default=None, help="Content string to check.")
+@click.option("--file", "-f", "file_path", default=None, type=click.Path(), help="Read content from file.")
+@click.option(
+    "--context-path",
+    default=None,
+    type=click.Path(),
+    help="File path for metadata context (used when content comes from --file).",
+)
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def prevent_check_content(ctx, content, file_path, context_path, json_output):
+    """Check content against detection patterns and run enforcement cycle."""
+    import json as _json
+
+    from lessons_db.prevention import check_content
+
+    conn = ctx.obj["conn"]
+    if file_path and content is None:
+        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    if not content:
+        click.echo("Provide --content TEXT or --file PATH.", err=True)
+        ctx.exit(1)
+        return
+
+    # context_path overrides file_path for recurrence metadata (e.g. when content
+    # is a temp file but the original path is what matters for tracking).
+    effective_path = context_path or file_path
+    result = check_content(conn, content, file_path=effective_path)
+
+    if json_output:
+        click.echo(_json.dumps(result, indent=2, default=str))
+    elif result["block"]:
+        click.echo(result["message"], err=True)
+        ctx.exit(2)
+        return
+    elif result["violations"]:
+        for v in result["violations"]:
+            click.echo(f"  ⚠  Lesson #{v['lesson_id']} [{v['enforcement']}]: {v['one_liner']}")
+    else:
+        click.echo("OK — no pattern matches.")
+
+
+@prevent.command("resolve-outcomes")
+@click.option("--max-age-hours", default=24, type=int, help="Lookback window in hours (default: 24).")
+@click.pass_context
+def prevent_resolve_outcomes(ctx, max_age_hours):
+    """Batch-resolve stale 'unknown' surfacing events via behavioral inference."""
+    from lessons_db.prevention import resolve_outcomes
+
+    conn = ctx.obj["conn"]
+    result = resolve_outcomes(conn, max_age_hours=max_age_hours)
+    click.echo(f"Resolved: {result['resolved']}  heeded={result['heeded']}  dismissed={result['dismissed']}")
+
+
+@prevent.command("bulk-generate")
+@click.option(
+    "--enforcement",
+    multiple=True,
+    default=None,
+    help="Only generate for lessons at this enforcement level (repeatable).",
+)
+@click.option(
+    "--rules-dir",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: ~/.local/share/lessons-db/rules/)",
+)
+@click.option("--no-validate", is_flag=True, help="Skip semgrep --validate.")
+@click.pass_context
+def prevent_bulk_generate(ctx, enforcement, rules_dir, no_validate):
+    """Generate Semgrep rules for all lessons that have detection patterns."""
+    from lessons_db.prevention import bulk_generate_rules
+
+    conn = ctx.obj["conn"]
+    out_dir = Path(rules_dir) if rules_dir else None
+    result = bulk_generate_rules(
+        conn,
+        rules_dir=out_dir,
+        only_enforcement=tuple(enforcement) if enforcement else None,
+        validate=not no_validate,
+    )
+    click.echo(
+        f"Generated: {result['generated']}  "
+        f"skipped_no_patterns={result['skipped_no_patterns']}  "
+        f"skipped_validation={result['skipped_validation']}"
+    )
+    for p in result["paths"]:
+        click.echo(f"  {p}")
+
+
+@prevent.command("report")
+@click.option("--window-days", default=30, type=int, help="Lookback window in days (default: 30).")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def prevent_report(ctx, window_days, json_output):
+    """Comprehensive prevention effectiveness report."""
+    import json as _json
+
+    from lessons_db.prevention import prevention_report
+
+    conn = ctx.obj["conn"]
+    report = prevention_report(conn, window_days=window_days)
+
+    if json_output:
+        click.echo(_json.dumps(report, indent=2, default=str))
+        return
+
+    click.echo(f"\n── Prevention Report (last {window_days} days) ──────────────────────")
+    click.echo(f"  Total lessons:        {report['total_lessons']}")
+    click.echo(f"  Rules generated:      {report['rules_generated']}")
+    click.echo(f"  Without patterns:     {report['lessons_without_patterns']}")
+    click.echo("\n  Enforcement coverage:")
+    for level, count in sorted(report["enforcement_coverage"].items()):
+        click.echo(f"    {level:25s} {count}")
+    if report["velocity_alerts"]:
+        click.echo(f"\n  Velocity alerts ({len(report['velocity_alerts'])} lessons hitting 2+/7d):")
+        for a in report["velocity_alerts"][:5]:
+            click.echo(f"    #{a['lesson_id']:4d}  {a['hit_count']:2d}x  {a['title'][:50]}")
+    if report["top_recurring"]:
+        click.echo(f"\n  Top recurring lessons (last {window_days}d):")
+        for r in report["top_recurring"][:5]:
+            click.echo(f"    #{r['lesson_id']:4d}  {r['hit_count']:2d}x  {r['title'][:50]}")
+    if report["hookify_candidates"]:
+        click.echo("\n  Hookify candidates (promote to blocking):")
+        for h in report["hookify_candidates"][:5]:
+            click.echo(f"    #{h['id']:4d}  sev={h['severity']}  {h['title'][:45]}")
+
+
+# ---------------------------------------------------------------------------
+# meta — batch metadata enrichment commands
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def meta():
+    """Batch metadata enrichment commands (LLM-powered)."""
+    pass
+
+
+@meta.command("extract-principles")
+@click.option("--batch-size", default=10, type=int, help="Number of lessons to process per batch (default: 10).")
+@click.option("--dry-run", is_flag=True, help="Preview extracted principles without updating the database.")
+@click.option(
+    "--model",
+    default=None,
+    help="Ollama model to use (default: from config ANALYSIS_MODEL).",
+)
+@click.pass_context
+def meta_extract_principles(ctx, batch_size, dry_run, model):
+    """Extract domain-independent principles from lessons via LLM.
+
+    Reads lessons that have no principle set, constructs a prompt from
+    one_liner + description, and calls Ollama (via ollama-queue) to generate
+    a concise, domain-independent principle statement.
+
+    Example: "Subscriber lifecycle management" -> "Resources acquired in
+    callbacks must be explicitly released"
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_QUEUE_URL
+
+    conn = ctx.obj["conn"]
+    effective_model = model or ANALYSIS_MODEL
+
+    # Find lessons without a principle
+    rows = conn.execute(
+        "SELECT id, title, one_liner, description FROM lessons " "WHERE principle IS NULL " "ORDER BY id " "LIMIT ?",
+        (batch_size,),
+    ).fetchall()
+
+    if not rows:
+        click.echo("No lessons without principles found.")
+        return
+
+    click.echo(f"Processing {len(rows)} lessons (model: {effective_model})...")
+
+    updated = 0
+    errors = 0
+    for row in rows:
+        lesson_id = row["id"]
+        one_liner = row["one_liner"] or ""
+        description = row["description"] or ""
+        title = row["title"] or ""
+
+        # Build context from available fields
+        context_parts = []
+        if title:
+            context_parts.append(f"Title: {title}")
+        if one_liner:
+            context_parts.append(f"One-liner: {one_liner}")
+        if description:
+            context_parts.append(f"Description: {description}")
+
+        if not context_parts:
+            click.echo(f"  #{lesson_id}: SKIP (no title/one_liner/description)")
+            continue
+
+        lesson_context = "\n".join(context_parts)
+
+        prompt = (
+            "Extract a single domain-independent principle from this coding lesson. "
+            "The principle should be a concise, universal statement that applies beyond "
+            "the specific technology or context described. Return ONLY the principle "
+            "statement, nothing else. No quotes, no explanation, no preamble.\n\n"
+            f"{lesson_context}"
+        )
+
+        payload = _json.dumps(
+            {
+                "model": effective_model,
+                "prompt": prompt,
+                "stream": False,
+            }
+        ).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(  # noqa: S310 — localhost Ollama queue
+                f"{OLLAMA_QUEUE_URL}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                result = _json.loads(resp.read().decode("utf-8"))
+            principle = result.get("response", "").strip()
+            if not principle:
+                click.echo(f"  #{lesson_id}: SKIP (empty LLM response)")
+                errors += 1
+                continue
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, _json.JSONDecodeError) as exc:
+            click.echo(f"  #{lesson_id}: ERROR ({exc})", err=True)
+            errors += 1
+            continue
+
+        if dry_run:
+            click.echo(f"  #{lesson_id}: {principle}")
+        else:
+            conn.execute(
+                "UPDATE lessons SET principle = ? WHERE id = ?",
+                (principle, lesson_id),
+            )
+            conn.commit()
+            click.echo(f"  #{lesson_id}: {principle}")
+            updated += 1
+
+    click.echo(
+        f"\nDone. {'Would update' if dry_run else 'Updated'}: {updated if not dry_run else len(rows) - errors}  "
+        f"Errors: {errors}"
+    )
+
+
+@meta.command("generate-meta-lessons")
+@click.option(
+    "--min-cluster-size",
+    default=3,
+    type=int,
+    help="Minimum lessons sharing a cluster_seed to trigger meta-lesson generation (default: 3).",
+)
+@click.option("--dry-run", is_flag=True, help="Preview clusters and prompts without writing to the database.")
+@click.option(
+    "--model",
+    default=None,
+    help="Ollama model to use (default: from config ANALYSIS_MODEL).",
+)
+@click.pass_context
+def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
+    """Generate double-loop meta-lessons from clusters of related lessons.
+
+    Finds clusters of lessons sharing the same cluster_seed (minimum --min-cluster-size),
+    then uses an LLM to generate a meta-lesson that questions the governing variables
+    behind recurrent patterns.
+
+    Example: 5 async lessons -> "Why do async lifecycle errors recur?
+    Governing variable: no systematic resource-cleanup protocol"
+    """
+    import json as _json
+    import re as _re
+    import urllib.error
+    import urllib.request
+
+    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_ANALYSIS_URL
+    from lessons_db.db import insert_lesson
+
+    conn = ctx.obj["conn"]
+    effective_model = model or ANALYSIS_MODEL
+
+    # Step 1: Find clusters of lessons sharing the same cluster_seed
+    clusters = find_meta_lesson_clusters(conn, min_cluster_size)
+
+    if not clusters:
+        click.echo(f"No clusters with >= {min_cluster_size} lessons found.")
+        return
+
+    click.echo(f"Found {len(clusters)} cluster(s) (model: {effective_model})...")
+
+    generated = 0
+    skipped = 0
+    errors = 0
+
+    for seed, lessons in clusters.items():
+        # Check if a double-loop meta-lesson already exists for this cluster_seed
+        existing = conn.execute(
+            "SELECT id FROM lessons WHERE cluster_seed = ? AND loop_level = 'double' LIMIT 1",
+            (seed,),
+        ).fetchone()
+        if existing:
+            click.echo(f"  cluster '{seed}' ({len(lessons)} lessons): SKIP (meta-lesson #{existing['id']} exists)")
+            skipped += 1
+            continue
+
+        # Build context from all lessons in the cluster
+        lesson_summaries = []
+        for lesson in lessons:
+            parts = []
+            if lesson["title"]:
+                parts.append(lesson["title"])
+            if lesson["one_liner"]:
+                parts.append(lesson["one_liner"])
+            lesson_summaries.append(f"  - #{lesson['id']}: {' | '.join(parts)}")
+
+        cluster_context = "\n".join(lesson_summaries)
+
+        prompt = (
+            "You are analyzing a cluster of recurring coding lessons that share a common theme. "
+            "Your task is to generate a DOUBLE-LOOP meta-lesson that questions the governing "
+            "variables (assumptions, mental models, policies) behind WHY this pattern recurs.\n\n"
+            "Single-loop learning asks: 'How do we fix this error?'\n"
+            "Double-loop learning asks: 'What assumption or process gap causes this error to keep happening?'\n\n"
+            f"Cluster seed: {seed}\n"
+            f"Lessons in this cluster:\n{cluster_context}\n\n"
+            "Return a JSON object with exactly these fields:\n"
+            '{"title": "short title for the meta-lesson", '
+            '"one_liner": "single sentence identifying the governing variable", '
+            '"description": "2-3 sentences explaining why this pattern recurs and what systemic change would prevent it"}\n\n'
+            "Return ONLY the JSON object. No preamble, no explanation."
+        )
+
+        if dry_run:
+            click.echo(f"\n  cluster '{seed}' ({len(lessons)} lessons):")
+            for s in lesson_summaries:
+                click.echo(f"  {s}")
+            click.echo(f"  [would generate meta-lesson via {effective_model}]")
+            generated += 1
+            continue
+
+        payload = _json.dumps(
+            {
+                "model": effective_model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+            }
+        ).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(  # noqa: S310 — localhost Ollama
+                f"{OLLAMA_ANALYSIS_URL}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                result = _json.loads(resp.read().decode("utf-8"))
+
+            raw_response = result.get("response", "").strip()
+            # Strip <think>...</think> blocks (deepseek-r1 style)
+            raw_response = _re.sub(r"<think>.*?</think>", "", raw_response, flags=_re.DOTALL).strip()
+
+            meta_data = _json.loads(raw_response)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+            click.echo(f"  cluster '{seed}': ERROR (network: {exc})", err=True)
+            errors += 1
+            continue
+        except (_json.JSONDecodeError, KeyError) as exc:
+            click.echo(f"  cluster '{seed}': ERROR (parse: {exc})", err=True)
+            errors += 1
+            continue
+
+        title = meta_data.get("title", f"Meta: {seed}")
+        one_liner = meta_data.get("one_liner", "")
+        description = meta_data.get("description", "")
+
+        if not one_liner:
+            click.echo(f"  cluster '{seed}': SKIP (empty one_liner from LLM)")
+            errors += 1
+            continue
+
+        # Use the first lesson in the cluster as the parent
+        parent_id = lessons[0]["id"]
+        lesson_id = insert_lesson(
+            conn,
+            {
+                "title": title,
+                "one_liner": one_liner,
+                "description": description,
+                "cluster_seed": seed,
+                "loop_level": "double",
+                "parent_lesson_id": parent_id,
+                "source": "auto_meta",
+                "entry_type": "lesson",
+                "tier": "insight",
+            },
+        )
+
+        click.echo(f"  cluster '{seed}' ({len(lessons)} lessons) -> meta-lesson #{lesson_id}: {one_liner[:60]}")
+        generated += 1
+
+    click.echo(
+        f"\nDone. {'Would generate' if dry_run else 'Generated'}: {generated}  " f"Skipped: {skipped}  Errors: {errors}"
+    )
+
+
+def find_meta_lesson_clusters(
+    conn,
+    min_cluster_size: int = 3,
+) -> dict[str, list[dict]]:
+    """Find clusters of lessons sharing the same cluster_seed with at least min_cluster_size members.
+
+    Returns a dict mapping cluster_seed -> list of lesson dicts (id, title, one_liner).
+    Only includes single-loop lessons (excludes existing meta-lessons).
+    """
+    # Find cluster_seeds with enough lessons
+    rows = conn.execute(
+        "SELECT cluster_seed, COUNT(*) as cnt "
+        "FROM lessons "
+        "WHERE cluster_seed IS NOT NULL AND cluster_seed != '' "
+        "  AND (loop_level IS NULL OR loop_level = 'single') "
+        "GROUP BY cluster_seed "
+        "HAVING COUNT(*) >= ? "
+        "ORDER BY cnt DESC",
+        (min_cluster_size,),
+    ).fetchall()
+
+    clusters: dict[str, list[dict]] = {}
+    for row in rows:
+        seed = row["cluster_seed"]
+        lessons = conn.execute(
+            "SELECT id, title, one_liner FROM lessons "
+            "WHERE cluster_seed = ? AND (loop_level IS NULL OR loop_level = 'single') "
+            "ORDER BY id",
+            (seed,),
+        ).fetchall()
+        clusters[seed] = [dict(l) for l in lessons]
+
+    return clusters
+
+
+# ---------------------------------------------------------------------------
+# FSRS spaced-repetition commands
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+@click.pass_context
+def fsrs(ctx):
+    """FSRS spaced-repetition scheduling commands."""
+
+
+@fsrs.command("init")
+@click.pass_context
+def fsrs_init(ctx):
+    """Backfill all existing lessons with FSRS-6 default parameters.
+
+    Sets stability=1.0, difficulty=5.0, retrievability=1.0 for any lesson
+    that has not yet been initialized. Safe to run multiple times (idempotent).
+    """
+    from lessons_db.fsrs import backfill_fsrs_defaults
+
+    conn = ctx.obj["conn"]
+    count = backfill_fsrs_defaults(conn)
+    total = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+    click.echo(f"FSRS init complete: {count} lessons backfilled ({total} total).")
+
+
+@fsrs.command("due")
+@click.option("--threshold", type=float, default=0.9, help="Retrievability threshold (default 0.9).")
+@click.pass_context
+def fsrs_due(ctx, threshold):
+    """List lessons whose retrievability is below threshold (most forgotten first).
+
+    Shows lesson_id, title, stability, retrievability, and days since last review.
+    Results are sorted by retrievability ascending — the lessons you've forgotten
+    most appear first.
+    """
+    from lessons_db.fsrs import ensure_fsrs_columns, get_due_lessons, get_fading_level, interleave_due_lessons
+
+    conn = ctx.obj["conn"]
+    ensure_fsrs_columns(conn)
+    due = get_due_lessons(conn, threshold=threshold)
+    if not due:
+        click.echo("No lessons due for review.")
+        return
+
+    interleaved = interleave_due_lessons(due)
+    click.echo(f"Due lessons (R < {threshold}): {len(interleaved)}\n")
+    for lesson in interleaved:
+        fading = get_fading_level(lesson["stability"])
+        click.echo(
+            f"  [#{lesson['id']}] {lesson.get('title', '(untitled)')}"
+            f"  S={lesson['stability']:.2f}  R={lesson['retrievability']:.3f}"
+            f"  days={lesson['days_since_review']}  level={fading}"
+        )
+
+
+@fsrs.command("stats")
+@click.pass_context
+def fsrs_stats(ctx):
+    """Show FSRS stability distribution and review forecast.
+
+    Stability distribution: count of lessons at each fading level
+    (full/brief/silent/enforced).
+
+    Review forecast: how many lessons will be due in 1, 3, 7, 14, and 30 days
+    assuming no new reviews occur.
+    """
+    from lessons_db.fsrs import compute_retrievability, ensure_fsrs_columns, get_fading_level
+
+    conn = ctx.obj["conn"]
+    ensure_fsrs_columns(conn)
+
+    # --- Stability distribution ---
+    rows = conn.execute("SELECT stability FROM lessons WHERE stability IS NOT NULL").fetchall()
+
+    level_counts: dict[str, int] = {"full": 0, "brief": 0, "silent": 0, "enforced": 0}
+    for row in rows:
+        level = get_fading_level(row["stability"])
+        level_counts[level] += 1
+
+    click.echo("Stability distribution:")
+    for level in ("full", "brief", "silent", "enforced"):
+        click.echo(f"  {level:10s}: {level_counts[level]}")
+
+    # --- Review forecast ---
+    reviewed = conn.execute(
+        """
+        SELECT id, stability, last_review_date
+        FROM lessons
+        WHERE last_review_date IS NOT NULL
+          AND stability IS NOT NULL
+          AND stability > 0
+        """
+    ).fetchall()
+
+    from datetime import date
+
+    today = date.today()
+    forecast_days = [1, 3, 7, 14, 30]
+    click.echo("\nReview forecast (lessons due at R < 0.9):")
+
+    for future_days in forecast_days:
+        count = 0
+        for row in reviewed:
+            review_date = date.fromisoformat(row["last_review_date"])
+            days_elapsed = (today - review_date).days + future_days
+            r = compute_retrievability(row["stability"], float(days_elapsed))
+            if r < 0.9:
+                count += 1
+        click.echo(f"  in {future_days:2d} day(s): {count}")
+
+
+# ---------------------------------------------------------------------------
+# Transfer — cross-project analogical matching
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+@click.pass_context
+def transfer(ctx):
+    """Cross-project analogical matching — find lessons that transfer across scopes."""
+
+
+@transfer.command("find")
+@click.argument("context")
+@click.option("--limit", "-n", default=5, type=int, help="Max results to return.")
+@click.option("--min-score", default=0.3, type=float, help="Minimum similarity score threshold.")
+@click.pass_context
+def transfer_find(ctx, context, limit, min_score):
+    """Search for transferable lessons by principle similarity across ALL scopes.
+
+    CONTEXT is the situation or problem you're facing. Results are drawn from
+    every scope in the database, ignoring the current project's scope filter,
+    so you can discover lessons learned elsewhere that apply here.
+
+    Searches the 'principle' field first. Falls back to one_liner + description
+    when no principle is populated.
+    """
+    conn = ctx.obj["conn"]
+
+    # Try to init LanceDB for semantic search (graceful failure)
+    lance_db = None
+    try:
+        import lancedb
+
+        if LANCE_DIR.exists():
+            lance_db = lancedb.connect(str(LANCE_DIR))
+    except Exception:
+        logger.debug("LanceDB unavailable, skipping semantic search for transfer find")
+
+    # Use search_combined without scope filter (cross-project by design)
+    results = search_combined(
+        conn,
+        lance_db,
+        query=context,
+    )
+
+    if not results:
+        click.echo("No transferable lessons found.")
+        return
+
+    # Enrich results with principle, scope, and description from DB
+    enriched = []
+    for r in results:
+        rid = r.get("id")
+        if rid is None:
+            continue
+        row = conn.execute(
+            "SELECT id, principle, one_liner, description, scope FROM lessons WHERE id = ?",
+            (rid,),
+        ).fetchone()
+        if row is None:
+            continue
+
+        score = r.get("composite_score") or r.get("score") or 0.0
+        if score < min_score:
+            continue
+
+        enriched.append(
+            {
+                "id": row["id"],
+                "principle": row["principle"],
+                "one_liner": row["one_liner"],
+                "description": row["description"],
+                "scope": row["scope"] or "unscoped",
+                "score": score,
+            }
+        )
+
+    # Sort by score descending, take top N
+    enriched.sort(key=lambda x: x["score"], reverse=True)
+    enriched = enriched[:limit]
+
+    if not enriched:
+        click.echo("No transferable lessons above min-score threshold.")
+        return
+
+    for item in enriched:
+        # Prefer principle if populated, otherwise fall back to one_liner
+        display_text = item["principle"] if item["principle"] else item["one_liner"]
+        scope = item["scope"]
+        click.echo(f"From [{scope}]: {display_text} — {item['one_liner']}")
+        if item["principle"] and item["description"]:
+            # Show a truncated description for extra context
+            desc_preview = (item["description"] or "")[:120]
+            if len(item["description"] or "") > 120:
+                desc_preview += "..."
+            click.echo(f"  ({desc_preview})")
+        click.echo(f"  [#{item['id']}] score={item['score']:.3f}")
