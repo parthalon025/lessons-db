@@ -1,8 +1,9 @@
 """Learning pipeline: surfacing event recording and composite relevance scoring."""
 
 import logging
+import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -83,6 +84,109 @@ def surfacing_stats(conn: sqlite3.Connection) -> dict[str, Any]:
         "heed_rate": round(heeded / total, 2) if total > 0 else None,
         "avg_per_session": round(avg_row or 0.0, 1),
     }
+
+
+def _match_patterns(patterns: list[tuple[str, str]], diff_text: str) -> tuple[bool, str]:
+    """Check if any (pattern, source) pair matches in diff_text.
+
+    Returns (matched, source_label). Falls back to substring if regex invalid.
+    """
+    for pattern, source in patterns:
+        try:
+            if re.search(pattern, diff_text, re.MULTILINE):
+                return True, source
+        except re.error:
+            if pattern in diff_text:
+                return True, source
+    return False, "no_match"
+
+
+def _collect_patterns(
+    row: sqlite3.Row,
+    dp_by_lesson: dict[int, list[str]],
+) -> list[tuple[str, str]]:
+    """Gather detection patterns for a lesson from both lesson column and table."""
+    patterns: list[tuple[str, str]] = []
+    lesson_dp = row["detection_pattern"]
+    if lesson_dp and lesson_dp.strip():
+        patterns.append((lesson_dp.strip(), "lesson.detection_pattern"))
+    for regex_str in dp_by_lesson.get(row["lesson_id"], []):
+        patterns.append((regex_str, "detection_patterns_table"))
+    return patterns
+
+
+def evaluate_commit(
+    conn: sqlite3.Connection,
+    diff_text: str,
+    hours: int = 24,
+    dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    """Evaluate recent surfacing events against a commit diff.
+
+    For each unknown surfacing event within the lookback window, checks if the
+    lesson's anti-pattern appears in the diff text.
+
+    - If anti-pattern IS present in the diff: outcome = 'dismissed'
+    - If anti-pattern is NOT present: outcome = 'heeded'
+    - Lessons with no detection pattern are skipped.
+
+    Returns a list of dicts: [{event_id, lesson_id, title, outcome, pattern_source}, ...]
+    """
+    cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+
+    rows = conn.execute(
+        "SELECT se.id AS event_id, se.lesson_id, l.title, l.detection_pattern "
+        "FROM surfacing_events se "
+        "JOIN lessons l ON l.id = se.lesson_id "
+        "WHERE se.outcome = 'unknown' AND se.timestamp >= ? "
+        "ORDER BY se.timestamp DESC",
+        [cutoff],
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    dp_rows = conn.execute(
+        "SELECT lesson_id, regex FROM detection_patterns " "WHERE pattern_type IN ('syntactic', 'regex')"
+    ).fetchall()
+    dp_by_lesson: dict[int, list[str]] = {}
+    for dp in dp_rows:
+        dp_by_lesson.setdefault(dp["lesson_id"], []).append(dp["regex"])
+
+    results: list[dict[str, Any]] = []
+    seen_lessons: dict[int, dict[str, str]] = {}
+
+    for row in rows:
+        event_id = row["event_id"]
+        lesson_id = row["lesson_id"]
+
+        if lesson_id in seen_lessons:
+            prev = seen_lessons[lesson_id]
+            if not dry_run:
+                record_outcome(conn, event_id, prev["outcome"])
+            results.append({**prev, "event_id": event_id, "title": row["title"]})
+            continue
+
+        patterns = _collect_patterns(row, dp_by_lesson)
+        if not patterns:
+            continue
+
+        matched, pattern_source = _match_patterns(patterns, diff_text)
+        outcome = "dismissed" if matched else "heeded"
+        if not dry_run:
+            record_outcome(conn, event_id, outcome)
+
+        entry = {
+            "event_id": event_id,
+            "lesson_id": lesson_id,
+            "title": row["title"],
+            "outcome": outcome,
+            "pattern_source": pattern_source,
+        }
+        seen_lessons[lesson_id] = {"outcome": outcome, "pattern_source": pattern_source, "lesson_id": lesson_id}
+        results.append(entry)
+
+    return results
 
 
 def _outcome_rate(conn: sqlite3.Connection, lesson_id: int, context: str) -> float:

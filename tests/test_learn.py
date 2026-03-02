@@ -244,6 +244,309 @@ def test_record_outcome_rejects_invalid(tmp_path):
         record_outcome(conn, eid, "wrong")
 
 
+class TestEvaluateCommit:
+    """Tests for evaluate_commit — post-commit outcome evaluation."""
+
+    def test_marks_heeded_when_antipattern_absent(self, db_path):
+        """If the diff does NOT contain the anti-pattern, outcome should be 'heeded'."""
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "detection_pattern": "except:\n    pass",
+                "created_date": "2026-02-26",
+            },
+        )
+        eid = record_surfacing(conn, lid, "edit", "src/hub.py")
+
+        # Diff that does NOT contain the anti-pattern
+        diff_text = """\
+diff --git a/src/hub.py b/src/hub.py
+--- a/src/hub.py
++++ b/src/hub.py
+@@ -10,3 +10,5 @@ def process():
++    try:
++        do_stuff()
++    except Exception as e:
++        logger.error("Failed: %s", e)
+"""
+        results = evaluate_commit(conn, diff_text, hours=24, dry_run=False)
+        assert len(results) == 1
+        assert results[0]["outcome"] == "heeded"
+        assert results[0]["event_id"] == eid
+
+        # Verify DB was updated
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id=?", [eid]).fetchone()
+        assert row["outcome"] == "heeded"
+
+    def test_marks_dismissed_when_antipattern_present(self, db_path):
+        """If the diff contains the anti-pattern, outcome should be 'dismissed'."""
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "detection_pattern": r"except\s*:",
+                "created_date": "2026-02-26",
+            },
+        )
+        eid = record_surfacing(conn, lid, "edit", "src/hub.py")
+
+        # Diff that DOES contain the anti-pattern
+        diff_text = """\
+diff --git a/src/hub.py b/src/hub.py
+--- a/src/hub.py
++++ b/src/hub.py
+@@ -10,3 +10,5 @@ def process():
++    try:
++        do_stuff()
++    except:
++        pass
+"""
+        results = evaluate_commit(conn, diff_text, hours=24, dry_run=False)
+        assert len(results) == 1
+        assert results[0]["outcome"] == "dismissed"
+
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id=?", [eid]).fetchone()
+        assert row["outcome"] == "dismissed"
+
+    def test_uses_detection_patterns_table_regex(self, db_path):
+        """Falls back to detection_patterns table regex when lesson.detection_pattern is empty."""
+        from lessons_db.db import insert_detection_pattern
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "created_date": "2026-02-26",
+            },
+        )
+        insert_detection_pattern(
+            conn,
+            {
+                "lesson_id": lid,
+                "pattern_type": "syntactic",
+                "regex": r"except\s*:",
+            },
+        )
+        eid = record_surfacing(conn, lid, "edit", "src/hub.py")
+
+        diff_text = "+    except:\n+        pass\n"
+        results = evaluate_commit(conn, diff_text, hours=24, dry_run=False)
+        assert len(results) == 1
+        assert results[0]["outcome"] == "dismissed"
+
+    def test_skips_already_resolved_events(self, db_path):
+        """Events with outcome != 'unknown' should not be re-evaluated."""
+        from lessons_db.learn import evaluate_commit, record_outcome, record_surfacing
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test",
+                "one_liner": "test",
+                "detection_pattern": "bad_pattern",
+                "created_date": "2026-02-26",
+            },
+        )
+        eid = record_surfacing(conn, lid, "edit", "src/hub.py")
+        record_outcome(conn, eid, "heeded")  # already resolved
+
+        results = evaluate_commit(conn, "+bad_pattern\n", hours=24, dry_run=False)
+        assert len(results) == 0
+
+    def test_dry_run_does_not_update_db(self, db_path):
+        """With dry_run=True, outcomes should be computed but NOT written to DB."""
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test",
+                "one_liner": "test",
+                "detection_pattern": "bad_pattern",
+                "created_date": "2026-02-26",
+            },
+        )
+        eid = record_surfacing(conn, lid, "edit", "src/hub.py")
+
+        results = evaluate_commit(conn, "+bad_pattern\n", hours=24, dry_run=True)
+        assert len(results) == 1
+        assert results[0]["outcome"] == "dismissed"
+
+        # DB should still show 'unknown'
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id=?", [eid]).fetchone()
+        assert row["outcome"] == "unknown"
+
+    def test_respects_hours_window(self, db_path):
+        """Events older than the window should not be evaluated."""
+        from datetime import UTC, datetime, timedelta
+
+        from lessons_db.learn import evaluate_commit
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test",
+                "one_liner": "test",
+                "detection_pattern": "bad_pattern",
+                "created_date": "2026-02-26",
+            },
+        )
+        # Insert a surfacing event from 48 hours ago
+        old_ts = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        conn.execute(
+            "INSERT INTO surfacing_events (lesson_id, hook_point, context, outcome, timestamp) "
+            "VALUES (?, 'edit', 'ctx', 'unknown', ?)",
+            [lid, old_ts],
+        )
+        conn.commit()
+
+        results = evaluate_commit(conn, "+bad_pattern\n", hours=24, dry_run=False)
+        assert len(results) == 0
+
+    def test_no_pattern_skips_lesson(self, db_path):
+        """Lessons with no detection pattern at all should be skipped (left unknown)."""
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test",
+                "one_liner": "test",
+                "created_date": "2026-02-26",
+            },
+        )
+        record_surfacing(conn, lid, "edit", "src/hub.py")
+
+        results = evaluate_commit(conn, "+some code\n", hours=24, dry_run=False)
+        assert len(results) == 0
+
+    def test_multiple_events_evaluated(self, db_path):
+        """Multiple unknown events for different lessons should all be evaluated."""
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        conn = init_db(db_path)
+        lid1 = insert_lesson(
+            conn,
+            {
+                "title": "Lesson A",
+                "one_liner": "A",
+                "detection_pattern": "anti_a",
+                "created_date": "2026-02-26",
+            },
+        )
+        lid2 = insert_lesson(
+            conn,
+            {
+                "title": "Lesson B",
+                "one_liner": "B",
+                "detection_pattern": "anti_b",
+                "created_date": "2026-02-26",
+            },
+        )
+        record_surfacing(conn, lid1, "edit", "ctx")
+        record_surfacing(conn, lid2, "edit", "ctx")
+
+        # Diff contains anti_a but not anti_b
+        results = evaluate_commit(conn, "+anti_a found here\n", hours=24, dry_run=False)
+        assert len(results) == 2
+        outcomes = {r["lesson_id"]: r["outcome"] for r in results}
+        assert outcomes[lid1] == "dismissed"
+        assert outcomes[lid2] == "heeded"
+
+
+class TestEvaluateCommitCLI:
+    """CLI tests for 'learn evaluate-commit'."""
+
+    def test_help_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["learn", "evaluate-commit", "--help"])
+        assert result.exit_code == 0
+        assert "evaluate-commit" in result.output or "Evaluate" in result.output
+
+    def test_evaluate_commit_no_events(self, db_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "evaluate-commit"],
+        )
+        assert result.exit_code == 0
+        assert "No unknown surfacing events" in result.output
+
+    def test_evaluate_commit_dry_run(self, db_path):
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test",
+                "one_liner": "test",
+                "detection_pattern": "bad_pattern",
+                "created_date": "2026-02-26",
+            },
+        )
+        record_surfacing(conn, lid, "edit", "src/hub.py")
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "evaluate-commit", "--dry-run", "--diff-text", "+bad_pattern\n"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "DRY RUN" in result.output or "dry" in result.output.lower()
+
+        # Verify DB still shows 'unknown'
+        conn2 = init_db(db_path)
+        row = conn2.execute("SELECT outcome FROM surfacing_events WHERE lesson_id=?", [lid]).fetchone()
+        assert row["outcome"] == "unknown"
+
+    def test_evaluate_commit_with_diff_text(self, db_path):
+        """Passing --diff-text directly bypasses git."""
+        conn = init_db(db_path)
+        lid = insert_lesson(
+            conn,
+            {
+                "title": "Test",
+                "one_liner": "test",
+                "detection_pattern": "anti_pattern_x",
+                "created_date": "2026-02-26",
+            },
+        )
+        record_surfacing(conn, lid, "edit", "src/hub.py")
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "evaluate-commit", "--diff-text", "+anti_pattern_x here\n"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "dismissed" in result.output.lower()
+
+    def test_evaluate_commit_hours_flag(self, db_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["--db", str(db_path), "learn", "evaluate-commit", "--hours", "1"],
+        )
+        assert result.exit_code == 0
+
+
 class TestSurfacingStats:
     def test_returns_zero_counts_when_empty(self, db_path):
         conn = init_db(db_path)

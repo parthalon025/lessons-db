@@ -1065,6 +1065,78 @@ def learn_record(click_ctx, lesson_id, hook_point, hook_context, outcome):
     click.echo(f"Recorded surfacing event {event_id}")
 
 
+@learn.command("evaluate-commit")
+@click.option("--hours", default=24, type=int, help="Lookback window in hours (default: 24).")
+@click.option("--dry-run", is_flag=True, help="Preview outcomes without updating the database.")
+@click.option(
+    "--diff-text",
+    default=None,
+    help="Provide diff text directly (bypasses git). For testing or piped input.",
+)
+@click.pass_context
+def learn_evaluate_commit(click_ctx, hours, dry_run, diff_text):
+    """Evaluate whether recently-surfaced lessons were heeded or dismissed.
+
+    Reads surfacing events with outcome='unknown' from the last N hours,
+    gets the latest git diff (HEAD~1..HEAD), and checks if each lesson's
+    anti-pattern appears in the diff.
+
+    If anti-pattern present: outcome = 'dismissed' (recurrence).
+    If anti-pattern absent: outcome = 'heeded'.
+    """
+    import subprocess
+
+    from lessons_db.learn import evaluate_commit
+
+    conn = click_ctx.obj["conn"]
+
+    if diff_text is None:
+        # Get the latest commit diff
+        try:
+            result = subprocess.run(
+                ["git", "diff", "HEAD~1..HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                click.echo(f"git diff failed: {result.stderr.strip()}", err=True)
+                click_ctx.exit(1)
+                return
+            diff_text = result.stdout
+        except FileNotFoundError:
+            click.echo("git not found on PATH.", err=True)
+            click_ctx.exit(1)
+            return
+        except subprocess.TimeoutExpired:
+            click.echo("git diff timed out.", err=True)
+            click_ctx.exit(1)
+            return
+
+    if not diff_text.strip():
+        click.echo("Empty diff — nothing to evaluate.")
+        return
+
+    results = evaluate_commit(conn, diff_text, hours=hours, dry_run=dry_run)
+
+    if not results:
+        click.echo("No unknown surfacing events with detection patterns in window.")
+        return
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    click.echo(f"{prefix}Evaluated {len(results)} surfacing event(s):")
+    for r in results:
+        marker = "X" if r["outcome"] == "dismissed" else "."
+        click.echo(
+            f"  [{marker}] event={r['event_id']} lesson=#{r['lesson_id']} "
+            f"outcome={r['outcome']} ({r['pattern_source']})"
+        )
+
+    heeded = sum(1 for r in results if r["outcome"] == "heeded")
+    dismissed = sum(1 for r in results if r["outcome"] == "dismissed")
+    click.echo(f"\nSummary: {heeded} heeded, {dismissed} dismissed")
+
+
 @learn.command("dismiss")
 @click.argument("lesson_id", type=int)
 @click.pass_context
