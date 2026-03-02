@@ -92,6 +92,49 @@ if [[ "${PENDING_COUNT:-0}" -gt 50 ]]; then
     echo "Draft backlog: ${PENDING_COUNT} pending — run: lessons-db capture review --dry-run"
 fi
 
+# FSRS spaced-repetition review: surface due lessons with fading-level verbosity.
+# Interleaved by cluster (Bjork desirable difficulties) and filtered by fading level.
+FSRS_DUE=$("$LESSONS_DB" fsrs due --threshold 0.9 2>/dev/null || echo "")
+if [[ -n "$FSRS_DUE" && "$FSRS_DUE" != "No lessons due for review." ]]; then
+    # Extract due count from first line
+    DUE_COUNT=$(echo "$FSRS_DUE" | head -1 | grep -oP '\d+' || echo "0")
+    if [[ "${DUE_COUNT:-0}" -gt 0 ]]; then
+        echo ""
+        echo "FSRS review due: ${DUE_COUNT} lessons"
+
+        # Show lessons based on fading level:
+        #   full   -> full line (title + stability + retrievability)
+        #   brief  -> one-liner only
+        #   silent -> suppressed (Semgrep-only)
+        #   enforced -> suppressed
+        while IFS= read -r line; do
+            if [[ "$line" =~ \[#([0-9]+)\] ]]; then
+                LESSON_ID="${BASH_REMATCH[1]}"
+                if [[ "$line" =~ level=full ]]; then
+                    # Full presentation: show entire line
+                    echo "$line"
+                    # Record surfacing event
+                    "$LESSONS_DB" learn record \
+                        --lesson-id "$LESSON_ID" \
+                        --hook "session_start_fsrs" \
+                        --context "fsrs_review" \
+                        2>>/tmp/lessons-db-errors.log || true
+                elif [[ "$line" =~ level=brief ]]; then
+                    # Brief: just the title
+                    TITLE=$(echo "$line" | sed 's/.*\] //' | sed 's/  S=.*//')
+                    echo "  [#${LESSON_ID}] ${TITLE}"
+                    "$LESSONS_DB" learn record \
+                        --lesson-id "$LESSON_ID" \
+                        --hook "session_start_fsrs" \
+                        --context "fsrs_review" \
+                        2>>/tmp/lessons-db-errors.log || true
+                fi
+                # silent and enforced: suppressed — no output, no surfacing event
+            fi
+        done <<< "$FSRS_DUE"
+    fi
+fi
+
 # Surface top-3 contextually relevant lessons for current project.
 # Mirrors the enter-plan hook — session start should show the same signal.
 # Output format: SUGGESTION (negative) or PROVEN PATTERN (positive) via feedforward_format.

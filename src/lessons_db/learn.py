@@ -1,6 +1,7 @@
 """Learning pipeline: surfacing event recording and composite relevance scoring."""
 
 import logging
+import random
 import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -206,6 +207,65 @@ def _outcome_rate(conn: sqlite3.Connection, lesson_id: int, context: str) -> flo
         return 0.5
     heeded = sum(1 for r in rows if r["outcome"] == "heeded")
     return heeded / len(rows)
+
+
+def update_win_streak(conn: sqlite3.Connection, category: str, won: bool) -> dict:
+    """Update win streak for category. Returns current streak info.
+
+    If won: increment current_streak, update longest_streak if needed.
+    If not won: reset current_streak to 0.
+    Upserts into win_streaks table.
+    """
+    now = datetime.now(UTC).isoformat()
+    row = conn.execute(
+        "SELECT current_streak, longest_streak FROM win_streaks WHERE category = ?",
+        [category],
+    ).fetchone()
+
+    if row is None:
+        current = 1 if won else 0
+        longest = current
+        conn.execute(
+            "INSERT INTO win_streaks (category, current_streak, longest_streak, last_updated) " "VALUES (?, ?, ?, ?)",
+            [category, current, longest, now],
+        )
+    else:
+        if won:
+            current = row["current_streak"] + 1
+            longest = max(row["longest_streak"], current)
+        else:
+            current = 0
+            longest = row["longest_streak"]
+        conn.execute(
+            "UPDATE win_streaks SET current_streak = ?, longest_streak = ?, last_updated = ? " "WHERE category = ?",
+            [current, longest, now, category],
+        )
+    conn.commit()
+    return {"category": category, "current_streak": current, "longest_streak": longest}
+
+
+def should_surface_positive(conn: sqlite3.Connection, category: str) -> tuple[bool, dict]:
+    """30% probability gate for positive recognition (Skinner variable-ratio).
+
+    Returns (should_surface, streak_info) where streak_info has
+    current_streak, longest_streak, category.
+    """
+    row = conn.execute(
+        "SELECT current_streak, longest_streak FROM win_streaks WHERE category = ?",
+        [category],
+    ).fetchone()
+
+    if row is None:
+        streak_info = {"category": category, "current_streak": 0, "longest_streak": 0}
+    else:
+        streak_info = {
+            "category": category,
+            "current_streak": row["current_streak"],
+            "longest_streak": row["longest_streak"],
+        }
+
+    should = random.random() < 0.3  # noqa: S311 — non-crypto probability gate
+    return should, streak_info
 
 
 def _recurrence_score(conn: sqlite3.Connection, lesson_id: int) -> float:

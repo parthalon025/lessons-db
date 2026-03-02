@@ -2510,6 +2510,92 @@ def fsrs_init(ctx):
     click.echo(f"FSRS init complete: {count} lessons backfilled ({total} total).")
 
 
+@fsrs.command("due")
+@click.option("--threshold", type=float, default=0.9, help="Retrievability threshold (default 0.9).")
+@click.pass_context
+def fsrs_due(ctx, threshold):
+    """List lessons whose retrievability is below threshold (most forgotten first).
+
+    Shows lesson_id, title, stability, retrievability, and days since last review.
+    Results are sorted by retrievability ascending — the lessons you've forgotten
+    most appear first.
+    """
+    from lessons_db.fsrs import ensure_fsrs_columns, get_due_lessons, get_fading_level, interleave_due_lessons
+
+    conn = ctx.obj["conn"]
+    ensure_fsrs_columns(conn)
+    due = get_due_lessons(conn, threshold=threshold)
+    if not due:
+        click.echo("No lessons due for review.")
+        return
+
+    interleaved = interleave_due_lessons(due)
+    click.echo(f"Due lessons (R < {threshold}): {len(interleaved)}\n")
+    for lesson in interleaved:
+        fading = get_fading_level(lesson["stability"])
+        click.echo(
+            f"  [#{lesson['id']}] {lesson.get('title', '(untitled)')}"
+            f"  S={lesson['stability']:.2f}  R={lesson['retrievability']:.3f}"
+            f"  days={lesson['days_since_review']}  level={fading}"
+        )
+
+
+@fsrs.command("stats")
+@click.pass_context
+def fsrs_stats(ctx):
+    """Show FSRS stability distribution and review forecast.
+
+    Stability distribution: count of lessons at each fading level
+    (full/brief/silent/enforced).
+
+    Review forecast: how many lessons will be due in 1, 3, 7, 14, and 30 days
+    assuming no new reviews occur.
+    """
+    from lessons_db.fsrs import compute_retrievability, ensure_fsrs_columns, get_fading_level
+
+    conn = ctx.obj["conn"]
+    ensure_fsrs_columns(conn)
+
+    # --- Stability distribution ---
+    rows = conn.execute("SELECT stability FROM lessons WHERE stability IS NOT NULL").fetchall()
+
+    level_counts: dict[str, int] = {"full": 0, "brief": 0, "silent": 0, "enforced": 0}
+    for row in rows:
+        level = get_fading_level(row["stability"])
+        level_counts[level] += 1
+
+    click.echo("Stability distribution:")
+    for level in ("full", "brief", "silent", "enforced"):
+        click.echo(f"  {level:10s}: {level_counts[level]}")
+
+    # --- Review forecast ---
+    reviewed = conn.execute(
+        """
+        SELECT id, stability, last_review_date
+        FROM lessons
+        WHERE last_review_date IS NOT NULL
+          AND stability IS NOT NULL
+          AND stability > 0
+        """
+    ).fetchall()
+
+    from datetime import date
+
+    today = date.today()
+    forecast_days = [1, 3, 7, 14, 30]
+    click.echo("\nReview forecast (lessons due at R < 0.9):")
+
+    for future_days in forecast_days:
+        count = 0
+        for row in reviewed:
+            review_date = date.fromisoformat(row["last_review_date"])
+            days_elapsed = (today - review_date).days + future_days
+            r = compute_retrievability(row["stability"], float(days_elapsed))
+            if r < 0.9:
+                count += 1
+        click.echo(f"  in {future_days:2d} day(s): {count}")
+
+
 # ---------------------------------------------------------------------------
 # Transfer — cross-project analogical matching
 # ---------------------------------------------------------------------------

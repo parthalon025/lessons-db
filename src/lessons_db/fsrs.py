@@ -54,6 +54,27 @@ OUTCOME_TO_GRADE = {
     "false_positive": GRADE_EASY,  # surfaced incorrectly, reduce frequency
 }
 
+# Positive lesson outcome-to-grade mapping — tracks reuse of good patterns
+POSITIVE_OUTCOME_TO_GRADE = {
+    "reused": GRADE_GOOD,  # pattern was actively reused
+    "not_reused": GRADE_HARD,  # relevant but not reused
+    "never_reused": GRADE_AGAIN,  # pattern not being applied
+}
+
+# ---------------------------------------------------------------------------
+# Polarity-differentiated initial stability
+# ---------------------------------------------------------------------------
+# Positive lessons consolidate identity — higher initial stability because
+# they represent patterns the developer already knows work. Negative lessons
+# start lower because they represent mistakes that need more reinforcement.
+
+POSITIVE_INITIAL_STABILITY = 3.0
+NEGATIVE_INITIAL_STABILITY = 1.0  # matches DEFAULT_STABILITY
+
+# Initial difficulty for positive lessons — lower because reusing a known
+# good pattern is easier than remembering to avoid a mistake
+POSITIVE_INITIAL_DIFFICULTY = 3.0
+
 # ---------------------------------------------------------------------------
 # FSRS default parameters (optimized from large-scale user data)
 # ---------------------------------------------------------------------------
@@ -255,25 +276,134 @@ def ensure_fsrs_columns(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_due_lessons(conn: sqlite3.Connection, threshold: float = 0.9) -> list[dict]:
+def interleave_due_lessons(lessons: list[dict]) -> list[dict]:
+    """Interleave lessons by cluster to avoid showing 3+ from same category.
+
+    Groups lessons by their ``cluster`` field, then round-robins across groups
+    so that consecutive lessons come from different clusters.  This applies
+    Bjork's *desirable difficulties* principle — mixing categories during
+    review improves long-term retention compared to blocked practice.
+
+    Lessons without a cluster (None or empty string) are treated as a single
+    "unclustered" group and interleaved alongside the rest.
+    """
+    from collections import defaultdict
+
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for lesson in lessons:
+        key = lesson.get("cluster") or ""
+        groups[key].append(lesson)
+
+    # Sort groups by size descending so the largest cluster leads — this
+    # maximises spacing between same-cluster items.
+    sorted_groups = sorted(groups.values(), key=len, reverse=True)
+
+    result: list[dict] = []
+    while sorted_groups:
+        next_round: list[list[dict]] = []
+        for group in sorted_groups:
+            if group:
+                result.append(group.pop(0))
+            if group:
+                next_round.append(group)
+        sorted_groups = next_round
+
+    return result
+
+
+def enforce_positive_ratio(lessons: list[dict], min_ratio: float = 0.25) -> list[dict]:
+    """Ensure at least 1 positive per 3 negative in the surfacing list.
+
+    Interleaves positive lessons into the list so that no more than
+    ``ceil(1/min_ratio) - 1`` consecutive negatives appear without a positive.
+    If there aren't enough positive lessons to meet the ratio, all available
+    positives are distributed as evenly as possible.
+
+    This implements *dual-polarity interleaving* — surfacing "what works"
+    alongside "what to avoid" improves both retention and motivation (Bjork
+    desirable difficulties + self-determination theory).
+
+    Args:
+        lessons: List of lesson dicts, each must have a 'polarity' key.
+        min_ratio: Minimum fraction of positive lessons in the output.
+            Default 0.25 means at least 1 positive per 3 negatives.
+
+    Returns:
+        Reordered list with positive lessons interleaved among negatives.
+    """
+    if not lessons:
+        return []
+
+    positives = [l for l in lessons if l.get("polarity") == "positive"]
+    negatives = [l for l in lessons if l.get("polarity") != "positive"]
+
+    if not positives or not negatives:
+        # Nothing to interleave — return original order
+        return lessons
+
+    # How many negatives between each positive insertion?
+    # With min_ratio=0.25, we want 1 positive per 3 negatives -> gap=3
+    gap = max(1, int(1.0 / min_ratio) - 1) if min_ratio > 0 else len(negatives)
+
+    result: list[dict] = []
+    neg_idx = 0
+    pos_idx = 0
+
+    while neg_idx < len(negatives) or pos_idx < len(positives):
+        # Add up to `gap` negatives
+        added = 0
+        while neg_idx < len(negatives) and added < gap:
+            result.append(negatives[neg_idx])
+            neg_idx += 1
+            added += 1
+
+        # Insert a positive if available
+        if pos_idx < len(positives):
+            result.append(positives[pos_idx])
+            pos_idx += 1
+        elif neg_idx >= len(negatives):
+            break
+
+    # Append any remaining positives (more positives than slots)
+    while pos_idx < len(positives):
+        result.append(positives[pos_idx])
+        pos_idx += 1
+
+    return result
+
+
+def get_due_lessons(
+    conn: sqlite3.Connection,
+    threshold: float = 0.9,
+    polarity: str | None = None,
+) -> list[dict]:
     """Return lessons whose computed retrievability R is below threshold.
 
     Only includes lessons that have been reviewed at least once
     (last_review_date IS NOT NULL and stability IS NOT NULL).
 
+    Args:
+        conn: SQLite connection.
+        threshold: Retrievability threshold — lessons with R < threshold are due.
+        polarity: Optional filter — 'positive', 'negative', or None (all).
+
     Returns list of dicts with lesson fields plus computed 'retrievability'.
     Results are sorted by retrievability ascending (most forgotten first).
     """
-    rows = conn.execute(
-        """
+    query = """
         SELECT id, title, one_liner, stability, difficulty, last_review_date,
-               severity, cluster, enforcement
+               severity, cluster, enforcement, polarity
         FROM lessons
         WHERE last_review_date IS NOT NULL
           AND stability IS NOT NULL
           AND stability > 0
-        """,
-    ).fetchall()
+    """
+    params: list = []
+    if polarity is not None:
+        query += "  AND polarity = ?\n"
+        params.append(polarity)
+
+    rows = conn.execute(query, params).fetchall()
 
     today = date.today()
     due = []
@@ -292,11 +422,27 @@ def get_due_lessons(conn: sqlite3.Connection, threshold: float = 0.9) -> list[di
     return due
 
 
-def record_review(conn: sqlite3.Connection, lesson_id: int, grade: int) -> dict:
+def record_review(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    grade: int,
+    polarity: str = "negative",
+) -> dict:
     """Record a review of a lesson, updating its FSRS parameters.
 
-    For the first review: uses INITIAL_S and _initial_difficulty().
-    For subsequent reviews: applies FSRS update equations.
+    For the first review: uses INITIAL_S and _initial_difficulty() for negative
+    lessons. Positive lessons get POSITIVE_INITIAL_STABILITY and lower initial
+    difficulty (POSITIVE_INITIAL_DIFFICULTY) because reusing a known good
+    pattern is easier than remembering to avoid a mistake.
+
+    For subsequent reviews: applies FSRS update equations (same for both
+    polarities — the equations are polarity-agnostic after initialization).
+
+    Args:
+        conn: SQLite connection.
+        lesson_id: ID of the lesson to review.
+        grade: FSRS grade (1-4).
+        polarity: 'positive' or 'negative' (default). Only affects first review.
 
     Returns dict with updated stability, difficulty, retrievability, last_review_date.
 
@@ -319,9 +465,13 @@ def record_review(conn: sqlite3.Connection, lesson_id: int, grade: int) -> dict:
     today = date.today().isoformat()
 
     if old_s is None or old_review is None:
-        # First review — use initial values
-        new_s = INITIAL_S[grade]
-        new_d = _initial_difficulty(grade)
+        # First review — use polarity-differentiated initial values
+        if polarity == "positive":
+            new_s = POSITIVE_INITIAL_STABILITY
+            new_d = POSITIVE_INITIAL_DIFFICULTY
+        else:
+            new_s = INITIAL_S[grade]
+            new_d = _initial_difficulty(grade)
     else:
         # Subsequent review — compute R then update
         days_elapsed = (date.today() - date.fromisoformat(old_review)).days

@@ -9,7 +9,9 @@ from lessons_db.learn import (
     record_outcome,
     record_surfacing,
     relevance_score,
+    should_surface_positive,
     surfacing_stats,
+    update_win_streak,
 )
 
 
@@ -657,3 +659,116 @@ diff --git a/src/hub.py b/src/hub.py
         # Step 9: Verify the first event is still 'dismissed' (not re-evaluated)
         row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_dismissed]).fetchone()
         assert row["outcome"] == "dismissed", "Previously dismissed event must not be re-evaluated"
+
+
+class TestWinStreaksTable:
+    """Tests for win_streaks table creation."""
+
+    def test_win_streaks_table_exists(self, db_path):
+        conn = init_db(db_path)
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='win_streaks'").fetchall()
+        assert len(rows) == 1
+
+    def test_win_streaks_table_schema(self, db_path):
+        conn = init_db(db_path)
+        cols = conn.execute("PRAGMA table_info('win_streaks')").fetchall()
+        col_names = {c["name"] for c in cols}
+        assert {"id", "category", "current_streak", "longest_streak", "last_updated"} == col_names
+
+
+class TestUpdateWinStreak:
+    """Tests for update_win_streak — streak increment and reset."""
+
+    def test_increment_on_win(self, db_path):
+        conn = init_db(db_path)
+        info = update_win_streak(conn, "async", won=True)
+        assert info["current_streak"] == 1
+        assert info["longest_streak"] == 1
+        assert info["category"] == "async"
+
+    def test_consecutive_wins_increment(self, db_path):
+        conn = init_db(db_path)
+        update_win_streak(conn, "async", won=True)
+        update_win_streak(conn, "async", won=True)
+        info = update_win_streak(conn, "async", won=True)
+        assert info["current_streak"] == 3
+        assert info["longest_streak"] == 3
+
+    def test_resets_on_loss(self, db_path):
+        conn = init_db(db_path)
+        update_win_streak(conn, "async", won=True)
+        update_win_streak(conn, "async", won=True)
+        info = update_win_streak(conn, "async", won=False)
+        assert info["current_streak"] == 0
+        assert info["longest_streak"] == 2
+
+    def test_longest_streak_preserved_after_reset(self, db_path):
+        conn = init_db(db_path)
+        for _ in range(5):
+            update_win_streak(conn, "error-handling", won=True)
+        update_win_streak(conn, "error-handling", won=False)
+        update_win_streak(conn, "error-handling", won=True)
+        info = update_win_streak(conn, "error-handling", won=True)
+        assert info["current_streak"] == 2
+        assert info["longest_streak"] == 5
+
+    def test_loss_on_first_record(self, db_path):
+        conn = init_db(db_path)
+        info = update_win_streak(conn, "new-category", won=False)
+        assert info["current_streak"] == 0
+        assert info["longest_streak"] == 0
+
+    def test_separate_categories_independent(self, db_path):
+        conn = init_db(db_path)
+        update_win_streak(conn, "alpha", won=True)
+        update_win_streak(conn, "alpha", won=True)
+        update_win_streak(conn, "beta", won=True)
+        info_alpha = update_win_streak(conn, "alpha", won=True)
+        info_beta = update_win_streak(conn, "beta", won=False)
+        assert info_alpha["current_streak"] == 3
+        assert info_beta["current_streak"] == 0
+
+
+class TestShouldSurfacePositive:
+    """Tests for should_surface_positive — variable-ratio probability gate."""
+
+    def test_returns_tuple_bool_dict(self, db_path):
+        conn = init_db(db_path)
+        result = should_surface_positive(conn, "async")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], bool)
+        assert isinstance(result[1], dict)
+
+    def test_streak_info_keys(self, db_path):
+        conn = init_db(db_path)
+        _, info = should_surface_positive(conn, "async")
+        assert "current_streak" in info
+        assert "longest_streak" in info
+        assert "category" in info
+        assert info["category"] == "async"
+
+    def test_cold_start_streak_info_zeros(self, db_path):
+        conn = init_db(db_path)
+        _, info = should_surface_positive(conn, "never-seen")
+        assert info["current_streak"] == 0
+        assert info["longest_streak"] == 0
+
+    def test_reflects_updated_streak(self, db_path):
+        conn = init_db(db_path)
+        update_win_streak(conn, "async", won=True)
+        update_win_streak(conn, "async", won=True)
+        _, info = should_surface_positive(conn, "async")
+        assert info["current_streak"] == 2
+        assert info["longest_streak"] == 2
+
+    def test_probability_distribution(self, db_path):
+        """Over many samples, ~30% should return True (Skinner variable-ratio)."""
+        import random as _random
+
+        conn = init_db(db_path)
+        _random.seed(42)
+        results = [should_surface_positive(conn, "test")[0] for _ in range(1000)]
+        ratio = sum(results) / len(results)
+        # Allow +-5% tolerance around 0.3
+        assert 0.25 <= ratio <= 0.35, f"Expected ~30% True, got {ratio:.1%}"

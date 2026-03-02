@@ -235,6 +235,14 @@ CREATE TABLE IF NOT EXISTS fix_queue (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fix_queue_dedup
     ON fix_queue(lesson_id, file_path, COALESCE(line_number, -1));
 CREATE INDEX IF NOT EXISTS idx_fix_queue_status ON fix_queue(status);
+
+CREATE TABLE IF NOT EXISTS win_streaks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL UNIQUE,
+    current_streak INTEGER NOT NULL DEFAULT 0,
+    longest_streak INTEGER NOT NULL DEFAULT 0,
+    last_updated TEXT NOT NULL
+);
 """
 
 
@@ -369,6 +377,17 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
         CREATE UNIQUE INDEX IF NOT EXISTS idx_fix_queue_dedup
             ON fix_queue(lesson_id, file_path, COALESCE(line_number, -1));
         CREATE INDEX IF NOT EXISTS idx_fix_queue_status ON fix_queue(status);
+    """)
+
+    # v10 win_streaks table — variable-ratio positive reinforcement (Skinner).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS win_streaks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL UNIQUE,
+            current_streak INTEGER NOT NULL DEFAULT 0,
+            longest_streak INTEGER NOT NULL DEFAULT 0,
+            last_updated TEXT NOT NULL
+        );
     """)
 
     # v9 principle column — domain-independent principle extracted by LLM

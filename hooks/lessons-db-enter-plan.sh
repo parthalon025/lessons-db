@@ -24,6 +24,26 @@ PROJ_NAME=$(basename "$PROJ_DIR")
 RESULTS1=$("$LESSONS_DB" search "planning ${PROJ_NAME}" --top 3 2>/dev/null || echo "")
 RESULTS2=$("$LESSONS_DB" search "integration boundary silent failure" --top 3 2>/dev/null || echo "")
 
+# Count negative lessons surfaced for 3:1 ratio balancing
+count_lessons() {
+    local text="$1"
+    local count=0
+    while IFS= read -r line; do
+        if [[ "$line" =~ \[#([0-9]+)\] ]]; then
+            count=$((count + 1))
+        fi
+    done <<< "$text"
+    echo "$count"
+}
+
+NEGATIVE_COUNT=0
+if [[ -n "$RESULTS1" ]]; then
+    NEGATIVE_COUNT=$((NEGATIVE_COUNT + $(count_lessons "$RESULTS1")))
+fi
+if [[ -n "$RESULTS2" ]]; then
+    NEGATIVE_COUNT=$((NEGATIVE_COUNT + $(count_lessons "$RESULTS2")))
+fi
+
 # If we got results, output them with feedforward framing
 if [[ -n "$RESULTS1" || -n "$RESULTS2" ]]; then
     echo "## Consider these proven patterns for ${PROJ_NAME}:"
@@ -40,15 +60,34 @@ if [[ -n "$RESULTS1" || -n "$RESULTS2" ]]; then
     fi
 fi
 
-# Surface top-3 positive entries by semantic similarity
+# Balance negative/positive surfacing at 3:1 ratio
+# ceil(negative_count / 3), minimum 1
+if [[ "$NEGATIVE_COUNT" -gt 0 ]]; then
+    POSITIVE_LIMIT=$(( (NEGATIVE_COUNT + 2) / 3 ))  # integer ceiling division
+else
+    POSITIVE_LIMIT=1
+fi
+# Enforce minimum of 1 positive pattern
+if [[ "$POSITIVE_LIMIT" -lt 1 ]]; then
+    POSITIVE_LIMIT=1
+fi
+
+# Surface positive patterns (Bright Spots) for current project scope
+# Uses --polarity positive to find what has worked well
 RESULTS_POS=$("$LESSONS_DB" search "planning ${PROJ_NAME}" \
-    --top 3 --polarity positive 2>/dev/null || echo "")
+    --top "$POSITIVE_LIMIT" --polarity positive 2>/dev/null || echo "")
 
 if [[ -n "$RESULTS_POS" ]]; then
-    echo "### Positive Patterns (what has worked well)"
+    echo "### Bright Spots — Positive Patterns (what has worked well)"
     feedforward_format "$RESULTS_POS"
     echo ""
 fi
+
+# Pro-mortem prompt: shift from "what could go wrong" to "what patterns would make this succeed"
+echo "---"
+echo "**Pro-mortem: What patterns would make this feature succeed?**"
+echo "Review the PROVEN PATTERNs above and identify which positive patterns to sustain and amplify."
+echo ""
 
 # Record each surfaced lesson for the learning pipeline (Lesson #65: wire call sites)
 # Extract IDs from search output format: [#NNN] one_liner (raw, pre-feedforward)
