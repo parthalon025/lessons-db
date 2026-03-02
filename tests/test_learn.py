@@ -567,3 +567,93 @@ class TestSurfacingStats:
         assert stats["dismissed"] == 1
         assert stats["unknown"] == 1
         assert stats["heed_rate"] == 0.33
+
+
+class TestFeedbackLoopEndToEnd:
+    """Integration test: full feedback loop from lesson creation through outcome evaluation."""
+
+    def test_feedback_loop_end_to_end(self, db_path):
+        """End-to-end: lesson → surfacing → evaluate_commit → outcome transitions.
+
+        Path 1 (dismissed): diff contains the anti-pattern → outcome = 'dismissed'
+        Path 2 (heeded): diff does NOT contain the anti-pattern → outcome = 'heeded'
+        """
+        from lessons_db.learn import evaluate_commit, record_surfacing
+
+        # --- Setup: create a lesson with a regex detection pattern ---
+        conn = init_db(db_path)
+        lesson_id = insert_lesson(
+            conn,
+            {
+                "title": "No bare except",
+                "one_liner": "Always log before swallowing exceptions",
+                "detection_pattern": r"except\s*:",
+                "created_date": "2026-02-26",
+            },
+        )
+
+        # === Path 1: DISMISSED (anti-pattern present in diff) ===
+
+        # Step 1: Record a surfacing event — outcome starts as 'unknown'
+        event_id_dismissed = record_surfacing(conn, lesson_id, hook_point="edit", context="src/hub.py")
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_dismissed]).fetchone()
+        assert row["outcome"] == "unknown", "Surfacing event should start as 'unknown'"
+
+        # Step 2: Simulate a commit diff that CONTAINS the anti-pattern
+        diff_with_antipattern = """\
+diff --git a/src/hub.py b/src/hub.py
+--- a/src/hub.py
++++ b/src/hub.py
+@@ -10,3 +10,5 @@ def process():
++    try:
++        do_stuff()
++    except:
++        pass
+"""
+
+        # Step 3: Run evaluate_commit — should mark as 'dismissed'
+        results = evaluate_commit(conn, diff_with_antipattern, hours=24, dry_run=False)
+        assert len(results) == 1
+        assert results[0]["event_id"] == event_id_dismissed
+        assert results[0]["lesson_id"] == lesson_id
+        assert results[0]["outcome"] == "dismissed"
+
+        # Step 4: Verify the DB outcome changed from 'unknown' to 'dismissed'
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_dismissed]).fetchone()
+        assert (
+            row["outcome"] == "dismissed"
+        ), "After evaluate_commit with anti-pattern present, outcome must be 'dismissed'"
+
+        # === Path 2: HEEDED (anti-pattern absent from diff) ===
+
+        # Step 5: Record a new surfacing event for the same lesson
+        event_id_heeded = record_surfacing(conn, lesson_id, hook_point="plan", context="src/hub.py refactor")
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_heeded]).fetchone()
+        assert row["outcome"] == "unknown", "New surfacing event should start as 'unknown'"
+
+        # Step 6: Simulate a commit diff WITHOUT the anti-pattern (proper exception handling)
+        diff_without_antipattern = """\
+diff --git a/src/hub.py b/src/hub.py
+--- a/src/hub.py
++++ b/src/hub.py
+@@ -10,3 +10,5 @@ def process():
++    try:
++        do_stuff()
++    except Exception as e:
++        logger.error("Failed: %s", e)
+"""
+
+        # Step 7: Run evaluate_commit — should mark as 'heeded'
+        results = evaluate_commit(conn, diff_without_antipattern, hours=24, dry_run=False)
+        assert len(results) == 1
+        assert results[0]["event_id"] == event_id_heeded
+        assert results[0]["lesson_id"] == lesson_id
+        assert results[0]["outcome"] == "heeded"
+
+        # Step 8: Verify the DB outcome changed from 'unknown' to 'heeded'
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_heeded]).fetchone()
+        assert row["outcome"] == "heeded", "After evaluate_commit with anti-pattern absent, outcome must be 'heeded'"
+
+        # Step 9: Verify the first event is still 'dismissed' (not re-evaluated)
+        row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_dismissed]).fetchone()
+        assert row["outcome"] == "dismissed", "Previously dismissed event must not be re-evaluated"

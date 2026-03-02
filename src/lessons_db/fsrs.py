@@ -45,6 +45,16 @@ GRADE_EASY = 4  # false_positive / remove from rotation
 _VALID_GRADES = {GRADE_AGAIN, GRADE_HARD, GRADE_GOOD, GRADE_EASY}
 
 # ---------------------------------------------------------------------------
+# Outcome-to-grade mapping — converts surfacing outcomes to FSRS grades
+# ---------------------------------------------------------------------------
+
+OUTCOME_TO_GRADE = {
+    "heeded": GRADE_GOOD,  # lesson applied correctly
+    "dismissed": GRADE_AGAIN,  # lesson ignored, recurrence likely
+    "false_positive": GRADE_EASY,  # surfaced incorrectly, reduce frequency
+}
+
+# ---------------------------------------------------------------------------
 # FSRS default parameters (optimized from large-scale user data)
 # ---------------------------------------------------------------------------
 
@@ -295,7 +305,7 @@ def record_review(conn: sqlite3.Connection, lesson_id: int, grade: int) -> dict:
         new_d = update_difficulty(old_d, grade)
 
     conn.execute(
-        "UPDATE lessons SET stability = ?, difficulty = ?, last_review_date = ? WHERE id = ?",
+        "UPDATE lessons SET stability = ?, difficulty = ?, retrievability = 1.0, last_review_date = ? WHERE id = ?",
         [new_s, new_d, today, lesson_id],
     )
     conn.commit()

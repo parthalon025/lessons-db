@@ -2418,3 +2418,102 @@ def fsrs_init(ctx):
     count = backfill_fsrs_defaults(conn)
     total = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
     click.echo(f"FSRS init complete: {count} lessons backfilled ({total} total).")
+
+
+# ---------------------------------------------------------------------------
+# Transfer — cross-project analogical matching
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+@click.pass_context
+def transfer(ctx):
+    """Cross-project analogical matching — find lessons that transfer across scopes."""
+
+
+@transfer.command("find")
+@click.argument("context")
+@click.option("--limit", "-n", default=5, type=int, help="Max results to return.")
+@click.option("--min-score", default=0.3, type=float, help="Minimum similarity score threshold.")
+@click.pass_context
+def transfer_find(ctx, context, limit, min_score):
+    """Search for transferable lessons by principle similarity across ALL scopes.
+
+    CONTEXT is the situation or problem you're facing. Results are drawn from
+    every scope in the database, ignoring the current project's scope filter,
+    so you can discover lessons learned elsewhere that apply here.
+
+    Searches the 'principle' field first. Falls back to one_liner + description
+    when no principle is populated.
+    """
+    conn = ctx.obj["conn"]
+
+    # Try to init LanceDB for semantic search (graceful failure)
+    lance_db = None
+    try:
+        import lancedb
+
+        if LANCE_DIR.exists():
+            lance_db = lancedb.connect(str(LANCE_DIR))
+    except Exception:
+        logger.debug("LanceDB unavailable, skipping semantic search for transfer find")
+
+    # Use search_combined without scope filter (cross-project by design)
+    results = search_combined(
+        conn,
+        lance_db,
+        query=context,
+    )
+
+    if not results:
+        click.echo("No transferable lessons found.")
+        return
+
+    # Enrich results with principle, scope, and description from DB
+    enriched = []
+    for r in results:
+        rid = r.get("id")
+        if rid is None:
+            continue
+        row = conn.execute(
+            "SELECT id, principle, one_liner, description, scope FROM lessons WHERE id = ?",
+            (rid,),
+        ).fetchone()
+        if row is None:
+            continue
+
+        score = r.get("composite_score") or r.get("score") or 0.0
+        if score < min_score:
+            continue
+
+        enriched.append(
+            {
+                "id": row["id"],
+                "principle": row["principle"],
+                "one_liner": row["one_liner"],
+                "description": row["description"],
+                "scope": row["scope"] or "unscoped",
+                "score": score,
+            }
+        )
+
+    # Sort by score descending, take top N
+    enriched.sort(key=lambda x: x["score"], reverse=True)
+    enriched = enriched[:limit]
+
+    if not enriched:
+        click.echo("No transferable lessons above min-score threshold.")
+        return
+
+    for item in enriched:
+        # Prefer principle if populated, otherwise fall back to one_liner
+        display_text = item["principle"] if item["principle"] else item["one_liner"]
+        scope = item["scope"]
+        click.echo(f"From [{scope}]: {display_text} — {item['one_liner']}")
+        if item["principle"] and item["description"]:
+            # Show a truncated description for extra context
+            desc_preview = (item["description"] or "")[:120]
+            if len(item["description"] or "") > 120:
+                desc_preview += "..."
+            click.echo(f"  ({desc_preview})")
+        click.echo(f"  [#{item['id']}] score={item['score']:.3f}")

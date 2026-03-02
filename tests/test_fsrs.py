@@ -11,6 +11,8 @@ from lessons_db.fsrs import (
     GRADE_GOOD,
     GRADE_HARD,
     INITIAL_S,
+    OUTCOME_TO_GRADE,
+    backfill_fsrs_defaults,
     compute_retrievability,
     ensure_fsrs_columns,
     get_due_lessons,
@@ -292,3 +294,174 @@ class TestEnsureFsrsColumns:
         assert "stability" in cols
         assert "difficulty" in cols
         assert "last_review_date" in cols
+
+
+# ---------------------------------------------------------------------------
+# OUTCOME_TO_GRADE mapping
+# ---------------------------------------------------------------------------
+
+
+class TestOutcomeToGrade:
+    def test_heeded_maps_to_good(self):
+        """heeded outcome -> GRADE_GOOD (lesson applied correctly)."""
+        assert OUTCOME_TO_GRADE["heeded"] == GRADE_GOOD
+
+    def test_dismissed_maps_to_again(self):
+        """dismissed outcome -> GRADE_AGAIN (lesson ignored)."""
+        assert OUTCOME_TO_GRADE["dismissed"] == GRADE_AGAIN
+
+    def test_false_positive_maps_to_easy(self):
+        """false_positive outcome -> GRADE_EASY (surfaced incorrectly)."""
+        assert OUTCOME_TO_GRADE["false_positive"] == GRADE_EASY
+
+    def test_all_mapped_grades_are_valid(self):
+        """Every mapped grade should be in the valid grade set."""
+        valid = {GRADE_AGAIN, GRADE_HARD, GRADE_GOOD, GRADE_EASY}
+        for outcome, grade in OUTCOME_TO_GRADE.items():
+            assert grade in valid, f"Outcome '{outcome}' maps to invalid grade {grade}"
+
+    def test_recurrence_not_mapped(self):
+        """recurrence is not in OUTCOME_TO_GRADE — it's tracked separately."""
+        assert "recurrence" not in OUTCOME_TO_GRADE
+
+
+# ---------------------------------------------------------------------------
+# backfill_fsrs_defaults
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillFsrsDefaults:
+    def test_backfills_null_stability(self, fsrs_db):
+        """Lessons with stability IS NULL should get defaults."""
+        lid = insert_lesson(fsrs_db, {"title": "no fsrs", "created_date": date.today().isoformat()})
+        # Force NULL stability (override the DEFAULT 1.0 from schema)
+        fsrs_db.execute("UPDATE lessons SET stability = NULL WHERE id = ?", [lid])
+        fsrs_db.commit()
+
+        count = backfill_fsrs_defaults(fsrs_db)
+        assert count >= 1
+
+        row = fsrs_db.execute(
+            "SELECT stability, difficulty, retrievability FROM lessons WHERE id = ?", [lid]
+        ).fetchone()
+        assert row["stability"] == 1.0
+        assert row["difficulty"] == 5.0
+        assert row["retrievability"] == 1.0
+
+    def test_does_not_overwrite_existing(self, fsrs_db):
+        """Lessons with non-NULL stability should be left alone."""
+        lid = _insert_reviewed_lesson(fsrs_db, "has values", stability=7.5, difficulty=3.0, days_ago=1)
+        backfill_fsrs_defaults(fsrs_db)
+
+        row = fsrs_db.execute("SELECT stability, difficulty FROM lessons WHERE id = ?", [lid]).fetchone()
+        assert row["stability"] == 7.5
+        assert row["difficulty"] == 3.0
+
+    def test_returns_zero_when_nothing_to_backfill(self, fsrs_db):
+        """If all lessons have stability set, count should be 0."""
+        _insert_reviewed_lesson(fsrs_db, "ok", stability=2.0, difficulty=5.0, days_ago=1)
+        count = backfill_fsrs_defaults(fsrs_db)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Additional record_review tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecordReviewExtended:
+    def test_review_updates_retrievability_in_db(self, fsrs_db):
+        """record_review should set retrievability=1.0 in the DB (just reviewed)."""
+        lid = _insert_reviewed_lesson(fsrs_db, "r-check", stability=2.0, difficulty=5.0, days_ago=10)
+        # Retrievability in DB should be stale (not 1.0) before review
+        record_review(fsrs_db, lid, GRADE_GOOD)
+
+        row = fsrs_db.execute("SELECT retrievability FROM lessons WHERE id = ?", [lid]).fetchone()
+        assert row["retrievability"] == 1.0
+
+    def test_first_review_each_grade(self, fsrs_db):
+        """First review with each grade should produce valid initial values."""
+        for grade in [GRADE_AGAIN, GRADE_HARD, GRADE_GOOD, GRADE_EASY]:
+            lid = insert_lesson(
+                fsrs_db,
+                {"title": f"grade-{grade}", "created_date": date.today().isoformat()},
+            )
+            result = record_review(fsrs_db, lid, grade)
+            assert result["stability"] == pytest.approx(INITIAL_S[grade], abs=1e-6)
+            assert 1.0 <= result["difficulty"] <= 10.0
+            assert result["retrievability"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Additional get_due_lessons tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetDueLessonsExtended:
+    def test_sorted_most_forgotten_first(self, fsrs_db):
+        """Results should be sorted by R ascending (most forgotten first)."""
+        # Very forgotten (S=1, 30 days ago)
+        _insert_reviewed_lesson(fsrs_db, "very forgotten", stability=1.0, difficulty=5.0, days_ago=30)
+        # Somewhat forgotten (S=1, 5 days ago)
+        _insert_reviewed_lesson(fsrs_db, "somewhat forgotten", stability=1.0, difficulty=5.0, days_ago=5)
+
+        due = get_due_lessons(fsrs_db, threshold=0.9)
+        assert len(due) == 2
+        assert due[0]["title"] == "very forgotten"
+        assert due[1]["title"] == "somewhat forgotten"
+        assert due[0]["retrievability"] < due[1]["retrievability"]
+
+    def test_includes_days_since_review(self, fsrs_db):
+        """Each result should include days_since_review."""
+        _insert_reviewed_lesson(fsrs_db, "with days", stability=1.0, difficulty=5.0, days_ago=10)
+        due = get_due_lessons(fsrs_db, threshold=0.9)
+        assert len(due) == 1
+        assert due[0]["days_since_review"] == 10
+
+    def test_custom_threshold(self, fsrs_db):
+        """A lower threshold should return fewer lessons."""
+        # S=1, 2 days ago -> R ≈ 0.82 (below 0.9 but above 0.5)
+        _insert_reviewed_lesson(fsrs_db, "medium", stability=1.0, difficulty=5.0, days_ago=2)
+
+        due_high = get_due_lessons(fsrs_db, threshold=0.9)
+        due_low = get_due_lessons(fsrs_db, threshold=0.5)
+        assert len(due_high) == 1
+        assert len(due_low) == 0
+
+
+# ---------------------------------------------------------------------------
+# Additional compute_retrievability edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestComputeRetrievabilityEdgeCases:
+    def test_negative_days_returns_one(self):
+        """Negative days_since_review should return 1.0 (future review date = just reviewed)."""
+        r = compute_retrievability(stability=1.0, days_since_review=-5.0)
+        assert r == 1.0
+
+    def test_very_small_stability(self):
+        """Very small stability should produce rapid decay but never negative R."""
+        r = compute_retrievability(stability=0.01, days_since_review=1.0)
+        assert 0.0 < r < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Additional update_stability edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateStabilityExtended:
+    def test_hard_grade_increases_less_than_good(self):
+        """Hard grade should increase stability less than Good."""
+        old_s = 5.0
+        s_hard = update_stability(old_S=old_s, old_D=5.0, grade=GRADE_HARD, R=0.9)
+        s_good = update_stability(old_S=old_s, old_D=5.0, grade=GRADE_GOOD, R=0.9)
+        assert s_hard > old_s  # Hard still increases
+        assert s_hard < s_good  # but less than Good
+
+    def test_lapse_capped_at_old_stability(self):
+        """After lapse, new stability should not exceed old stability."""
+        old_s = 3.0
+        new_s = update_stability(old_S=old_s, old_D=5.0, grade=GRADE_AGAIN, R=0.5)
+        assert new_s <= old_s
