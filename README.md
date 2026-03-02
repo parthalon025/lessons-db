@@ -111,6 +111,7 @@ Override defaults with environment variables:
 | `LESSONS_DB_OLLAMA_ANALYSIS_URL` | `http://127.0.0.1:11434` | Ollama direct API (analysis/capture) |
 | `LESSONS_DB_OLLAMA_QUEUE_URL` | `http://127.0.0.1:7683` | Ollama queue API (generation tasks) |
 | `LESSONS_DB_OLLAMA_ANALYSIS_MODEL` | `qwen3:8b` | Model for analysis and capture |
+| `LESSONS_DB_REPO_CACHE_DIR` | `~/.local/share/lessons-db/repo-cache` | Local git clone cache (shallow, depth=500) — avoids re-cloning on nightly runs |
 
 ## Adaptive Clustering (optional)
 

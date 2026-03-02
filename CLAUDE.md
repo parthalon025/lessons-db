@@ -10,8 +10,9 @@ Automated lessons-learned prevention system. Captures coding mistakes, surfaces 
 src/lessons_db/
   __init__.py
   cli.py              # Click CLI: capture, search, scan, rule, index, export, summary, status, migrate
-  config.py            # Paths, Ollama URLs (queue/embed/analysis), env var overrides
+  config.py            # Paths, Ollama URLs (queue/embed/analysis), env var overrides (incl. REPO_CACHE_DIR)
   db.py                # SQLite schema, migrations, CRUD
+  github_miner.py      # GitHub mining pipeline: discover_repos, mine_repos_for_gaps, MiningConfig
   vectors.py           # LanceDB + Ollama embedding via ollama-queue
   capture.py           # Auto-capture from transcript/diff/test
   search.py            # Semantic search + file-path lookup + content match
@@ -69,7 +70,7 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 
 - **GET /api/calibration/history** — paginated `calibration_runs` (default: last 20, max 100). Response: `[{id, run_date, dataset, bugs_sampled, pass_rate, gate14_pass, notes, ...}]`
 - **POST /api/calibration/run** — queues `calibrate_pipeline()` as background task. Query params: `sample_n` (default 50), `skip_extraction` (default false). Response: `{status: "queued"}`.
-- **GET /api/mining/history** — paginated `mining_runs`. Response: `[{id, run_date, repos_searched, commits_analyzed, candidates_extracted, gate0_rejected, gate1_rejected, gate2_rejected, gate3_rejected, gate4_rejected, auto_approved, drafted, conflicts_flagged, error_count, duration_seconds}]`
+- **GET /api/mining/history** — paginated `mining_runs`. Response: `[{id, run_date, repos_searched, commits_analyzed, candidates_extracted, diff_size_rejected, gate0_rejected, gate1_rejected, gate2_rejected, gate3_rejected, gate4_rejected, auto_approved, drafted, conflicts_flagged, error_count, duration_seconds}]`
 - **POST /api/mining/run** — queues GitHub mining task
 - **GET /api/security/findings** — open scan findings
 - **POST /api/security/scan** — trigger Semgrep security scan
