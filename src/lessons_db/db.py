@@ -289,6 +289,7 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
         ("polarity", "TEXT NOT NULL DEFAULT 'negative'"),
         ("cluster_seed", "TEXT"),
         ("reuse_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("loop_level", "TEXT NOT NULL DEFAULT 'single'"),
     ]
     for col_name, col_def in new_columns:
         try:
@@ -370,6 +371,29 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
         CREATE INDEX IF NOT EXISTS idx_fix_queue_status ON fix_queue(status);
     """)
 
+    # v9 principle column — domain-independent principle extracted by LLM
+    try:
+        conn.execute("ALTER TABLE lessons ADD COLUMN principle TEXT")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
+    # v8 FSRS spaced-repetition columns on lessons table
+    fsrs_columns = [
+        ("stability", "REAL DEFAULT 1.0"),
+        ("difficulty", "REAL DEFAULT 5.0"),
+        ("retrievability", "REAL DEFAULT 1.0"),
+        ("last_review_date", "TEXT"),
+    ]
+    for col_name, col_def in fsrs_columns:
+        try:
+            conn.execute(f"ALTER TABLE lessons ADD COLUMN {col_name} {col_def}")
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
+
     # v5 per-gate visibility columns — now in SCHEMA_SQL; keep ALTER TABLE for
     # existing DBs upgraded from the previous schema (idempotent, duplicate-safe).
     # v8 adds 'drafted' which was in SCHEMA_SQL but missing from migrations,
@@ -439,6 +463,12 @@ LESSON_COLUMNS = {
     "false_assumption",
     "detection_pattern",
     "invariant",
+    "principle",
+    "loop_level",
+    "stability",
+    "difficulty",
+    "retrievability",
+    "last_review_date",
 }
 
 

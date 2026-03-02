@@ -1044,7 +1044,7 @@ def learn():
     "--hook",
     "hook_point",
     required=True,
-    type=click.Choice(["read", "edit", "plan", "bash", "session_start", "commit"]),
+    type=click.Choice(["read", "edit", "plan", "bash", "session_start", "commit", "stop"]),
 )
 @click.option("--context", "hook_context", default="", help="File path, query, or error text.")
 @click.option(
@@ -2069,3 +2069,352 @@ def prevent_report(ctx, window_days, json_output):
         click.echo("\n  Hookify candidates (promote to blocking):")
         for h in report["hookify_candidates"][:5]:
             click.echo(f"    #{h['id']:4d}  sev={h['severity']}  {h['title'][:45]}")
+
+
+# ---------------------------------------------------------------------------
+# meta — batch metadata enrichment commands
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def meta():
+    """Batch metadata enrichment commands (LLM-powered)."""
+    pass
+
+
+@meta.command("extract-principles")
+@click.option("--batch-size", default=10, type=int, help="Number of lessons to process per batch (default: 10).")
+@click.option("--dry-run", is_flag=True, help="Preview extracted principles without updating the database.")
+@click.option(
+    "--model",
+    default=None,
+    help="Ollama model to use (default: from config ANALYSIS_MODEL).",
+)
+@click.pass_context
+def meta_extract_principles(ctx, batch_size, dry_run, model):
+    """Extract domain-independent principles from lessons via LLM.
+
+    Reads lessons that have no principle set, constructs a prompt from
+    one_liner + description, and calls Ollama (via ollama-queue) to generate
+    a concise, domain-independent principle statement.
+
+    Example: "Subscriber lifecycle management" -> "Resources acquired in
+    callbacks must be explicitly released"
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_QUEUE_URL
+
+    conn = ctx.obj["conn"]
+    effective_model = model or ANALYSIS_MODEL
+
+    # Find lessons without a principle
+    rows = conn.execute(
+        "SELECT id, title, one_liner, description FROM lessons " "WHERE principle IS NULL " "ORDER BY id " "LIMIT ?",
+        (batch_size,),
+    ).fetchall()
+
+    if not rows:
+        click.echo("No lessons without principles found.")
+        return
+
+    click.echo(f"Processing {len(rows)} lessons (model: {effective_model})...")
+
+    updated = 0
+    errors = 0
+    for row in rows:
+        lesson_id = row["id"]
+        one_liner = row["one_liner"] or ""
+        description = row["description"] or ""
+        title = row["title"] or ""
+
+        # Build context from available fields
+        context_parts = []
+        if title:
+            context_parts.append(f"Title: {title}")
+        if one_liner:
+            context_parts.append(f"One-liner: {one_liner}")
+        if description:
+            context_parts.append(f"Description: {description}")
+
+        if not context_parts:
+            click.echo(f"  #{lesson_id}: SKIP (no title/one_liner/description)")
+            continue
+
+        lesson_context = "\n".join(context_parts)
+
+        prompt = (
+            "Extract a single domain-independent principle from this coding lesson. "
+            "The principle should be a concise, universal statement that applies beyond "
+            "the specific technology or context described. Return ONLY the principle "
+            "statement, nothing else. No quotes, no explanation, no preamble.\n\n"
+            f"{lesson_context}"
+        )
+
+        payload = _json.dumps(
+            {
+                "model": effective_model,
+                "prompt": prompt,
+                "stream": False,
+            }
+        ).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(  # noqa: S310 — localhost Ollama queue
+                f"{OLLAMA_QUEUE_URL}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                result = _json.loads(resp.read().decode("utf-8"))
+            principle = result.get("response", "").strip()
+            if not principle:
+                click.echo(f"  #{lesson_id}: SKIP (empty LLM response)")
+                errors += 1
+                continue
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, _json.JSONDecodeError) as exc:
+            click.echo(f"  #{lesson_id}: ERROR ({exc})", err=True)
+            errors += 1
+            continue
+
+        if dry_run:
+            click.echo(f"  #{lesson_id}: {principle}")
+        else:
+            conn.execute(
+                "UPDATE lessons SET principle = ? WHERE id = ?",
+                (principle, lesson_id),
+            )
+            conn.commit()
+            click.echo(f"  #{lesson_id}: {principle}")
+            updated += 1
+
+    click.echo(
+        f"\nDone. {'Would update' if dry_run else 'Updated'}: {updated if not dry_run else len(rows) - errors}  "
+        f"Errors: {errors}"
+    )
+
+
+@meta.command("generate-meta-lessons")
+@click.option(
+    "--min-cluster-size",
+    default=3,
+    type=int,
+    help="Minimum lessons sharing a cluster_seed to trigger meta-lesson generation (default: 3).",
+)
+@click.option("--dry-run", is_flag=True, help="Preview clusters and prompts without writing to the database.")
+@click.option(
+    "--model",
+    default=None,
+    help="Ollama model to use (default: from config ANALYSIS_MODEL).",
+)
+@click.pass_context
+def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
+    """Generate double-loop meta-lessons from clusters of related lessons.
+
+    Finds clusters of lessons sharing the same cluster_seed (minimum --min-cluster-size),
+    then uses an LLM to generate a meta-lesson that questions the governing variables
+    behind recurrent patterns.
+
+    Example: 5 async lessons -> "Why do async lifecycle errors recur?
+    Governing variable: no systematic resource-cleanup protocol"
+    """
+    import json as _json
+    import re as _re
+    import urllib.error
+    import urllib.request
+
+    from lessons_db.config import ANALYSIS_MODEL, OLLAMA_ANALYSIS_URL
+    from lessons_db.db import insert_lesson
+
+    conn = ctx.obj["conn"]
+    effective_model = model or ANALYSIS_MODEL
+
+    # Step 1: Find clusters of lessons sharing the same cluster_seed
+    clusters = find_meta_lesson_clusters(conn, min_cluster_size)
+
+    if not clusters:
+        click.echo(f"No clusters with >= {min_cluster_size} lessons found.")
+        return
+
+    click.echo(f"Found {len(clusters)} cluster(s) (model: {effective_model})...")
+
+    generated = 0
+    skipped = 0
+    errors = 0
+
+    for seed, lessons in clusters.items():
+        # Check if a double-loop meta-lesson already exists for this cluster_seed
+        existing = conn.execute(
+            "SELECT id FROM lessons WHERE cluster_seed = ? AND loop_level = 'double' LIMIT 1",
+            (seed,),
+        ).fetchone()
+        if existing:
+            click.echo(f"  cluster '{seed}' ({len(lessons)} lessons): SKIP (meta-lesson #{existing['id']} exists)")
+            skipped += 1
+            continue
+
+        # Build context from all lessons in the cluster
+        lesson_summaries = []
+        for lesson in lessons:
+            parts = []
+            if lesson["title"]:
+                parts.append(lesson["title"])
+            if lesson["one_liner"]:
+                parts.append(lesson["one_liner"])
+            lesson_summaries.append(f"  - #{lesson['id']}: {' | '.join(parts)}")
+
+        cluster_context = "\n".join(lesson_summaries)
+
+        prompt = (
+            "You are analyzing a cluster of recurring coding lessons that share a common theme. "
+            "Your task is to generate a DOUBLE-LOOP meta-lesson that questions the governing "
+            "variables (assumptions, mental models, policies) behind WHY this pattern recurs.\n\n"
+            "Single-loop learning asks: 'How do we fix this error?'\n"
+            "Double-loop learning asks: 'What assumption or process gap causes this error to keep happening?'\n\n"
+            f"Cluster seed: {seed}\n"
+            f"Lessons in this cluster:\n{cluster_context}\n\n"
+            "Return a JSON object with exactly these fields:\n"
+            '{"title": "short title for the meta-lesson", '
+            '"one_liner": "single sentence identifying the governing variable", '
+            '"description": "2-3 sentences explaining why this pattern recurs and what systemic change would prevent it"}\n\n'
+            "Return ONLY the JSON object. No preamble, no explanation."
+        )
+
+        if dry_run:
+            click.echo(f"\n  cluster '{seed}' ({len(lessons)} lessons):")
+            for s in lesson_summaries:
+                click.echo(f"  {s}")
+            click.echo(f"  [would generate meta-lesson via {effective_model}]")
+            generated += 1
+            continue
+
+        payload = _json.dumps(
+            {
+                "model": effective_model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+            }
+        ).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(  # noqa: S310 — localhost Ollama
+                f"{OLLAMA_ANALYSIS_URL}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                result = _json.loads(resp.read().decode("utf-8"))
+
+            raw_response = result.get("response", "").strip()
+            # Strip <think>...</think> blocks (deepseek-r1 style)
+            raw_response = _re.sub(r"<think>.*?</think>", "", raw_response, flags=_re.DOTALL).strip()
+
+            meta_data = _json.loads(raw_response)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+            click.echo(f"  cluster '{seed}': ERROR (network: {exc})", err=True)
+            errors += 1
+            continue
+        except (_json.JSONDecodeError, KeyError) as exc:
+            click.echo(f"  cluster '{seed}': ERROR (parse: {exc})", err=True)
+            errors += 1
+            continue
+
+        title = meta_data.get("title", f"Meta: {seed}")
+        one_liner = meta_data.get("one_liner", "")
+        description = meta_data.get("description", "")
+
+        if not one_liner:
+            click.echo(f"  cluster '{seed}': SKIP (empty one_liner from LLM)")
+            errors += 1
+            continue
+
+        # Use the first lesson in the cluster as the parent
+        parent_id = lessons[0]["id"]
+        lesson_id = insert_lesson(
+            conn,
+            {
+                "title": title,
+                "one_liner": one_liner,
+                "description": description,
+                "cluster_seed": seed,
+                "loop_level": "double",
+                "parent_lesson_id": parent_id,
+                "source": "auto_meta",
+                "entry_type": "lesson",
+                "tier": "insight",
+            },
+        )
+
+        click.echo(f"  cluster '{seed}' ({len(lessons)} lessons) -> meta-lesson #{lesson_id}: {one_liner[:60]}")
+        generated += 1
+
+    click.echo(
+        f"\nDone. {'Would generate' if dry_run else 'Generated'}: {generated}  " f"Skipped: {skipped}  Errors: {errors}"
+    )
+
+
+def find_meta_lesson_clusters(
+    conn,
+    min_cluster_size: int = 3,
+) -> dict[str, list[dict]]:
+    """Find clusters of lessons sharing the same cluster_seed with at least min_cluster_size members.
+
+    Returns a dict mapping cluster_seed -> list of lesson dicts (id, title, one_liner).
+    Only includes single-loop lessons (excludes existing meta-lessons).
+    """
+    # Find cluster_seeds with enough lessons
+    rows = conn.execute(
+        "SELECT cluster_seed, COUNT(*) as cnt "
+        "FROM lessons "
+        "WHERE cluster_seed IS NOT NULL AND cluster_seed != '' "
+        "  AND (loop_level IS NULL OR loop_level = 'single') "
+        "GROUP BY cluster_seed "
+        "HAVING COUNT(*) >= ? "
+        "ORDER BY cnt DESC",
+        (min_cluster_size,),
+    ).fetchall()
+
+    clusters: dict[str, list[dict]] = {}
+    for row in rows:
+        seed = row["cluster_seed"]
+        lessons = conn.execute(
+            "SELECT id, title, one_liner FROM lessons "
+            "WHERE cluster_seed = ? AND (loop_level IS NULL OR loop_level = 'single') "
+            "ORDER BY id",
+            (seed,),
+        ).fetchall()
+        clusters[seed] = [dict(l) for l in lessons]
+
+    return clusters
+
+
+# ---------------------------------------------------------------------------
+# FSRS spaced-repetition commands
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+@click.pass_context
+def fsrs(ctx):
+    """FSRS spaced-repetition scheduling commands."""
+
+
+@fsrs.command("init")
+@click.pass_context
+def fsrs_init(ctx):
+    """Backfill all existing lessons with FSRS-6 default parameters.
+
+    Sets stability=1.0, difficulty=5.0, retrievability=1.0 for any lesson
+    that has not yet been initialized. Safe to run multiple times (idempotent).
+    """
+    from lessons_db.fsrs import backfill_fsrs_defaults
+
+    conn = ctx.obj["conn"]
+    count = backfill_fsrs_defaults(conn)
+    total = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+    click.echo(f"FSRS init complete: {count} lessons backfilled ({total} total).")

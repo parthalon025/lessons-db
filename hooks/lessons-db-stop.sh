@@ -56,4 +56,24 @@ if [[ -d "${PROJ}/docs/plans" ]]; then
     done < <(find "${PROJ}/docs/plans" -name "*.md" -mmin -120 -print0 2>/dev/null)
 fi
 
+# Surface lessons relevant to this session's changes and record surfacing events.
+# Uses the diff stat summary as a search query to find contextually relevant lessons.
+DIFF_SUMMARY=$(echo "$DIFF_STAT" | tail -1 | sed 's/^ *//')
+if [[ -n "$DIFF_SUMMARY" ]]; then
+    PROJ_NAME=$(basename "$PROJ")
+    STOP_RESULTS=$("$LESSONS_DB" search "${PROJ_NAME} ${DIFF_SUMMARY}" --top 3 2>/dev/null || echo "")
+    if [[ -n "$STOP_RESULTS" && "$STOP_RESULTS" != "No results found." ]]; then
+        # Record each surfaced lesson for the learning pipeline
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+                "$LESSONS_DB" learn record \
+                    --lesson-id "${BASH_REMATCH[1]}" \
+                    --hook "stop" \
+                    --context "${PROJ_NAME}" \
+                    2>>/tmp/lessons-db-errors.log || true
+            fi
+        done <<< "$STOP_RESULTS"
+    fi
+fi
+
 exit 0

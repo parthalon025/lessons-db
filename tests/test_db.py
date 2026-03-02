@@ -645,6 +645,42 @@ def test_scan_findings_lesson_id_nullable_migration(tmp_path):
     assert result["lesson_id"] is None
 
 
+def test_lessons_principle_column_exists(db_path):
+    """lessons table must have the 'principle' column after init_db."""
+    conn = init_db(db_path)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info('lessons')").fetchall()}
+    assert "principle" in cols, "lessons missing 'principle' column"
+    conn.close()
+
+
+def test_principle_column_nullable_and_writable(db_path):
+    """principle column should accept NULL (default) and text values."""
+    conn = init_db(db_path)
+    lid = insert_lesson(conn, {"title": "test principle", "one_liner": "test"})
+    row = get_lesson(conn, lid)
+    assert row["principle"] is None  # default is NULL
+
+    # Write a principle
+    from lessons_db.db import update_lesson
+
+    update_lesson(conn, lid, {"principle": "Resources acquired in callbacks must be explicitly released"})
+    row = get_lesson(conn, lid)
+    assert row["principle"] == "Resources acquired in callbacks must be explicitly released"
+    conn.close()
+
+
+def test_principle_column_migration_idempotent(db_path):
+    """_add_extension_columns must not raise when principle column already exists."""
+    from lessons_db.db import _add_extension_columns
+
+    conn = init_db(db_path)
+    # init_db already added principle; second call must be a no-op
+    _add_extension_columns(conn)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info('lessons')").fetchall()}
+    assert "principle" in cols
+    conn.close()
+
+
 def test_mining_runs_drafted_column_exists(db_path):
     """mining_runs table must have the 'drafted' column after init_db."""
     conn = init_db(db_path)
@@ -700,3 +736,236 @@ def test_mining_runs_drafted_migrated_on_legacy_table(tmp_path):
     row = conn.execute("SELECT drafted FROM mining_runs WHERE id=?", (run_id,)).fetchone()
     assert row["drafted"] == 2
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# FSRS column tests
+# ---------------------------------------------------------------------------
+
+
+class TestFSRSColumns:
+    """Tests for FSRS spaced-repetition columns on lessons table."""
+
+    def test_fsrs_columns_exist_after_init(self, db_path):
+        """init_db must create stability, difficulty, retrievability, last_review_date columns."""
+        conn = init_db(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        for expected in ("stability", "difficulty", "retrievability", "last_review_date"):
+            assert expected in cols, f"missing FSRS column {expected!r}"
+        conn.close()
+
+    def test_fsrs_columns_have_correct_defaults(self, db_path):
+        """New lessons should get stability=1.0, difficulty=5.0, retrievability=1.0, last_review_date=NULL."""
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {"title": "fsrs test", "one_liner": "test defaults"})
+        row = conn.execute(
+            "SELECT stability, difficulty, retrievability, last_review_date FROM lessons WHERE id = ?",
+            (lid,),
+        ).fetchone()
+        assert row["stability"] == 1.0
+        assert row["difficulty"] == 5.0
+        assert row["retrievability"] == 1.0
+        assert row["last_review_date"] is None
+        conn.close()
+
+    def test_fsrs_columns_idempotent(self, db_path):
+        """_add_extension_columns must not raise on double init (duplicate column guard)."""
+        from lessons_db.db import _add_extension_columns
+
+        conn = init_db(db_path)
+        # init_db already called _add_extension_columns once; second call must be no-op
+        _add_extension_columns(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        for expected in ("stability", "difficulty", "retrievability", "last_review_date"):
+            assert expected in cols, f"missing FSRS column {expected!r} after double init"
+        conn.close()
+
+    def test_fsrs_columns_in_lesson_columns_set(self):
+        """LESSON_COLUMNS must include FSRS columns so insert/update accept them."""
+        from lessons_db.db import LESSON_COLUMNS
+
+        for col in ("stability", "difficulty", "retrievability", "last_review_date"):
+            assert col in LESSON_COLUMNS, f"{col!r} missing from LESSON_COLUMNS"
+
+    def test_fsrs_columns_updateable(self, db_path):
+        """FSRS columns should be updatable via update_lesson."""
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {"title": "fsrs update", "one_liner": "test update"})
+        update_lesson(
+            conn,
+            lid,
+            {
+                "stability": 3.5,
+                "difficulty": 7.2,
+                "retrievability": 0.85,
+                "last_review_date": "2026-03-01",
+            },
+        )
+        row = get_lesson(conn, lid)
+        assert row["stability"] == 3.5
+        assert row["difficulty"] == 7.2
+        assert row["retrievability"] == 0.85
+        assert row["last_review_date"] == "2026-03-01"
+        conn.close()
+
+    def test_fsrs_columns_queryable(self, db_path):
+        """SELECT with FSRS columns must work (acceptance criteria query)."""
+        conn = init_db(db_path)
+        insert_lesson(conn, {"title": "queryable", "one_liner": "test query"})
+        row = conn.execute(
+            "SELECT stability, difficulty, retrievability, last_review_date FROM lessons LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        assert row["stability"] == 1.0
+        conn.close()
+
+    def test_fsrs_migration_on_legacy_db(self, tmp_path):
+        """FSRS columns must be added when init_db runs on a legacy DB that lacks them."""
+        import sqlite3 as _sqlite3
+
+        db_file = tmp_path / "legacy_fsrs.db"
+
+        # Simulate old schema without FSRS columns
+        legacy = _sqlite3.connect(str(db_file))
+        legacy.row_factory = _sqlite3.Row
+        legacy.execute("PRAGMA journal_mode=WAL")
+        legacy.executescript("""
+            CREATE TABLE lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'observation',
+                severity INTEGER NOT NULL DEFAULT 3,
+                confidence TEXT NOT NULL DEFAULT 'emerging',
+                enforcement TEXT NOT NULL DEFAULT 'documentation',
+                recurrence_count INTEGER NOT NULL DEFAULT 0,
+                created_date TEXT NOT NULL
+            );
+        """)
+        # Insert a pre-existing lesson
+        legacy.execute("INSERT INTO lessons (title, created_date) VALUES ('legacy lesson', '2026-01-01')")
+        legacy.commit()
+        legacy.close()
+
+        # init_db must add FSRS columns
+        conn = init_db(db_file)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(lessons)")}
+        for expected in ("stability", "difficulty", "retrievability", "last_review_date"):
+            assert expected in cols, f"missing FSRS column {expected!r} on legacy DB"
+
+        # Pre-existing lesson gets defaults
+        row = conn.execute(
+            "SELECT stability, difficulty, retrievability, last_review_date FROM lessons WHERE title='legacy lesson'"
+        ).fetchone()
+        assert row["stability"] == 1.0
+        assert row["difficulty"] == 5.0
+        assert row["retrievability"] == 1.0
+        assert row["last_review_date"] is None
+        conn.close()
+
+
+class TestFSRSBackfill:
+    """Tests for fsrs.backfill_fsrs_defaults function."""
+
+    def test_backfill_sets_defaults_on_null_stability(self, db_path):
+        """backfill_fsrs_defaults must set FSRS defaults on lessons with NULL stability."""
+        from lessons_db.fsrs import backfill_fsrs_defaults
+
+        conn = init_db(db_path)
+        # Force stability to NULL to simulate a lesson from before FSRS migration
+        lid = insert_lesson(conn, {"title": "pre-fsrs", "one_liner": "needs backfill"})
+        conn.execute("UPDATE lessons SET stability = NULL WHERE id = ?", (lid,))
+        conn.commit()
+
+        count = backfill_fsrs_defaults(conn)
+        assert count == 1
+
+        row = conn.execute("SELECT stability, difficulty, retrievability FROM lessons WHERE id = ?", (lid,)).fetchone()
+        assert row["stability"] == 1.0
+        assert row["difficulty"] == 5.0
+        assert row["retrievability"] == 1.0
+        conn.close()
+
+    def test_backfill_idempotent(self, db_path):
+        """Running backfill twice should not change already-backfilled lessons."""
+        from lessons_db.fsrs import backfill_fsrs_defaults
+
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {"title": "idem", "one_liner": "test"})
+        conn.execute("UPDATE lessons SET stability = NULL WHERE id = ?", (lid,))
+        conn.commit()
+
+        count1 = backfill_fsrs_defaults(conn)
+        assert count1 == 1
+        count2 = backfill_fsrs_defaults(conn)
+        assert count2 == 0  # already backfilled
+        conn.close()
+
+    def test_backfill_skips_already_initialized(self, db_path):
+        """Lessons with non-NULL stability should not be touched by backfill."""
+        from lessons_db.fsrs import backfill_fsrs_defaults
+
+        conn = init_db(db_path)
+        lid = insert_lesson(conn, {"title": "already init", "one_liner": "test"})
+        # stability=1.0 (default from column def), so not NULL — should be skipped
+        update_lesson(conn, lid, {"stability": 5.5, "difficulty": 8.0})
+
+        count = backfill_fsrs_defaults(conn)
+        assert count == 0
+
+        row = conn.execute("SELECT stability, difficulty FROM lessons WHERE id = ?", (lid,)).fetchone()
+        assert row["stability"] == 5.5  # unchanged
+        assert row["difficulty"] == 8.0  # unchanged
+        conn.close()
+
+
+class TestFSRSCLI:
+    """Tests for the fsrs CLI command group."""
+
+    def test_fsrs_init_help(self):
+        """lessons-db fsrs init --help must exit 0."""
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["fsrs", "init", "--help"])
+        assert result.exit_code == 0, result.output
+
+    def test_fsrs_init_backfills(self, tmp_path):
+        """lessons-db fsrs init must backfill lessons and print count."""
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        db_file = tmp_path / "cli_test.db"
+        conn = init_db(db_file)
+        lid = insert_lesson(conn, {"title": "cli backfill", "one_liner": "test"})
+        # Force NULL stability to simulate pre-FSRS lesson
+        conn.execute("UPDATE lessons SET stability = NULL WHERE id = ?", (lid,))
+        conn.commit()
+        conn.close()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["--db", str(db_file), "fsrs", "init"])
+        assert result.exit_code == 0, result.output
+        assert "1 lessons backfilled" in result.output
+        assert "1 total" in result.output
+
+    def test_fsrs_init_idempotent(self, tmp_path):
+        """Running fsrs init twice should show 0 backfilled on second run."""
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+
+        db_file = tmp_path / "cli_idem.db"
+        conn = init_db(db_file)
+        insert_lesson(conn, {"title": "idem cli", "one_liner": "test"})
+        conn.execute("UPDATE lessons SET stability = NULL WHERE id = 1")
+        conn.commit()
+        conn.close()
+
+        runner = CliRunner()
+        runner.invoke(main, ["--db", str(db_file), "fsrs", "init"])
+        result = runner.invoke(main, ["--db", str(db_file), "fsrs", "init"])
+        assert result.exit_code == 0, result.output
+        assert "0 lessons backfilled" in result.output

@@ -181,6 +181,21 @@ def _stability_after_lapse(old_S: float, old_D: float, R: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_STABILITY = 1.0
+DEFAULT_DIFFICULTY = 5.0
+DEFAULT_RETRIEVABILITY = 1.0
+
+
+def backfill_fsrs_defaults(conn: sqlite3.Connection) -> int:
+    """Set FSRS defaults on any lesson with stability IS NULL. Returns count updated."""
+    cursor = conn.execute(
+        "UPDATE lessons SET stability = ?, difficulty = ?, retrievability = ? " "WHERE stability IS NULL",
+        (DEFAULT_STABILITY, DEFAULT_DIFFICULTY, DEFAULT_RETRIEVABILITY),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def ensure_fsrs_columns(conn: sqlite3.Connection) -> None:
     """Add FSRS columns to lessons table (idempotent).
 

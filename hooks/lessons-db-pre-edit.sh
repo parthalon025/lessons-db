@@ -67,4 +67,16 @@ for v in d.get('violations', []):
 
 if [[ -n "$VIOLATIONS" ]]; then
     echo "$VIOLATIONS" >&2
+
+    # Record each surfaced lesson for the learning pipeline
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+            LESSON_ID="${BASH_REMATCH[1]}"
+            "$LESSONS_DB" learn record \
+                --lesson-id "$LESSON_ID" \
+                --hook "edit" \
+                --context "${FILE_PATH:-}" \
+                2>>/tmp/lessons-db-errors.log || true
+        fi
+    done <<< "$VIOLATIONS"
 fi

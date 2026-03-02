@@ -105,6 +105,7 @@ VALID_SOURCES = (
     "auto_design_doc",
     "auto_plan",
     "semgrep_registry",
+    "auto_meta",
 )
 
 # OpenAI API config (for draft triage reviewer)

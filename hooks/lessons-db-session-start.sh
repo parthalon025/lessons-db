@@ -8,6 +8,11 @@ if [[ -z "$LESSONS_DB" ]]; then
     exit 0  # lessons-db not installed yet
 fi
 
+# Source shared feedforward formatting
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hooks/_feedforward-format.sh
+source "${HOOK_DIR}/_feedforward-format.sh"
+
 "$LESSONS_DB" status 2>/dev/null || true
 
 # Resolve stale unknown surfacing outcomes from prior session (behavioral inference)
@@ -89,20 +94,21 @@ fi
 
 # Surface top-3 contextually relevant lessons for current project.
 # Mirrors the enter-plan hook — session start should show the same signal.
+# Output format: SUGGESTION (negative) or PROVEN PATTERN (positive) via feedforward_format.
 PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 PROJ_NAME=$(basename "$PROJ_DIR")
 CONTEXT_RESULTS=$("$LESSONS_DB" search "planning ${PROJ_NAME}" --top 3 2>/dev/null || echo "")
 if [[ -n "$CONTEXT_RESULTS" && "$CONTEXT_RESULTS" != "No results found." ]]; then
     echo ""
     echo "Top lessons for ${PROJ_NAME}:"
-    echo "$CONTEXT_RESULTS"
+    feedforward_format "$CONTEXT_RESULTS"
 
     # Record surfacing events for learning pipeline
     while IFS= read -r line; do
-        if [[ "$line" =~ ^\[#([0-9]+)\] ]]; then
+        if [[ "$line" =~ \[#([0-9]+)\] ]]; then
             "$LESSONS_DB" learn record \
                 --lesson-id "${BASH_REMATCH[1]}" \
-                --hook "session-start" \
+                --hook "session_start" \
                 --context "$PROJ_NAME" \
                 2>>/tmp/lessons-db-errors.log || true
         fi
