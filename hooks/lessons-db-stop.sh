@@ -76,4 +76,21 @@ if [[ -n "$DIFF_SUMMARY" ]]; then
     fi
 fi
 
+# --- Aggressive positive capture: detect session wins ---
+# Check for wins (heeded lessons, clean sessions, positive pattern reuse)
+# and route through the draft capture pipeline for sustain-oriented retention.
+WIN_RESULTS=$("$LESSONS_DB" capture detect-wins --lookback 4 2>/dev/null || echo "")
+if [[ -n "$WIN_RESULTS" && "$WIN_RESULTS" != "No wins detected this session." ]]; then
+    # Output AAR sustain prompt so it appears in the session transcript
+    echo ""
+    echo "=== SESSION AAR: What should we sustain? ==="
+    echo "$WIN_RESULTS"
+    echo ""
+    echo "Positive patterns detected. Consider:"
+    echo "  - Which wins above should become permanent positive lessons?"
+    echo "  - What made this session successful? (process, tooling, approach)"
+    echo "  - Run 'lessons-db capture drafts' to review and promote win drafts."
+    echo "=== End AAR ==="
+fi
+
 exit 0

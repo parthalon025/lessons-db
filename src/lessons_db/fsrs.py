@@ -187,6 +187,31 @@ def _stability_after_lapse(old_S: float, old_D: float, R: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Adaptive fading — controls lesson presentation based on stability
+# ---------------------------------------------------------------------------
+
+
+def get_fading_level(stability: float) -> str:
+    """Return the fading level for a lesson based on its FSRS stability.
+
+    As stability grows (lesson is well-learned), presentation fades from
+    full text down to automated enforcement:
+
+        S < 2.0        -> 'full'     (full lesson text + code example)
+        2.0 <= S < 10.0  -> 'brief'   (one-liner reminder only)
+        10.0 <= S < 50.0 -> 'silent'  (Semgrep rule only, no message)
+        S >= 50.0       -> 'enforced' (automated enforcement, never shown)
+    """
+    if stability < 2.0:
+        return "full"
+    if stability < 10.0:
+        return "brief"
+    if stability < 50.0:
+        return "silent"
+    return "enforced"
+
+
+# ---------------------------------------------------------------------------
 # DB schema extension
 # ---------------------------------------------------------------------------
 

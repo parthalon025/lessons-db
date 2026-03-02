@@ -80,3 +80,46 @@ if [[ -n "$VIOLATIONS" ]]; then
         fi
     done <<< "$VIOLATIONS"
 fi
+
+# ── Positive reuse detection ────────────────────────────────────────────
+# Check if new content matches any positive lesson detection patterns.
+# When a match is found, record a reuse event to advance the promotion tier.
+POSITIVE_MATCHES=$(python3 -c "
+import sqlite3, re, os, pathlib
+db = pathlib.Path(os.environ.get('LESSONS_DB_PATH', os.path.expanduser('~/.local/share/lessons-db/lessons.db')))
+if not db.exists():
+    raise SystemExit(0)
+conn = sqlite3.connect(str(db))
+conn.row_factory = sqlite3.Row
+rows = conn.execute('''
+    SELECT dp.lesson_id, dp.regex
+    FROM detection_patterns dp
+    JOIN lessons l ON dp.lesson_id = l.id
+    WHERE l.polarity = \"positive\"
+      AND dp.pattern_type IN (\"regex\", \"syntactic\")
+''').fetchall()
+content = pathlib.Path('$TMPFILE').read_text()
+seen = set()
+for row in rows:
+    lid = row['lesson_id']
+    if lid in seen:
+        continue
+    try:
+        if re.search(row['regex'], content):
+            print(lid)
+            seen.add(lid)
+    except re.error:
+        if row['regex'] in content:
+            print(lid)
+            seen.add(lid)
+conn.close()
+" 2>/dev/null || echo "")
+
+if [[ -n "$POSITIVE_MATCHES" ]]; then
+    while IFS= read -r LESSON_ID; do
+        if [[ -n "$LESSON_ID" ]]; then
+            "$LESSONS_DB" reuse record "$LESSON_ID" \
+                2>>/tmp/lessons-db-errors.log || true
+        fi
+    done <<< "$POSITIVE_MATCHES"
+fi

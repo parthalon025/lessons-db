@@ -16,6 +16,7 @@ from lessons_db.fsrs import (
     compute_retrievability,
     ensure_fsrs_columns,
     get_due_lessons,
+    get_fading_level,
     record_review,
     update_difficulty,
     update_stability,
@@ -465,3 +466,62 @@ class TestUpdateStabilityExtended:
         old_s = 3.0
         new_s = update_stability(old_S=old_s, old_D=5.0, grade=GRADE_AGAIN, R=0.5)
         assert new_s <= old_s
+
+
+# ---------------------------------------------------------------------------
+# get_fading_level — adaptive presentation based on stability
+# ---------------------------------------------------------------------------
+
+
+class TestGetFadingLevel:
+    """Fading levels: full -> brief -> silent -> enforced as S increases."""
+
+    def test_very_low_stability_is_full(self):
+        """S < 2.0 -> 'full' (show full lesson text + code example)."""
+        assert get_fading_level(0.5) == "full"
+        assert get_fading_level(1.0) == "full"
+        assert get_fading_level(1.99) == "full"
+
+    def test_moderate_stability_is_brief(self):
+        """2.0 <= S < 10.0 -> 'brief' (one-liner reminder only)."""
+        assert get_fading_level(2.0) == "brief"
+        assert get_fading_level(5.0) == "brief"
+        assert get_fading_level(9.99) == "brief"
+
+    def test_high_stability_is_silent(self):
+        """10.0 <= S < 50.0 -> 'silent' (Semgrep rule only, no message)."""
+        assert get_fading_level(10.0) == "silent"
+        assert get_fading_level(20.0) == "silent"
+        assert get_fading_level(49.99) == "silent"
+
+    def test_very_high_stability_is_enforced(self):
+        """S >= 50.0 -> 'enforced' (automated enforcement, never shown)."""
+        assert get_fading_level(50.0) == "enforced"
+        assert get_fading_level(100.0) == "enforced"
+        assert get_fading_level(1000.0) == "enforced"
+
+    def test_boundary_at_two(self):
+        """Exact boundary: 1.999... -> full, 2.0 -> brief."""
+        assert get_fading_level(1.9999) == "full"
+        assert get_fading_level(2.0) == "brief"
+
+    def test_boundary_at_ten(self):
+        """Exact boundary: 9.999... -> brief, 10.0 -> silent."""
+        assert get_fading_level(9.9999) == "brief"
+        assert get_fading_level(10.0) == "silent"
+
+    def test_boundary_at_fifty(self):
+        """Exact boundary: 49.999... -> silent, 50.0 -> enforced."""
+        assert get_fading_level(49.9999) == "silent"
+        assert get_fading_level(50.0) == "enforced"
+
+    def test_near_zero_stability(self):
+        """Very small stability (near-new lesson) -> full."""
+        assert get_fading_level(0.01) == "full"
+
+    def test_all_levels_are_valid_strings(self):
+        """Every fading level returned must be one of the four valid levels."""
+        valid = {"full", "brief", "silent", "enforced"}
+        for s in [0.01, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0]:
+            level = get_fading_level(s)
+            assert level in valid, f"S={s} returned invalid level '{level}'"

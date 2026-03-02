@@ -966,6 +966,53 @@ def capture_triage(ctx, review_log, log_date, override_id):
     click.echo("Usage: lessons-db capture triage [--review-log [--date DATE] | --override ID]")
 
 
+@capture.command("detect-wins")
+@click.option("--lookback", type=int, default=4, help="Hours to look back for surfacing events.")
+@click.pass_context
+def capture_detect_wins_cmd(ctx, lookback):
+    """Detect positive session wins from surfacing event patterns.
+
+    Checks for heeded lessons, clean sessions (no anti-pattern hits),
+    and positive pattern reuse. Routes detected wins through the draft
+    capture pipeline for sustain-oriented knowledge retention.
+    """
+    from lessons_db.capture import detect_wins
+
+    conn = ctx.obj["conn"]
+    wins = detect_wins(conn, lookback_hours=lookback)
+
+    if not wins:
+        click.echo("No wins detected this session.")
+        return
+
+    click.echo(f"Detected {len(wins)} win(s):")
+    for win in wins:
+        click.echo(f"  [{win['win_type']}] {win['detail']}")
+
+    # Route wins through draft capture pipeline
+    for win in wins:
+        try:
+            conn.execute(
+                "INSERT INTO capture_drafts "
+                "(raw_content, extracted_data, status, created_date, source) "
+                "VALUES (?, ?, 'pending', date('now'), 'auto_win_detection')",
+                [
+                    win["detail"],
+                    json.dumps(
+                        {
+                            "one_liner": win["detail"],
+                            "win_type": win["win_type"],
+                            "lesson_ids": win.get("lesson_ids", []),
+                        }
+                    ),
+                ],
+            )
+        except Exception as exc:
+            logger.warning("detect-wins: draft insert failed: %s", exc)
+    conn.commit()
+    click.echo(f"Queued {len(wins)} win draft(s). Review with: lessons-db capture drafts")
+
+
 @main.group()
 def cluster():
     """Adaptive cluster discovery and management."""
@@ -1222,6 +1269,49 @@ def learn_list(click_ctx, since, output_format, outcome_filter):
             click.echo(
                 f"{row['id']:>6}  {row['lesson_id']:>5}  {row['hook_point']:<14}  " f"{row['outcome']:<14}  {title}"
             )
+
+
+@main.group()
+def reuse():
+    """Positive reuse tracking — record pattern reuse to advance promotion tier."""
+    pass
+
+
+@reuse.command("record")
+@click.argument("lesson_id", type=int)
+@click.pass_context
+def reuse_record(ctx, lesson_id):
+    """Record a positive pattern reuse for LESSON_ID.
+
+    Increments reuse_count and promotes the lesson through tiers:
+    noticed -> tested (1) -> proven (2, template generated) -> standard (3).
+
+    Also records a surfacing event with outcome='reused' for the learning pipeline.
+    """
+    from lessons_db.promote import record_reuse
+
+    conn = ctx.obj["conn"]
+    try:
+        new_tier = record_reuse(conn, lesson_id)
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return
+
+    # Record a surfacing event so the learning pipeline tracks positive reuse
+    from lessons_db.learn import record_surfacing
+
+    event_id = record_surfacing(conn, lesson_id, "edit", "positive_reuse")
+    # Mark outcome as 'heeded' — reuse of a positive pattern is always a good outcome
+    from lessons_db.learn import record_outcome
+
+    record_outcome(conn, event_id, "heeded")
+
+    lesson = conn.execute("SELECT one_liner FROM lessons WHERE id = ?", [lesson_id]).fetchone()
+    one_liner = lesson["one_liner"] if lesson else ""
+    click.echo(f"Recorded reuse for lesson #{lesson_id} — tier: {new_tier}")
+    if one_liner:
+        click.echo(f"  {one_liner}")
 
 
 @main.group()
