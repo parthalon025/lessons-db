@@ -291,15 +291,17 @@ def import_semgrep(ctx, delta):
 
 @main.command()
 @click.option("--seed-only", is_flag=True, help="Only backfill cluster_seed, skip embedding generation.")
+@click.option("--reindex-all", is_flag=True, help="Re-embed all lessons, even those already in LanceDB.")
 @click.pass_context
-def index(ctx, seed_only):
-    """Backfill cluster_seed and generate LanceDB embeddings for all lessons.
+def index(ctx, seed_only, reindex_all):
+    """Backfill cluster_seed and generate LanceDB embeddings for unindexed lessons.
 
-    Run once after initial migrate, or after adding new lessons without embeddings.
+    By default only indexes lessons not yet present in LanceDB (incremental).
+    Use --reindex-all to rebuild embeddings for every lesson.
     cluster_seed: copies cluster → cluster_seed for A-F historical labels.
     Embeddings: calls Ollama nomic-embed-text for each lesson's title + one_liner.
     """
-    from lessons_db.vectors import init_lance, upsert_lesson
+    from lessons_db.vectors import TABLE_NAME, init_lance, upsert_lesson
 
     conn = ctx.obj["conn"]
 
@@ -313,17 +315,29 @@ def index(ctx, seed_only):
     if seed_only:
         return
 
-    # Step 2: generate embeddings for all lessons
-    lance_db = init_lance(str(LANCE_DIR))
+    # Step 2: incremental embedding — skip lessons already in LanceDB
     LANCE_DIR.mkdir(parents=True, exist_ok=True)
+    lance_db = init_lance(str(LANCE_DIR))
+
+    # Determine which lesson_ids are already indexed
+    already_indexed: set[int] = set()
+    if not reindex_all and TABLE_NAME in lance_db.list_tables().tables:
+        table = lance_db.open_table(TABLE_NAME)
+        already_indexed = {int(v) for v in table.to_arrow()["lesson_id"].to_pylist()}
 
     rows = conn.execute(
         "SELECT id, title, one_liner, keywords, cluster, tier, scope, enforcement, recurrence_count FROM lessons"
     ).fetchall()
 
+    to_index = [r for r in rows if r["id"] not in already_indexed]
+    skipped = len(rows) - len(to_index)
+
+    if skipped:
+        click.echo(f"Skipping {skipped} already-indexed lessons (use --reindex-all to force).")
+
     ok = 0
     failed = 0
-    for row in rows:
+    for row in to_index:
         title = row["title"] or ""
         one_liner = row["one_liner"] or ""
         keywords = row["keywords"] or ""
@@ -347,7 +361,7 @@ def index(ctx, seed_only):
             logger.warning("index: embedding failed for lesson #%d", row["id"])
 
         if (ok + failed) % 10 == 0:
-            click.echo(f"  {ok + failed}/{len(rows)} indexed...", err=False)
+            click.echo(f"  {ok + failed}/{len(to_index)} indexed...", err=False)
 
     click.echo(f"Indexed: {ok}, Failed: {failed}")
 
