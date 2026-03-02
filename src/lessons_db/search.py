@@ -19,47 +19,75 @@ def search_for_file(conn: sqlite3.Connection, file_path: str) -> list[dict[str, 
 
 
 def search_by_content(conn: sqlite3.Connection, content: str, language: str = "any") -> list[dict[str, Any]]:
-    """Match content against syntactic detection patterns.
+    """Match content against regex-based detection patterns.
 
-    Loads all detection_patterns rows where pattern_type='syntactic'
-    and language matches. Tests each regex against content.
+    Loads all detection_patterns rows where pattern_type is 'regex' or
+    'syntactic' (both are plain-regex patterns; 'structural' patterns are
+    AST-based and excluded from text matching).  Filters by language when
+    not 'any'.  Tests each regex against *content*.
+
     Returns list of dicts with: lesson_id, one_liner, matched_pattern, severity.
     """
+    # Both 'regex' and 'syntactic' are plain-regex pattern types eligible for
+    # text matching.  'structural' patterns require AST analysis and are excluded.
+    _REGEX_PATTERN_TYPES = ("regex", "syntactic")
+
     if language == "any":
+        placeholders = ",".join("?" for _ in _REGEX_PATTERN_TYPES)
         rows = conn.execute(
-            """
+            f"""
             SELECT dp.lesson_id, dp.regex, l.one_liner, l.severity
             FROM detection_patterns dp
             JOIN lessons l ON dp.lesson_id = l.id
-            WHERE dp.pattern_type = 'syntactic'
+            WHERE dp.pattern_type IN ({placeholders})
             """,
+            list(_REGEX_PATTERN_TYPES),
         ).fetchall()
     else:
+        placeholders = ",".join("?" for _ in _REGEX_PATTERN_TYPES)
         rows = conn.execute(
-            """
+            f"""
             SELECT dp.lesson_id, dp.regex, l.one_liner, l.severity
             FROM detection_patterns dp
             JOIN lessons l ON dp.lesson_id = l.id
-            WHERE dp.pattern_type = ?
+            WHERE dp.pattern_type IN ({placeholders})
               AND (dp.language = ? OR dp.language = 'any')
             """,
-            ("syntactic", language),
+            list(_REGEX_PATTERN_TYPES) + [language],
         ).fetchall()
 
     matches = []
     for row in rows:
+        regex = row["regex"]
+        lesson_id = row["lesson_id"]
         try:
-            if re.search(row["regex"], content):
+            if re.search(regex, content):
+                logger.debug(
+                    "search_by_content: pattern matched — lesson_id=%d regex=%r",
+                    lesson_id,
+                    regex,
+                )
                 matches.append(
                     {
-                        "lesson_id": row["lesson_id"],
+                        "lesson_id": lesson_id,
                         "one_liner": row["one_liner"],
-                        "matched_pattern": row["regex"],
+                        "matched_pattern": regex,
                         "severity": row["severity"],
                     }
                 )
-        except re.error:
-            logger.warning("Invalid regex for lesson %d: %s", row["lesson_id"], row["regex"])
+        except re.error as exc:
+            logger.warning(
+                "search_by_content: invalid regex for lesson %d: %r — %s",
+                lesson_id,
+                regex,
+                exc,
+            )
+
+    logger.debug(
+        "search_by_content: tested %d patterns, %d matched",
+        len(rows),
+        len(matches),
+    )
     return matches
 
 

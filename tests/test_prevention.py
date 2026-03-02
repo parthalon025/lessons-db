@@ -368,7 +368,7 @@ class TestCheckContent:
         conn = init_db(db_path)
         lid = _insert_lesson(conn, enforcement="semgrep_warning")
 
-        with patch("lessons_db.search.search_by_content", return_value=[{"id": lid}]):
+        with patch("lessons_db.search.search_by_content", return_value=[{"lesson_id": lid}]):
             result = check_content(conn, "try:\n    pass\nexcept:\n    pass")
 
         assert len(result["violations"]) == 1
@@ -378,7 +378,7 @@ class TestCheckContent:
         conn = init_db(db_path)
         lid = _insert_lesson(conn, enforcement="semgrep_error", recurrence_count=3)
 
-        with patch("lessons_db.search.search_by_content", return_value=[{"id": lid}]):
+        with patch("lessons_db.search.search_by_content", return_value=[{"lesson_id": lid}]):
             result = check_content(conn, "except:")
 
         assert result["block"] is True
@@ -388,7 +388,7 @@ class TestCheckContent:
         conn = init_db(db_path)
         lid = _insert_lesson(conn, enforcement="semgrep_warning", recurrence_count=2)
 
-        with patch("lessons_db.search.search_by_content", return_value=[{"id": lid}]):
+        with patch("lessons_db.search.search_by_content", return_value=[{"lesson_id": lid}]):
             result = check_content(conn, "except:")
 
         assert result["block"] is False
@@ -398,7 +398,7 @@ class TestCheckContent:
         conn = init_db(db_path)
         lid = _insert_lesson(conn, enforcement="documentation")
 
-        with patch("lessons_db.search.search_by_content", return_value=[{"id": lid}]):
+        with patch("lessons_db.search.search_by_content", return_value=[{"lesson_id": lid}]):
             result = check_content(conn, "some content")
 
         v = result["violations"][0]
@@ -565,3 +565,105 @@ class TestPreventionReport:
         assert report["total_lessons"] == 0
         assert report["rules_generated"] == 0
         assert report["top_recurring"] == []
+
+
+# ---------------------------------------------------------------------------
+# Detection pattern matching (end-to-end)
+# ---------------------------------------------------------------------------
+
+
+class TestDetectionPatternMatching:
+    """End-to-end: detection pattern → content match → recurrence event.
+
+    Regression tests for the bug where 167 production patterns with
+    pattern_type='regex' produced 0 recurrence events because
+    search_by_content filtered for pattern_type='syntactic' only.
+    """
+
+    def test_detection_pattern_matches_known_bad_content(self, db_path, tmp_path):
+        """Core regression test: a 'regex' pattern_type must match content
+        and produce a recurrence event through the full pipeline."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn, enforcement="documentation", severity=4)
+        # Insert pattern with pattern_type='regex' — matching production data
+        _insert_pattern(conn, lid, regex=r"except\s*:", pattern_type="regex")
+
+        # Feed content that matches the pattern through the full pipeline
+        result = check_content(
+            conn,
+            "try:\n    risky()\nexcept:\n    pass",
+            rules_dir=tmp_path,
+        )
+
+        # Verify the violation was detected
+        assert len(result["violations"]) == 1
+        assert result["violations"][0]["lesson_id"] == lid
+
+        # Verify a recurrence event was recorded
+        count = conn.execute(
+            "SELECT COUNT(*) FROM recurrence_events WHERE lesson_id = ?",
+            (lid,),
+        ).fetchone()[0]
+        assert count == 1, "Expected 1 recurrence event but found 0"
+
+    def test_syntactic_pattern_type_still_matches(self, db_path, tmp_path):
+        """Patterns with pattern_type='syntactic' must continue to work."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_pattern(conn, lid, regex=r"eval\(", pattern_type="syntactic")
+
+        result = check_content(conn, "result = eval(user_input)", rules_dir=tmp_path)
+
+        assert len(result["violations"]) == 1
+        assert result["violations"][0]["lesson_id"] == lid
+
+    def test_both_regex_and_syntactic_patterns_matched(self, db_path, tmp_path):
+        """Both pattern types should produce matches in a single check."""
+        conn = init_db(db_path)
+        lid_regex = _insert_lesson(conn, severity=4)
+        lid_syntactic = _insert_lesson(conn, severity=3)
+        _insert_pattern(conn, lid_regex, regex=r"except\s*:", pattern_type="regex")
+        _insert_pattern(conn, lid_syntactic, regex=r"eval\(", pattern_type="syntactic")
+
+        result = check_content(
+            conn,
+            "try:\n    eval(x)\nexcept:\n    pass",
+            rules_dir=tmp_path,
+        )
+
+        matched_ids = {v["lesson_id"] for v in result["violations"]}
+        assert lid_regex in matched_ids
+        assert lid_syntactic in matched_ids
+
+    def test_structural_pattern_type_excluded_from_content_match(self, db_path, tmp_path):
+        """Structural patterns (AST-based) should NOT match via regex content check."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_pattern(conn, lid, regex=r"except\s*:", pattern_type="structural")
+
+        result = check_content(conn, "except:", rules_dir=tmp_path)
+
+        assert len(result["violations"]) == 0
+
+    def test_no_match_for_clean_content(self, db_path, tmp_path):
+        """Content that doesn't match any pattern should produce no violations."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_pattern(conn, lid, regex=r"except\s*:", pattern_type="regex")
+
+        result = check_content(conn, "def hello():\n    return 'world'", rules_dir=tmp_path)
+
+        assert len(result["violations"]) == 0
+        count = conn.execute("SELECT COUNT(*) FROM recurrence_events").fetchone()[0]
+        assert count == 0
+
+    def test_invalid_regex_pattern_logged_not_crashed(self, db_path, tmp_path):
+        """An invalid regex should be logged and skipped, not crash the pipeline."""
+        conn = init_db(db_path)
+        lid = _insert_lesson(conn)
+        _insert_pattern(conn, lid, regex=r"[invalid(", pattern_type="regex")
+
+        # Should not raise
+        result = check_content(conn, "some content", rules_dir=tmp_path)
+
+        assert len(result["violations"]) == 0

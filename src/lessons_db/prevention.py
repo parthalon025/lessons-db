@@ -338,7 +338,7 @@ def check_content(
     block_messages: list[str] = []
 
     for match in matches:
-        lesson_id = match["id"]
+        lesson_id = match["lesson_id"]
         decision = assess_and_enforce(
             conn,
             lesson_id,
