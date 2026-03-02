@@ -372,12 +372,15 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
 
     # v5 per-gate visibility columns — now in SCHEMA_SQL; keep ALTER TABLE for
     # existing DBs upgraded from the previous schema (idempotent, duplicate-safe).
+    # v8 adds 'drafted' which was in SCHEMA_SQL but missing from migrations,
+    # causing OperationalError on legacy DBs (nightly timer failure).
     for col_name, col_def in [
         ("candidates_extracted", "INTEGER DEFAULT 0"),
         ("diff_size_rejected", "INTEGER DEFAULT 0"),
         ("gate2_rejected", "INTEGER DEFAULT 0"),
         ("gate3_rejected", "INTEGER DEFAULT 0"),
         ("gate4_rejected", "INTEGER DEFAULT 0"),
+        ("drafted", "INTEGER DEFAULT 0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE mining_runs ADD COLUMN {col_name} {col_def}")

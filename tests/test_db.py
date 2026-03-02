@@ -89,6 +89,7 @@ class TestSchemaCreation:
             "gate2_rejected",
             "gate3_rejected",
             "gate4_rejected",
+            "drafted",
             "duration_seconds",
         ):
             assert expected in cols, f"missing column {expected!r} after double init"
@@ -642,3 +643,60 @@ def test_scan_findings_lesson_id_nullable_migration(tmp_path):
     conn.commit()
     result = conn.execute("SELECT lesson_id FROM scan_findings WHERE rule_id='S105'").fetchone()
     assert result["lesson_id"] is None
+
+
+def test_mining_runs_drafted_column_exists(db_path):
+    """mining_runs table must have the 'drafted' column after init_db."""
+    conn = init_db(db_path)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info('mining_runs')").fetchall()}
+    assert "drafted" in cols, "mining_runs missing 'drafted' column"
+    conn.close()
+
+
+def test_mining_runs_drafted_migrated_on_legacy_table(tmp_path):
+    """_add_extension_columns must add 'drafted' to a legacy mining_runs table that lacks it."""
+    import sqlite3 as _sqlite3
+
+    db_file = tmp_path / "legacy_mining.db"
+
+    # Simulate old schema: mining_runs WITHOUT drafted column
+    legacy = _sqlite3.connect(str(db_file))
+    legacy.row_factory = _sqlite3.Row
+    legacy.execute("PRAGMA journal_mode=WAL")
+    legacy.executescript("""
+        CREATE TABLE lessons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            tier TEXT NOT NULL DEFAULT 'observation',
+            severity INTEGER NOT NULL DEFAULT 3,
+            confidence TEXT NOT NULL DEFAULT 'emerging',
+            enforcement TEXT NOT NULL DEFAULT 'documentation',
+            recurrence_count INTEGER NOT NULL DEFAULT 0,
+            created_date TEXT NOT NULL
+        );
+        CREATE TABLE mining_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date TEXT NOT NULL,
+            repos_searched INTEGER DEFAULT 0,
+            commits_analyzed INTEGER DEFAULT 0,
+            gate0_rejected INTEGER DEFAULT 0,
+            gate1_rejected INTEGER DEFAULT 0,
+            auto_approved INTEGER DEFAULT 0,
+            conflicts_flagged INTEGER DEFAULT 0,
+            error_count INTEGER DEFAULT 0,
+            duration_seconds REAL
+        );
+    """)
+    legacy.commit()
+    legacy.close()
+
+    # init_db must detect and add the missing drafted column
+    conn = init_db(db_file)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info('mining_runs')").fetchall()}
+    assert "drafted" in cols, "drafted column not migrated onto legacy mining_runs table"
+
+    # Verify insert_mining_run works with the drafted column
+    run_id = insert_mining_run(conn, repos_searched=3, drafted=2)
+    row = conn.execute("SELECT drafted FROM mining_runs WHERE id=?", (run_id,)).fetchone()
+    assert row["drafted"] == 2
+    conn.close()
