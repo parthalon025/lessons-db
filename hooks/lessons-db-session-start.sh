@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook: show lessons-db status line and positive pattern count
+# SessionStart hook: show lessons-db status line, resolve stale outcomes, show fix queue
 set -euo pipefail
 
 LESSONS_DB=$(command -v lessons-db 2>/dev/null || echo "")
@@ -9,6 +9,29 @@ if [[ -z "$LESSONS_DB" ]]; then
 fi
 
 "$LESSONS_DB" status 2>/dev/null || true
+
+# Resolve stale unknown surfacing outcomes from prior session (behavioral inference)
+RESOLVE_RESULT=$("$LESSONS_DB" prevent resolve-outcomes 2>/dev/null || echo "")
+if [[ -n "$RESOLVE_RESULT" && "$RESOLVE_RESULT" != "Resolved: 0  heeded=0  dismissed=0" ]]; then
+    echo "$RESOLVE_RESULT"
+fi
+
+# Show pending fix queue count (actionable items for this session)
+FIX_COUNT=$(python3 - <<'PYEOF' 2>/dev/null || echo "0"
+import sqlite3, pathlib
+db = pathlib.Path.home() / ".local/share/lessons-db/lessons.db"
+if db.exists():
+    conn = sqlite3.connect(str(db))
+    n = conn.execute("SELECT COUNT(*) FROM fix_queue WHERE status='pending'").fetchone()[0]
+    conn.close()
+    print(n)
+else:
+    print(0)
+PYEOF
+)
+if [[ "${FIX_COUNT:-0}" -gt 0 ]]; then
+    echo "Fix queue: ${FIX_COUNT} pending — run: lessons-db fix next"
+fi
 
 # Show count of positive patterns as signal of accumulated knowledge.
 # Direct DB query — avoids LanceDB/CLI dependency and works even when search is unavailable.

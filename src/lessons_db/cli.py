@@ -490,16 +490,19 @@ def scan(ctx):
     "--target", type=click.Path(), default=None, help="Target directory to scan (default: ~/Documents/projects/)"
 )
 @click.option("--baseline", default=None, help="Git commit hash for diff-aware scanning.")
+@click.option(
+    "--populate-fixes/--no-populate-fixes", default=True, help="Auto-populate fix queue after scan (default: on)."
+)
 @click.pass_context
-def scan_run(ctx, rules_dir, target, baseline):
+def scan_run(ctx, rules_dir, target, baseline, populate_fixes):
     """Run Semgrep scan against all lessons rules and record findings."""
     from lessons_db.db import insert_scan_finding
-    from lessons_db.enforce import check_escalation
+    from lessons_db.prevention import assess_and_enforce, populate_fix_queue
     from lessons_db.scan import run_scan
 
     rules = Path(rules_dir) if rules_dir else RULES_DIR
     if not rules.exists() or not any(rules.rglob("*.yaml")):
-        click.echo("No rules found. Run: lessons-db rule generate <id>")
+        click.echo("No rules found. Run: lessons-db prevent bulk-generate")
         return
 
     target_path = Path(target) if target else Path.home() / "Documents" / "projects"
@@ -517,9 +520,12 @@ def scan_run(ctx, rules_dir, target, baseline):
         return
 
     saved = 0
+    blocked = 0
+    escalated = 0
+
     for f in findings:
         rule_id = f.get("rule_id", "")
-        click.echo(f"  [{rule_id}] {f.get('file_path')}:{f.get('line_number')}")
+        file_path = f.get("file_path", "")
 
         # Parse lesson_id from rule_id suffix (format: lessons-db.<lang>.<slug>-NNN)
         lesson_id = None
@@ -540,22 +546,40 @@ def scan_run(ctx, rules_dir, target, baseline):
                 {
                     "lesson_id": lesson_id,
                     "rule_id": rule_id,
-                    "file_path": f.get("file_path", ""),
+                    "file_path": file_path,
                     "line_number": f.get("line_number"),
                     "snippet": f.get("message", ""),
                 },
             )
             saved += 1
-            action = check_escalation(conn, lesson_id)
-            if action["recurrence_count"] >= 2:
-                click.echo(
-                    f"  [ESCALATED] lesson {lesson_id} → {action['level']}"
-                    f" (recurrence #{action['recurrence_count']})"
-                )
+
+            # Full enforcement cycle: log recurrence event, velocity check, escalate if needed
+            decision = assess_and_enforce(
+                conn,
+                lesson_id,
+                hook_point="scan",
+                trigger_type="semgrep",
+                file_path=file_path,
+                rules_dir=rules,
+            )
+
+            status = f"  [{rule_id}] {file_path}:{f.get('line_number')}"
+            if decision.escalated:
+                status += f"  → ESCALATED to {decision.enforcement_level}"
+                escalated += 1
+            if decision.should_block:
+                status += "  [BLOCKING]"
+                blocked += 1
+            click.echo(status)
+
         except Exception as exc:
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
-    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved to DB")
+    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved" f" | escalated={escalated} blocking={blocked}")
+
+    if populate_fixes and saved > 0:
+        fix_result = populate_fix_queue(conn)
+        click.echo(f"Fix queue: +{fix_result['added']} added" f" ({fix_result['skipped_duplicate']} already queued)")
 
 
 @scan.command("security")
@@ -1670,3 +1694,306 @@ def mining_history(ctx, limit):
             f"commits={row['commits_analyzed']} approved={row['auto_approved']} "
             f"errors={row['error_count']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# fix — actionable fix queue for Claude and GitHub Issues
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def fix():
+    """Manage the fix queue — actionable items for Claude or GitHub Issues."""
+    pass
+
+
+@fix.command("next")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON for scripting.")
+@click.pass_context
+def fix_next(ctx, json_output):
+    """Print the highest-priority pending fix in a Claude-actionable format."""
+    import json as _json
+
+    from lessons_db.db import get_next_fix
+
+    conn = ctx.obj["conn"]
+    fix_item = get_next_fix(conn)
+    if fix_item is None:
+        click.echo("Fix queue is empty — no pending fixes.")
+        return
+
+    if json_output:
+        click.echo(_json.dumps(fix_item, indent=2, default=str))
+        return
+
+    click.echo(f"\nFix #{fix_item['id']} — Lesson #{fix_item['lesson_id']}: {fix_item['title']}")
+    click.echo(f"Enforcement: {fix_item['enforcement']}  |  Severity: {fix_item.get('severity', '?')}")
+    click.echo(
+        f"\nFile: {fix_item['file_path']}" + (f":{fix_item['line_number']}" if fix_item.get("line_number") else "")
+    )
+    if fix_item.get("snippet"):
+        click.echo(f"\nDetected pattern:\n  {fix_item['snippet']}")
+    if fix_item.get("suggested_fix"):
+        click.echo(f"\nSuggested fix:\n  {fix_item['suggested_fix']}")
+    click.echo("\nAfter fixing, run:")
+    click.echo(f"  lessons-db fix done {fix_item['id']}")
+    click.echo(f"  lessons-db fix skip {fix_item['id']}   (to skip)")
+
+
+@fix.command("list")
+@click.option(
+    "--status",
+    default="pending",
+    type=click.Choice(["pending", "applied", "skipped", "issue_created", "wont_fix"]),
+    help="Filter by status.",
+)
+@click.option("--limit", default=20, help="Max rows to show.")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def fix_list(ctx, status, limit, json_output):
+    """List fix queue entries."""
+    import json as _json
+
+    from lessons_db.db import get_fix_queue
+
+    conn = ctx.obj["conn"]
+    items = get_fix_queue(conn, status=status, limit=limit)
+    if not items:
+        click.echo(f"No {status} fixes in queue.")
+        return
+
+    if json_output:
+        click.echo(_json.dumps(items, indent=2, default=str))
+        return
+
+    click.echo(f"\n{'ID':>4}  {'Sev':>3}  {'Lesson':>6}  {'File':40s}  {'Status':14s}")
+    click.echo("-" * 80)
+    for item in items:
+        path = item["file_path"]
+        if len(path) > 38:
+            path = "…" + path[-37:]
+        click.echo(
+            f"{item['id']:>4}  {item.get('severity', '?'):>3}  "
+            f"#{item['lesson_id']:>5}  {path:40s}  {item['status']:14s}"
+        )
+
+
+@fix.command("done")
+@click.argument("fix_id", type=int)
+@click.pass_context
+def fix_done(ctx, fix_id):
+    """Mark a fix as applied."""
+    from lessons_db.db import update_fix_status
+
+    conn = ctx.obj["conn"]
+    row = conn.execute("SELECT id FROM fix_queue WHERE id=?", (fix_id,)).fetchone()
+    if not row:
+        click.echo(f"Fix #{fix_id} not found.", err=True)
+        ctx.exit(1)
+        return
+    update_fix_status(conn, fix_id, "applied")
+    click.echo(f"Fix #{fix_id} marked as applied.")
+
+
+@fix.command("skip")
+@click.argument("fix_id", type=int)
+@click.pass_context
+def fix_skip(ctx, fix_id):
+    """Mark a fix as skipped (won't fix)."""
+    from lessons_db.db import update_fix_status
+
+    conn = ctx.obj["conn"]
+    row = conn.execute("SELECT id FROM fix_queue WHERE id=?", (fix_id,)).fetchone()
+    if not row:
+        click.echo(f"Fix #{fix_id} not found.", err=True)
+        ctx.exit(1)
+        return
+    update_fix_status(conn, fix_id, "skipped")
+    click.echo(f"Fix #{fix_id} marked as skipped.")
+
+
+@fix.command("populate")
+@click.option(
+    "--min-severity",
+    default=3,
+    type=int,
+    help="Minimum lesson severity to include (default: 3).",
+)
+@click.pass_context
+def fix_populate(ctx, min_severity):
+    """Populate fix queue from open scan findings."""
+    from lessons_db.prevention import populate_fix_queue
+
+    conn = ctx.obj["conn"]
+    result = populate_fix_queue(conn, min_severity=min_severity)
+    click.echo(
+        f"Populated: added={result['added']}  "
+        f"skipped_duplicate={result['skipped_duplicate']}  "
+        f"skipped_severity={result['skipped_severity']}  "
+        f"skipped_no_lesson={result['skipped_no_lesson']}"
+    )
+
+
+@fix.command("issues")
+@click.option("--repo", default=None, help="GitHub repo (owner/name). Defaults to current origin.")
+@click.option(
+    "--min-severity",
+    default=4,
+    type=int,
+    help="Minimum severity to create an issue for (default: 4).",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would be created without calling gh.")
+@click.pass_context
+def fix_issues(ctx, repo, min_severity, dry_run):
+    """Create GitHub issues for pending high-severity fixes."""
+    from lessons_db.prevention import create_github_issues
+
+    conn = ctx.obj["conn"]
+    result = create_github_issues(conn, repo=repo, min_severity=min_severity, dry_run=dry_run)
+    prefix = "[DRY RUN] " if dry_run else ""
+    click.echo(
+        f"{prefix}Issues: created={result['created']}  "
+        f"skipped_existing={result['skipped_existing']}  "
+        f"skipped_severity={result['skipped_severity']}  "
+        f"errors={result['errors']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# prevent — enforcement cycle, rule generation, content checks
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def prevent():
+    """Run the prevention pipeline — enforce, generate rules, check content."""
+    pass
+
+
+@prevent.command("check-content")
+@click.option("--content", "-c", default=None, help="Content string to check.")
+@click.option("--file", "-f", "file_path", default=None, type=click.Path(), help="Read content from file.")
+@click.option(
+    "--context-path",
+    default=None,
+    type=click.Path(),
+    help="File path for metadata context (used when content comes from --file).",
+)
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def prevent_check_content(ctx, content, file_path, context_path, json_output):
+    """Check content against detection patterns and run enforcement cycle."""
+    import json as _json
+
+    from lessons_db.prevention import check_content
+
+    conn = ctx.obj["conn"]
+    if file_path and content is None:
+        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    if not content:
+        click.echo("Provide --content TEXT or --file PATH.", err=True)
+        ctx.exit(1)
+        return
+
+    # context_path overrides file_path for recurrence metadata (e.g. when content
+    # is a temp file but the original path is what matters for tracking).
+    effective_path = context_path or file_path
+    result = check_content(conn, content, file_path=effective_path)
+
+    if json_output:
+        click.echo(_json.dumps(result, indent=2, default=str))
+    elif result["block"]:
+        click.echo(result["message"], err=True)
+        ctx.exit(2)
+        return
+    elif result["violations"]:
+        for v in result["violations"]:
+            click.echo(f"  ⚠  Lesson #{v['lesson_id']} [{v['enforcement']}]: {v['one_liner']}")
+    else:
+        click.echo("OK — no pattern matches.")
+
+
+@prevent.command("resolve-outcomes")
+@click.option("--max-age-hours", default=24, type=int, help="Lookback window in hours (default: 24).")
+@click.pass_context
+def prevent_resolve_outcomes(ctx, max_age_hours):
+    """Batch-resolve stale 'unknown' surfacing events via behavioral inference."""
+    from lessons_db.prevention import resolve_outcomes
+
+    conn = ctx.obj["conn"]
+    result = resolve_outcomes(conn, max_age_hours=max_age_hours)
+    click.echo(f"Resolved: {result['resolved']}  heeded={result['heeded']}  dismissed={result['dismissed']}")
+
+
+@prevent.command("bulk-generate")
+@click.option(
+    "--enforcement",
+    multiple=True,
+    default=None,
+    help="Only generate for lessons at this enforcement level (repeatable).",
+)
+@click.option(
+    "--rules-dir",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: ~/.local/share/lessons-db/rules/)",
+)
+@click.option("--no-validate", is_flag=True, help="Skip semgrep --validate.")
+@click.pass_context
+def prevent_bulk_generate(ctx, enforcement, rules_dir, no_validate):
+    """Generate Semgrep rules for all lessons that have detection patterns."""
+    from lessons_db.prevention import bulk_generate_rules
+
+    conn = ctx.obj["conn"]
+    out_dir = Path(rules_dir) if rules_dir else None
+    result = bulk_generate_rules(
+        conn,
+        rules_dir=out_dir,
+        only_enforcement=tuple(enforcement) if enforcement else None,
+        validate=not no_validate,
+    )
+    click.echo(
+        f"Generated: {result['generated']}  "
+        f"skipped_no_patterns={result['skipped_no_patterns']}  "
+        f"skipped_validation={result['skipped_validation']}"
+    )
+    for p in result["paths"]:
+        click.echo(f"  {p}")
+
+
+@prevent.command("report")
+@click.option("--window-days", default=30, type=int, help="Lookback window in days (default: 30).")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+@click.pass_context
+def prevent_report(ctx, window_days, json_output):
+    """Comprehensive prevention effectiveness report."""
+    import json as _json
+
+    from lessons_db.prevention import prevention_report
+
+    conn = ctx.obj["conn"]
+    report = prevention_report(conn, window_days=window_days)
+
+    if json_output:
+        click.echo(_json.dumps(report, indent=2, default=str))
+        return
+
+    click.echo(f"\n── Prevention Report (last {window_days} days) ──────────────────────")
+    click.echo(f"  Total lessons:        {report['total_lessons']}")
+    click.echo(f"  Rules generated:      {report['rules_generated']}")
+    click.echo(f"  Without patterns:     {report['lessons_without_patterns']}")
+    click.echo("\n  Enforcement coverage:")
+    for level, count in sorted(report["enforcement_coverage"].items()):
+        click.echo(f"    {level:25s} {count}")
+    if report["velocity_alerts"]:
+        click.echo(f"\n  Velocity alerts ({len(report['velocity_alerts'])} lessons hitting 2+/7d):")
+        for a in report["velocity_alerts"][:5]:
+            click.echo(f"    #{a['lesson_id']:4d}  {a['hit_count']:2d}x  {a['title'][:50]}")
+    if report["top_recurring"]:
+        click.echo(f"\n  Top recurring lessons (last {window_days}d):")
+        for r in report["top_recurring"][:5]:
+            click.echo(f"    #{r['lesson_id']:4d}  {r['hit_count']:2d}x  {r['title'][:50]}")
+    if report["hookify_candidates"]:
+        click.echo("\n  Hookify candidates (promote to blocking):")
+        for h in report["hookify_candidates"][:5]:
+            click.echo(f"    #{h['id']:4d}  sev={h['severity']}  {h['title'][:45]}")

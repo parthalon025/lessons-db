@@ -345,7 +345,7 @@ def test_scan_command_runs(mock_run, tmp_path):
         ["--db", str(db_path), "scan", "run", "--rules-dir", str(tmp_path / "rules"), "--target", str(tmp_path)],
     )
     assert result.exit_code == 0
-    assert "1 saved to DB" in result.output
+    assert "1 saved" in result.output
 
     # Verify the finding was actually written
     row = conn.execute("SELECT * FROM scan_findings WHERE lesson_id = 1").fetchone()

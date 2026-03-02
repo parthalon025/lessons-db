@@ -24,6 +24,11 @@ class StatusUpdate(BaseModel):
     status: str
 
 
+class FixStatusUpdate(BaseModel):
+    status: str
+    github_issue_url: str | None = None
+
+
 def create_app(  # noqa: C901, PLR0915
     db_path: Path | None = None,
     lance_dir: Path | None = None,
@@ -274,6 +279,181 @@ def create_app(  # noqa: C901, PLR0915
             )
             conn.commit()
             return {"id": draft_id, "status": body.status}
+        finally:
+            conn.close()
+
+    # -----------------------------------------------------------------------
+    # Fix queue
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/fix-queue")
+    def list_fix_queue(
+        status: str = "pending",
+        limit: int = Query(50, le=200),
+    ) -> list:
+        """List fix queue entries by status."""
+        from lessons_db.db import get_fix_queue
+
+        conn = get_conn()
+        try:
+            return get_fix_queue(conn, status=status, limit=limit)
+        finally:
+            conn.close()
+
+    @app.get("/api/fix-queue/next")
+    def get_next_fix_item() -> dict:
+        """Return the highest-priority pending fix, or 404 if queue is empty."""
+        from lessons_db.db import get_next_fix
+
+        conn = get_conn()
+        try:
+            fix = get_next_fix(conn)
+            if fix is None:
+                raise HTTPException(status_code=404, detail="fix queue is empty")
+            return fix
+        finally:
+            conn.close()
+
+    @app.patch("/api/fix-queue/{fix_id}")
+    def update_fix_queue_item(fix_id: int, body: FixStatusUpdate) -> dict:
+        """Update fix status (applied, skipped, wont_fix, etc.)."""
+        from lessons_db.db import update_fix_status
+
+        valid = {"applied", "skipped", "wont_fix", "issue_created", "pending", "in_progress"}
+        if body.status not in valid:
+            raise HTTPException(status_code=422, detail=f"status must be one of {sorted(valid)}")
+
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT id FROM fix_queue WHERE id=?", (fix_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="fix not found")
+            update_fix_status(conn, fix_id, body.status, github_issue_url=body.github_issue_url)
+            return {"id": fix_id, "status": body.status}
+        finally:
+            conn.close()
+
+    @app.post("/api/fix-queue/populate")
+    def populate_fix_queue_endpoint(
+        background_tasks: BackgroundTasks,
+        min_severity: int = Query(3, ge=1, le=5),
+    ) -> dict:
+        """Populate fix queue from open scan findings (background)."""
+        from lessons_db.prevention import populate_fix_queue
+
+        def _run():
+            conn = get_conn()
+            try:
+                populate_fix_queue(conn, min_severity=min_severity)
+            finally:
+                conn.close()
+
+        background_tasks.add_task(_run)
+        return {"status": "queued"}
+
+    @app.post("/api/fix-queue/issues")
+    def create_github_issues_endpoint(
+        background_tasks: BackgroundTasks,
+        repo: str | None = Query(None),
+        min_severity: int = Query(4, ge=1, le=5),
+        dry_run: bool = Query(False),
+    ) -> dict:
+        """Create GitHub issues for pending high-severity fixes (background)."""
+        from lessons_db.prevention import create_github_issues
+
+        def _run():
+            conn = get_conn()
+            try:
+                create_github_issues(conn, repo=repo, min_severity=min_severity, dry_run=dry_run)
+            finally:
+                conn.close()
+
+        background_tasks.add_task(_run)
+        return {"status": "queued", "dry_run": dry_run}
+
+    # -----------------------------------------------------------------------
+    # Prevention pipeline
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/prevention/report")
+    def prevention_report_endpoint(window_days: int = Query(30, ge=1, le=365)) -> dict:
+        """Comprehensive prevention effectiveness report."""
+        from lessons_db.prevention import prevention_report
+
+        conn = get_conn()
+        try:
+            return prevention_report(conn, window_days=window_days)
+        finally:
+            conn.close()
+
+    @app.get("/api/prevention/recurrence")
+    def prevention_recurrence_endpoint(
+        window_days: int = Query(7, ge=1, le=90),
+        threshold: int = Query(2, ge=1),
+        limit: int = Query(20, le=100),
+    ) -> list:
+        """Lessons with high recurrence velocity (potential hotspots)."""
+        from lessons_db.db import get_velocity_warnings
+
+        conn = get_conn()
+        try:
+            return get_velocity_warnings(conn, window_days=window_days, threshold=threshold)[:limit]
+        finally:
+            conn.close()
+
+    @app.post("/api/prevention/resolve-outcomes")
+    def resolve_outcomes_endpoint(
+        background_tasks: BackgroundTasks,
+        max_age_hours: int = Query(24, ge=1),
+    ) -> dict:
+        """Batch-resolve stale unknown surfacing events (background)."""
+        from lessons_db.prevention import resolve_outcomes
+
+        def _run():
+            conn = get_conn()
+            try:
+                resolve_outcomes(conn, max_age_hours=max_age_hours)
+            finally:
+                conn.close()
+
+        background_tasks.add_task(_run)
+        return {"status": "queued"}
+
+    @app.post("/api/prevention/bulk-generate")
+    def bulk_generate_rules_endpoint(
+        background_tasks: BackgroundTasks,
+        validate: bool = Query(True),
+    ) -> dict:
+        """Generate Semgrep rules for all lessons with detection patterns (background)."""
+        from lessons_db.prevention import bulk_generate_rules
+
+        def _run():
+            conn = get_conn()
+            try:
+                bulk_generate_rules(conn, validate=validate)
+            finally:
+                conn.close()
+
+        background_tasks.add_task(_run)
+        return {"status": "queued"}
+
+    @app.post("/api/prevention/check-content")
+    def check_content_endpoint(body: dict) -> dict:
+        """Check content string against detection patterns.
+
+        Body: {content: str, file_path?: str}
+        Returns: {block: bool, message: str, violations: [...]}
+        """
+        from lessons_db.prevention import check_content
+
+        content = body.get("content", "")
+        file_path = body.get("file_path")
+        if not content:
+            raise HTTPException(status_code=422, detail="content is required")
+
+        conn = get_conn()
+        try:
+            return check_content(conn, content, file_path=file_path)
         finally:
             conn.close()
 

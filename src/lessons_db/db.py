@@ -3,7 +3,7 @@
 import json
 import logging
 import sqlite3
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -204,6 +204,37 @@ CREATE TABLE IF NOT EXISTS calibration_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_calibration_runs_date ON calibration_runs(run_date);
+
+CREATE TABLE IF NOT EXISTS recurrence_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    hook_point TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    file_path TEXT,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recurrence_lesson_ts ON recurrence_events(lesson_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS fix_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson_id INTEGER NOT NULL,
+    scan_finding_id INTEGER,
+    file_path TEXT NOT NULL,
+    line_number INTEGER,
+    snippet TEXT,
+    suggested_fix TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    github_issue_url TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (lesson_id) REFERENCES lessons(id),
+    FOREIGN KEY (scan_finding_id) REFERENCES scan_findings(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fix_queue_dedup
+    ON fix_queue(lesson_id, file_path, COALESCE(line_number, -1));
+CREATE INDEX IF NOT EXISTS idx_fix_queue_status ON fix_queue(status);
 """
 
 
@@ -301,6 +332,43 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e):
                 raise
+
+    # v6 recurrence_events table — now in SCHEMA_SQL; CREATE IF NOT EXISTS for
+    # existing DBs (idempotent).
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS recurrence_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id INTEGER NOT NULL,
+            timestamp TEXT NOT NULL,
+            hook_point TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            file_path TEXT,
+            FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recurrence_lesson_ts
+            ON recurrence_events(lesson_id, timestamp);
+    """)
+
+    # v7 fix_queue table — actionable work items for Claude or GitHub issues.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS fix_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id INTEGER NOT NULL,
+            scan_finding_id INTEGER,
+            file_path TEXT NOT NULL,
+            line_number INTEGER,
+            snippet TEXT,
+            suggested_fix TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            github_issue_url TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (lesson_id) REFERENCES lessons(id),
+            FOREIGN KEY (scan_finding_id) REFERENCES scan_findings(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fix_queue_dedup
+            ON fix_queue(lesson_id, file_path, COALESCE(line_number, -1));
+        CREATE INDEX IF NOT EXISTS idx_fix_queue_status ON fix_queue(status);
+    """)
 
     # v5 per-gate visibility columns — now in SCHEMA_SQL; keep ALTER TABLE for
     # existing DBs upgraded from the previous schema (idempotent, duplicate-safe).
@@ -718,3 +786,143 @@ def insert_calibration_run(
     )
     conn.commit()
     return cursor.lastrowid
+
+
+def insert_recurrence_event(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    hook_point: str,
+    trigger_type: str,
+    file_path: str | None = None,
+) -> int:
+    """Log a recurrence event for a lesson. Returns new row id."""
+    from datetime import UTC, datetime
+
+    cursor = conn.execute(
+        "INSERT INTO recurrence_events (lesson_id, timestamp, hook_point, trigger_type, file_path) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [lesson_id, datetime.now(UTC).isoformat(), hook_point, trigger_type, file_path],
+    )
+    conn.commit()
+    assert cursor.lastrowid is not None
+    return cursor.lastrowid
+
+
+def get_recurrence_velocity(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    window_days: int = 7,
+) -> int:
+    """Count recurrence events for a lesson in the past window_days."""
+    from datetime import UTC, datetime, timedelta
+
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM recurrence_events WHERE lesson_id = ? AND timestamp >= ?",
+        [lesson_id, cutoff],
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def get_velocity_warnings(
+    conn: sqlite3.Connection,
+    window_days: int = 7,
+    threshold: int = 2,
+) -> list[dict]:
+    """Return all lessons with recurrence velocity >= threshold in the past window_days."""
+    from datetime import UTC, datetime, timedelta
+
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    rows = conn.execute(
+        """
+        SELECT re.lesson_id, l.title, l.enforcement, l.severity, COUNT(*) as hit_count
+        FROM recurrence_events re
+        JOIN lessons l ON re.lesson_id = l.id
+        WHERE re.timestamp >= ?
+        GROUP BY re.lesson_id
+        HAVING COUNT(*) >= ?
+        ORDER BY hit_count DESC
+        """,
+        [cutoff, threshold],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Fix queue
+# ---------------------------------------------------------------------------
+
+
+def add_to_fix_queue(
+    conn: sqlite3.Connection,
+    lesson_id: int,
+    file_path: str,
+    line_number: int | None = None,
+    snippet: str | None = None,
+    suggested_fix: str | None = None,
+    scan_finding_id: int | None = None,
+) -> int | None:
+    """Add a fixable item to the fix queue. Idempotent via unique index on
+    (lesson_id, file_path, line_number). Returns new row id, or None if duplicate.
+    """
+    try:
+        cursor = conn.execute(
+            "INSERT INTO fix_queue "
+            "(lesson_id, scan_finding_id, file_path, line_number, snippet, suggested_fix, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                lesson_id,
+                scan_finding_id,
+                file_path,
+                line_number,
+                snippet,
+                suggested_fix,
+                datetime.now(UTC).isoformat(),
+            ],
+        )
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        return None  # duplicate — already queued
+
+
+def get_next_fix(conn: sqlite3.Connection) -> dict | None:
+    """Return the highest-priority pending fix: highest severity lesson first,
+    then earliest created_at. Returns None if queue is empty.
+    """
+    result = get_fix_queue(conn, status="pending", limit=1)
+    return result[0] if result else None
+
+
+def get_fix_queue(
+    conn: sqlite3.Connection,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict]:
+    """Return fix queue entries filtered by status."""
+    rows = conn.execute(
+        """
+        SELECT fq.*, l.title, l.one_liner, l.severity, l.enforcement
+        FROM fix_queue fq
+        JOIN lessons l ON fq.lesson_id = l.id
+        WHERE fq.status = ?
+        ORDER BY l.severity DESC, fq.created_at ASC
+        LIMIT ?
+        """,
+        [status, limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_fix_status(
+    conn: sqlite3.Connection,
+    fix_id: int,
+    status: str,
+    github_issue_url: str | None = None,
+) -> None:
+    """Update the status (and optionally github_issue_url) of a fix queue entry."""
+    conn.execute(
+        "UPDATE fix_queue SET status = ?, github_issue_url = COALESCE(?, github_issue_url) WHERE id = ?",
+        [status, github_issue_url, fix_id],
+    )
+    conn.commit()
