@@ -17,6 +17,7 @@ src/lessons_db/
   prevention.py        # Velocity detection, fix queue, content checking
   github_miner.py      # GitHub mining pipeline: discover_repos, mine_repos_for_gaps, MiningConfig
   vectors.py           # LanceDB + Ollama embedding via ollama-queue
+  eval.py              # Transfer-test evaluation: eval-generate (ABCDE variants) + eval-judge (scoring + F1 report)
   capture.py           # Auto-capture from transcript/diff/test + win detection
   search.py            # Semantic search + file-path lookup + content match
   enforce.py           # Escalation ladder, recurrence tracking
@@ -85,6 +86,14 @@ lessons-db transfer find "context"        # cross-project analogical matching
 # Meta-learning (Ollama)
 lessons-db meta extract-principles        # batch-extract transferable principles
 lessons-db meta generate-meta-lessons     # generate double-loop meta-lessons from clusters
+
+# Evaluation pipeline (transfer-test)
+lessons-db meta eval-generate --variants A,B,C,D,E --per-cluster 4   # generate principles across variants
+lessons-db meta eval-generate --variants A --per-cluster 1 --resume  # resume after transient errors
+lessons-db meta eval-generate --variants A --priority 1              # high priority (preempts scheduled jobs)
+lessons-db meta eval-judge results.json                              # score principles, produce F1 report
+lessons-db meta eval-judge results.json --openai --judge-model gpt-4o-mini  # use OpenAI as judge
+lessons-db meta eval-judge results.json --priority 1                 # high priority judge calls
 
 # Batch scripts
 scripts/batch-capture-transcripts.sh [--dry-run] [--since DATE] [--positive]

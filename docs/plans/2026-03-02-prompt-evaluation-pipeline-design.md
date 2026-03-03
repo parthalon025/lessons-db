@@ -1,7 +1,7 @@
 # Transfer-Test Evaluation Pipeline for Principle Extraction
 
 **Date:** 2026-03-02
-**Status:** Approved
+**Status:** Implemented (PRs #11, #12, #13)
 **Goal:** Systematically evaluate and optimize prompt × model × settings combinations for `extract-principles` and `generate-meta-lessons` by measuring actual transfer quality, not text aesthetics.
 
 ## Problem
@@ -13,8 +13,8 @@ Manual A/B testing of prompts is slow (10+ min/round), subjective (eyeballing qu
 Two-stage CLI pipeline under `meta`:
 
 ```
-lessons-db meta eval-generate --variants A,B,C,D,E --sample-size 20 [--resume]
-lessons-db meta eval-judge <results-file> --output report.md
+lessons-db meta eval-generate --variants A,B,C,D,E --per-cluster 4 [--resume] [--priority 1]
+lessons-db meta eval-judge <results-file> --output report.md [--openai] [--judge-model MODEL] [--priority 1]
 ```
 
 ### Stage 1: eval-generate
@@ -56,7 +56,7 @@ Reads the results JSON. For each generated principle, constructs transfer test c
 - **2 same-cluster targets** (different category) → true positives (should match)
 - **2 different-cluster targets** → true negatives (should NOT match)
 
-The judge is Opus (the user's current session model), scoring each (principle, target) pair on a 3-criterion rubric. Results appended to a markdown report.
+The judge scores each (principle, target) pair on a 3-criterion rubric. Default judge: `deepseek-r1:8b` (local, via ollama-queue). Supports `--openai` flag for GPT-4o-mini or `--judge-model` to override. Results appended to a markdown report.
 
 ## Variant Design (ABCDE)
 
@@ -99,7 +99,7 @@ Selection criteria: maximize category diversity within each cluster.
 
 ## Judging Rubric
 
-Scored by Opus (frontier model) as pipeline monitor. Each (principle, target_lesson) pair scored 1-5 on three criteria:
+Default judge: `deepseek-r1:8b` (configurable via `--judge-model` or `--openai`). Each (principle, target_lesson) pair scored 1-5 on three criteria:
 
 | Criterion | 1 (fail) | 3 (partial) | 5 (pass) |
 |-----------|----------|-------------|----------|
@@ -140,8 +140,10 @@ Key findings from prompt engineering research for reasoning models (2024-2026):
 
 - All generation runs through ollama-queue (port 7683) per user requirement
 - `_warm_model()` called before each variant's batch to prevent cold-load timeouts
-- 502 errors handled via `--resume` (skip completed pairs)
-- Judge scoring done by Opus inline (no additional API calls needed)
+- 502/503 errors handled via retry with exponential backoff (2s, 4s, up to 2 retries) + `--resume` for session recovery
+- Variants sorted by model to minimize Ollama model swaps
+- `--priority` threads through to ollama-queue proxy via `_priority`/`_source`/`_timeout` fields (PR #10 in ollama-queue)
+- Judge backend configurable: local Ollama (default deepseek-r1:8b) or OpenAI (gpt-4o-mini)
 
 ## Success Criteria
 
