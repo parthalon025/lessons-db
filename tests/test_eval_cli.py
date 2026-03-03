@@ -87,6 +87,24 @@ class TestEvalGenerateCommand:
         data = json.loads(output_file.read_text())
         assert len(data["results"]) > 0
 
+    def test_invalid_variant_exits_with_error(self, db_path, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "--db",
+                str(db_path),
+                "meta",
+                "eval-generate",
+                "--variants",
+                "Z",
+                "--output",
+                str(tmp_path / "results.json"),
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Unknown variant" in result.output
+
     def test_no_clusters_reports_empty(self, db_path, tmp_path):
         init_db(db_path)
         output_file = tmp_path / "results.json"

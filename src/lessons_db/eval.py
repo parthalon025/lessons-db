@@ -430,6 +430,27 @@ def _generate_for_lesson(
     }
 
 
+def _save_results(
+    output_path: Path,
+    variants: list[str],
+    per_cluster: int,
+    source_ids: list[int],
+    results: list[dict[str, Any]],
+) -> None:
+    """Write results JSON to disk (called incrementally after each generation)."""
+    output = {
+        "meta": {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "variants": variants,
+            "per_cluster": per_cluster,
+            "source_lessons": source_ids,
+        },
+        "results": results,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(_json.dumps(output, indent=2))
+
+
 def run_eval_generate(
     conn: sqlite3.Connection,
     queue_url: str,
@@ -475,8 +496,12 @@ def run_eval_generate(
             if progress_callback:
                 progress_callback(variant_id, lesson["id"], entry["principle"] is not None)
 
-    # Build output
-    output = {
+            # Incremental save after each generation to survive crashes
+            _save_results(output_path, variants, per_cluster, source_ids, results)
+
+    # Final save with updated timestamp
+    _save_results(output_path, variants, per_cluster, source_ids, results)
+    return {
         "meta": {
             "generated_at": datetime.now(UTC).isoformat(),
             "variants": variants,
@@ -485,7 +510,3 @@ def run_eval_generate(
         },
         "results": results,
     }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(_json.dumps(output, indent=2))
-    return output
