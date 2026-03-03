@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from lessons_db.config import DATA_DIR, EVAL_DIR
 from lessons_db.db import init_db, insert_lesson
 from lessons_db.eval import (
+    DEFAULT_JUDGE_MODEL,
     VARIANT_CONFIGS,
     _select_diverse,
     build_generation_prompt,
@@ -406,8 +407,37 @@ class TestCallOllama:
 
         with patch(
             "urllib.request.urlopen",
-            side_effect=urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+            side_effect=urllib.error.HTTPError("http://localhost", 400, "Bad Request", {}, None),
         ):
+            result = call_ollama("http://localhost:7683", "test-model", "prompt", {})
+        assert result is None
+
+    def test_retries_on_502(self):
+        import urllib.error
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "ok"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=[
+                    urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+                    mock_resp,
+                ],
+            ),
+            patch("time.sleep"),
+        ):
+            result = call_ollama("http://localhost:7683", "test-model", "prompt", {})
+        assert result == "ok"
+
+    def test_exhausts_retries_on_persistent_502(self):
+        import urllib.error
+
+        error = urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None)
+        with patch("urllib.request.urlopen", side_effect=error), patch("time.sleep"):
             result = call_ollama("http://localhost:7683", "test-model", "prompt", {})
         assert result is None
 
@@ -516,9 +546,12 @@ class TestRunEvalGenerate:
 
         import urllib.error
 
-        with patch(
-            "urllib.request.urlopen",
-            side_effect=urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+            ),
+            patch("time.sleep"),
         ):
             run_eval_generate(
                 conn=conn,
@@ -558,6 +591,36 @@ class TestRunEvalGenerate:
         assert data["meta"]["variants"] == ["A", "B"]
         assert "generated_at" in data["meta"]
         assert "source_lessons" in data["meta"]
+        conn.close()
+
+    def test_groups_variants_by_model(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "Principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        # Pass D before A — D uses qwen3:14b, A uses deepseek-r1
+        # Model grouping should run A (deepseek) before D (qwen)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["D", "A"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        data = json.loads(output_path.read_text())
+        variant_order = [r["variant"] for r in data["results"]]
+        # All A entries should come before all D entries (deepseek < qwen alphabetically)
+        a_indices = [i for i, v in enumerate(variant_order) if v == "A"]
+        d_indices = [i for i, v in enumerate(variant_order) if v == "D"]
+        assert max(a_indices) < min(d_indices), f"A should run before D, got order: {variant_order}"
         conn.close()
 
 
@@ -662,7 +725,7 @@ class TestCallJudge:
                 prompt="test prompt",
                 backend="ollama",
                 ollama_url="http://localhost:7683",
-                ollama_model="qwen2.5:7b",
+                ollama_model=DEFAULT_JUDGE_MODEL,
             )
         assert result is not None
         assert "transfer" in result
@@ -691,7 +754,7 @@ class TestCallJudge:
                 prompt="test prompt",
                 backend="ollama",
                 ollama_url="http://localhost:7683",
-                ollama_model="qwen2.5:7b",
+                ollama_model=DEFAULT_JUDGE_MODEL,
             )
         assert result is None
 

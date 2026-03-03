@@ -13,6 +13,12 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
+DEFAULT_JUDGE_MODEL = "deepseek-r1:8b-0528-qwen3-q4_K_M"
+
+_RETRYABLE_CODES = {502, 503}
+_MAX_RETRIES = 2
+_RETRY_BASE_DELAY = 2.0
+
 
 # ---------------------------------------------------------------------------
 # Variant configurations (A-E)
@@ -320,6 +326,7 @@ def call_ollama(
 ) -> str | None:
     """Call Ollama via queue and return cleaned response text.
 
+    Retries up to _MAX_RETRIES times on 502/503 (model swap transients).
     Returns None on any error (network, timeout, parse).
     Strips <think>...</think> reasoning blocks from response.
     """
@@ -338,23 +345,37 @@ def call_ollama(
         }
     ).encode("utf-8")
 
-    try:
-        req = urllib.request.Request(  # noqa: S310
-            f"{queue_url}/api/generate",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            result = _json.loads(resp.read().decode("utf-8"))
-        text = result.get("response", "").strip()
-        # Strip reasoning blocks
-        text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
-        text = text.strip("\"'").strip()
-        return text if text else None
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, _json.JSONDecodeError) as exc:
-        _log.warning("call_ollama error: %s", exc)
-        return None
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            req = urllib.request.Request(  # noqa: S310
+                f"{queue_url}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                result = _json.loads(resp.read().decode("utf-8"))
+            text = result.get("response", "").strip()
+            # Strip reasoning blocks
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+            text = text.strip("\"'").strip()
+            return text if text else None
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code in _RETRYABLE_CODES and attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2**attempt)
+                _log.warning("call_ollama %d retry in %.0fs: %s", exc.code, delay, exc)
+                time.sleep(delay)
+                continue
+            _log.warning("call_ollama error: %s", exc)
+            return None
+        except (urllib.error.URLError, OSError, _json.JSONDecodeError) as exc:
+            _log.warning("call_ollama error: %s", exc)
+            return None
+
+    _log.warning("call_ollama exhausted retries: %s", last_exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +499,10 @@ def run_eval_generate(
     # Build results structure
     results: list[dict[str, Any]] = list(existing_results)
 
-    for variant_id in variants:
+    # Sort variants by model to minimize Ollama model swaps
+    sorted_variants = sorted(variants, key=lambda v: VARIANT_CONFIGS[v]["model"])
+
+    for variant_id in sorted_variants:
         config = VARIANT_CONFIGS[variant_id]
 
         # Pre-fetch siblings for chunked variants
