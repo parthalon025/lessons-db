@@ -323,12 +323,17 @@ def call_ollama(
     prompt: str,
     settings: dict[str, Any],
     timeout: int = 300,
+    priority: int | None = None,
+    source: str | None = None,
 ) -> str | None:
     """Call Ollama via queue and return cleaned response text.
 
     Retries up to _MAX_RETRIES times on 502/503 (model swap transients).
     Returns None on any error (network, timeout, parse).
     Strips <think>...</think> reasoning blocks from response.
+
+    When priority/source are set, passes _priority/_source/_timeout to
+    ollama-queue's proxy endpoint for job tracking and prioritization.
     """
     options = {}
     if "temperature" in settings:
@@ -336,14 +341,20 @@ def call_ollama(
     if "num_ctx" in settings:
         options["num_ctx"] = settings["num_ctx"]
 
-    payload = _json.dumps(
-        {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            **({"options": options} if options else {}),
-        }
-    ).encode("utf-8")
+    body: dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        **({"options": options} if options else {}),
+    }
+    if priority is not None:
+        body["_priority"] = priority
+    if source is not None:
+        body["_source"] = source
+    if priority is not None or source is not None:
+        body["_timeout"] = timeout
+
+    payload = _json.dumps(body).encode("utf-8")
 
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
@@ -420,6 +431,7 @@ def _generate_for_lesson(
     lesson: dict[str, Any],
     queue_url: str,
     siblings_by_cluster: dict[str, list[dict[str, Any]]],
+    priority: int | None = None,
 ) -> dict[str, Any]:
     """Generate a principle for a single (variant, lesson) pair."""
     lesson_id = lesson["id"]
@@ -434,7 +446,7 @@ def _generate_for_lesson(
     prompt = build_generation_prompt(variant_id, lesson, siblings=siblings)
 
     t0 = time.monotonic()
-    principle = call_ollama(queue_url, model, prompt, settings)
+    principle = call_ollama(queue_url, model, prompt, settings, priority=priority, source="eval-generate")
     elapsed = round(time.monotonic() - t0, 1)
 
     return {
@@ -480,11 +492,12 @@ def run_eval_generate(
     output_path: Path,
     resume: bool,
     progress_callback: Any = None,
+    priority: int | None = None,
 ) -> dict[str, Any]:
     """Run eval-generate: produce principles for all (variant, lesson) pairs.
 
     Saves results incrementally to output_path as JSON.
-    Returns the full results dict.
+    When priority is set, passes it to ollama-queue for job prioritization.
     """
     # Load existing results if resuming
     existing_results: list[dict[str, Any]] = []
@@ -514,7 +527,7 @@ def run_eval_generate(
             if (variant_id, lesson["id"]) in completed_pairs:
                 continue
 
-            entry = _generate_for_lesson(variant_id, config, lesson, queue_url, siblings_by_cluster)
+            entry = _generate_for_lesson(variant_id, config, lesson, queue_url, siblings_by_cluster, priority=priority)
             results.append(entry)
 
             if progress_callback:
@@ -610,6 +623,7 @@ def call_judge(
     ollama_model: str = "",
     openai_api_key: str = "",
     openai_model: str = "gpt-4o-mini",
+    priority: int | None = None,
 ) -> str | None:
     """Call the judge model and return raw response text.
 
@@ -618,7 +632,7 @@ def call_judge(
     """
     if backend == "openai":
         return _call_openai(openai_api_key, openai_model, prompt)
-    return call_ollama(ollama_url, ollama_model, prompt, {})
+    return call_ollama(ollama_url, ollama_model, prompt, {}, priority=priority, source="eval-judge")
 
 
 def _call_openai(api_key: str, model: str, prompt: str) -> str | None:
@@ -780,6 +794,7 @@ def run_eval_judge(
     openai_api_key: str = "",
     openai_model: str = "gpt-4o-mini",
     progress_callback: Any = None,
+    priority: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, float]]]:
     """Run eval-judge: score generated principles against transfer targets.
 
@@ -817,6 +832,7 @@ def run_eval_judge(
                     ollama_model=ollama_model,
                     openai_api_key=openai_api_key,
                     openai_model=openai_model,
+                    priority=priority,
                 )
 
                 scores = parse_judge_scores(response) if response else None
