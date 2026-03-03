@@ -299,7 +299,7 @@ def index(ctx, seed_only, reindex_all):
     By default only indexes lessons not yet present in LanceDB (incremental).
     Use --reindex-all to rebuild embeddings for every lesson.
     cluster_seed: copies cluster → cluster_seed for A-F historical labels.
-    Embeddings: calls Ollama nomic-embed-text for each lesson's title + one_liner.
+    Embeddings: calls Ollama nomic-embed-text for each lesson's title + one_liner + description + category + false_assumption.
     """
     from lessons_db.vectors import TABLE_NAME, init_lance, upsert_lesson
 
@@ -326,7 +326,8 @@ def index(ctx, seed_only, reindex_all):
         already_indexed = {int(v) for v in table.to_arrow()["lesson_id"].to_pylist()}
 
     rows = conn.execute(
-        "SELECT id, title, one_liner, keywords, cluster, tier, scope, enforcement, recurrence_count FROM lessons"
+        "SELECT id, title, one_liner, keywords, description, category, false_assumption,"
+        " cluster, tier, scope, enforcement, recurrence_count FROM lessons"
     ).fetchall()
 
     to_index = [r for r in rows if r["id"] not in already_indexed]
@@ -341,9 +342,21 @@ def index(ctx, seed_only, reindex_all):
         title = row["title"] or ""
         one_liner = row["one_liner"] or ""
         keywords = row["keywords"] or ""
-        text = f"{title}. {one_liner}"
+        description = row["description"] or ""
+        category = row["category"] or ""
+        false_assumption = row["false_assumption"] or ""
+
+        # Build rich embedding text: title + one_liner + description (truncated) + category + false_assumption
+        parts = [f"{title}. {one_liner}"]
+        if description:
+            parts.append(description[:500])
+        if category:
+            parts.append(f"Category: {category}")
+        if false_assumption:
+            parts.append(f"False assumption: {false_assumption}")
         if keywords:
-            text += f". Keywords: {keywords}"
+            parts.append(f"Keywords: {keywords}")
+        text = " ".join(parts)
 
         data = {
             "lesson_id": row["id"],

@@ -104,7 +104,7 @@ def apply_cluster_proposals(
         for lid in proposal["lesson_ids"]:
             conn.execute(
                 "UPDATE lessons SET cluster = ? WHERE id = ?",
-                [name, lid],
+                [name, int(lid)],
             )
             updated += 1
 
@@ -116,7 +116,7 @@ def apply_cluster_proposals(
             len(confirmed),
             json.dumps(
                 [
-                    {"id": p["cluster_id"], "name": confirmed.get(p["cluster_id"]), "size": len(p["lesson_ids"])}
+                    {"id": int(p["cluster_id"]), "name": confirmed.get(p["cluster_id"]), "size": len(p["lesson_ids"])}
                     for p in proposals
                 ]
             ),
