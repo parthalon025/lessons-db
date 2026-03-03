@@ -2850,7 +2850,7 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model):
     from pathlib import Path
 
     from lessons_db.config import EVAL_DIR, OLLAMA_QUEUE_URL, OPENAI_API_KEY
-    from lessons_db.eval import run_eval_judge
+    from lessons_db.eval import DEFAULT_JUDGE_MODEL, run_eval_judge
 
     conn = ctx.obj["conn"]
     results_path = Path(results_file)
@@ -2873,7 +2873,7 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model):
         click.echo(f"Judge: OpenAI {model}")
     else:
         backend = "ollama"
-        model = judge_model or "qwen2.5:7b"
+        model = judge_model or DEFAULT_JUDGE_MODEL
         click.echo(f"Judge: Ollama {model}")
         _warm_model(OLLAMA_QUEUE_URL, model)
 
