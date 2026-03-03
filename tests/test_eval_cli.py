@@ -3,6 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from lessons_db.cli import main
@@ -158,6 +159,48 @@ class TestEvalGenerateCommand:
             )
         assert result.exit_code == 0
 
+    def test_priority_passed_to_ollama(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_eval_db(conn)
+        conn.close()
+
+        output_file = tmp_path / "results.json"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "Principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        runner = CliRunner()
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+            result = runner.invoke(
+                main,
+                [
+                    "--db",
+                    str(db_path),
+                    "meta",
+                    "eval-generate",
+                    "--variants",
+                    "A",
+                    "--per-cluster",
+                    "1",
+                    "--output",
+                    str(output_file),
+                    "--priority",
+                    "1",
+                ],
+            )
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        # At least one call should have _priority in the payload
+        for call in mock_url.call_args_list:
+            req = call[0][0]
+            payload = json.loads(req.data.decode("utf-8"))
+            if "_priority" in payload:
+                assert payload["_priority"] == 1
+                assert payload["_source"] == "eval-generate"
+                break
+        else:
+            pytest.fail("No call contained _priority in payload")
+
 
 # ---------------------------------------------------------------------------
 # eval-judge CLI
@@ -250,6 +293,68 @@ class TestEvalJudgeCommand:
             ],
         )
         assert result.exit_code != 0 or "not found" in result.output.lower() or "Error" in result.output
+
+    def test_priority_passed_to_judge(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_eval_db(conn)
+        conn.close()
+
+        results_data = {
+            "meta": {"variants": ["A"], "per_cluster": 1, "source_lessons": [1]},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": 1,
+                    "lesson_title": "Cluster A lesson 0",
+                    "cluster_seed": "A",
+                    "principle": "Silent fallbacks mask upstream failures.",
+                    "model": "test-model",
+                    "prompt_id": "baseline-fewshot",
+                    "settings": {},
+                    "generation_time_s": 1.0,
+                    "error": None,
+                }
+            ],
+        }
+        results_file = tmp_path / "results.json"
+        results_file.write_text(json.dumps(results_data))
+        report_file = tmp_path / "report.md"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(
+            {"response": '{"transfer": 4, "precision": 3, "actionability": 5}'}
+        ).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        runner = CliRunner()
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+            result = runner.invoke(
+                main,
+                [
+                    "--db",
+                    str(db_path),
+                    "meta",
+                    "eval-judge",
+                    str(results_file),
+                    "--output",
+                    str(report_file),
+                    "--priority",
+                    "2",
+                ],
+            )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        # Judge calls should have _priority in the payload
+        for call in mock_url.call_args_list:
+            req = call[0][0]
+            payload = json.loads(req.data.decode("utf-8"))
+            if "_priority" in payload:
+                assert payload["_priority"] == 2
+                assert payload["_source"] == "eval-judge"
+                break
+        else:
+            pytest.fail("No call contained _priority in payload")
 
 
 # ---------------------------------------------------------------------------

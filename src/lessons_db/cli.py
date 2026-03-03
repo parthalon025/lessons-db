@@ -2768,8 +2768,9 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
     "--output", type=click.Path(), default=None, help="Output JSON path (default: auto-timestamped in EVAL_DIR)."
 )
 @click.option("--resume", is_flag=True, help="Skip already-completed (variant, lesson_id) pairs.")
+@click.option("--priority", type=int, default=None, help="Queue priority (1=highest). Unset uses queue default.")
 @click.pass_context
-def meta_eval_generate(ctx, variants, per_cluster, output, resume):
+def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority):
     """Generate principles across prompt variants for transfer-test evaluation.
 
     Runs each variant (prompt x model x settings) across a fixed set of source
@@ -2825,6 +2826,7 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume):
         output_path=output_path,
         resume=resume,
         progress_callback=_progress,
+        priority=priority,
     )
 
     total = len(result["results"])
@@ -2838,8 +2840,9 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume):
 @click.option("--output", type=click.Path(), default=None, help="Output report path (default: auto in EVAL_DIR).")
 @click.option("--openai", "use_openai", is_flag=True, help="Use OpenAI GPT-4o-mini as judge (requires OPENAI_API_KEY).")
 @click.option("--judge-model", default=None, help="Judge model name (Ollama model or OpenAI model with --openai).")
+@click.option("--priority", type=int, default=None, help="Queue priority (1=highest). Unset uses queue default.")
 @click.pass_context
-def meta_eval_judge(ctx, results_file, output, use_openai, judge_model):
+def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority):
     """Score generated principles against transfer test targets.
 
     Reads a results JSON from eval-generate, constructs transfer tests
@@ -2894,6 +2897,7 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model):
         openai_api_key=OPENAI_API_KEY if backend == "openai" else "",
         openai_model=model if backend == "openai" else "",
         progress_callback=_progress,
+        priority=priority,
     )
 
     click.echo(f"\nScored {len(scored_pairs)} pairs across {len(metrics)} variants.")

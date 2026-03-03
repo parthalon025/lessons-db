@@ -461,6 +461,41 @@ class TestCallOllama:
         assert payload["options"]["temperature"] == 0.6
         assert payload["options"]["num_ctx"] == 8192
 
+    def test_sends_priority_and_source_in_payload(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "ok"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+            call_ollama(
+                "http://localhost:7683",
+                "my-model",
+                "my prompt",
+                {},
+                priority=1,
+                source="eval-generate",
+            )
+        req = mock_url.call_args[0][0]
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload["_priority"] == 1
+        assert payload["_source"] == "eval-generate"
+        assert payload["_timeout"] == 300  # default timeout
+
+    def test_omits_queue_fields_when_priority_unset(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "ok"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+            call_ollama("http://localhost:7683", "my-model", "my prompt", {})
+        req = mock_url.call_args[0][0]
+        payload = json.loads(req.data.decode("utf-8"))
+        assert "_priority" not in payload
+        assert "_source" not in payload
+        assert "_timeout" not in payload
+
 
 # ---------------------------------------------------------------------------
 # TestRunEvalGenerate
