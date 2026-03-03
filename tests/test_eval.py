@@ -9,8 +9,14 @@ from lessons_db.eval import (
     VARIANT_CONFIGS,
     _select_diverse,
     build_generation_prompt,
+    build_judge_prompt,
+    call_judge,
     call_ollama,
+    compute_metrics,
+    parse_judge_scores,
+    render_report,
     run_eval_generate,
+    run_eval_judge,
     select_source_lessons,
     select_transfer_targets,
 )
@@ -552,4 +558,312 @@ class TestRunEvalGenerate:
         assert data["meta"]["variants"] == ["A", "B"]
         assert "generated_at" in data["meta"]
         assert "source_lessons" in data["meta"]
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TestBuildJudgePrompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildJudgePrompt:
+    """build_judge_prompt creates the rubric-based scoring prompt."""
+
+    def test_contains_principle(self):
+        prompt = build_judge_prompt(
+            "Silent fallbacks mask failures.",
+            {
+                "title": "Git apply silent failure",
+                "one_liner": "|| true discards errors",
+                "description": "The git apply command...",
+            },
+        )
+        assert "Silent fallbacks mask failures." in prompt
+
+    def test_contains_target_lesson(self):
+        prompt = build_judge_prompt(
+            "Test principle.",
+            {
+                "title": "My Target Lesson",
+                "one_liner": "Target one-liner",
+                "description": "Target description",
+            },
+        )
+        assert "My Target Lesson" in prompt
+
+    def test_contains_scoring_criteria(self):
+        prompt = build_judge_prompt("Principle.", {"title": "T", "one_liner": "O", "description": "D"})
+        assert "transfer" in prompt.lower()
+        assert "precision" in prompt.lower()
+        assert "actionability" in prompt.lower()
+
+    def test_requests_json_output(self):
+        prompt = build_judge_prompt("Principle.", {"title": "T", "one_liner": "O", "description": "D"})
+        assert "JSON" in prompt or "json" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TestParseJudgeScores
+# ---------------------------------------------------------------------------
+
+
+class TestParseJudgeScores:
+    """parse_judge_scores extracts 3 integer scores from judge response."""
+
+    def test_parses_valid_json(self):
+        response = '{"transfer": 4, "precision": 3, "actionability": 5}'
+        scores = parse_judge_scores(response)
+        assert scores == {"transfer": 4, "precision": 3, "actionability": 5}
+
+    def test_parses_json_with_surrounding_text(self):
+        response = 'Here are the scores:\n{"transfer": 2, "precision": 1, "actionability": 3}\nDone.'
+        scores = parse_judge_scores(response)
+        assert scores == {"transfer": 2, "precision": 1, "actionability": 3}
+
+    def test_returns_none_on_invalid(self):
+        scores = parse_judge_scores("I cannot score this.")
+        assert scores is None
+
+    def test_returns_none_on_missing_keys(self):
+        scores = parse_judge_scores('{"transfer": 4}')
+        assert scores is None
+
+    def test_clamps_scores_to_1_5(self):
+        response = '{"transfer": 0, "precision": 7, "actionability": 3}'
+        scores = parse_judge_scores(response)
+        assert scores["transfer"] == 1
+        assert scores["precision"] == 5
+        assert scores["actionability"] == 3
+
+
+# ---------------------------------------------------------------------------
+# TestCallJudge
+# ---------------------------------------------------------------------------
+
+
+class TestCallJudge:
+    """call_judge routes to Ollama or OpenAI based on backend parameter."""
+
+    def test_ollama_backend(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(
+            {"response": '{"transfer": 4, "precision": 3, "actionability": 5}'}
+        ).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = call_judge(
+                prompt="test prompt",
+                backend="ollama",
+                ollama_url="http://localhost:7683",
+                ollama_model="qwen2.5:7b",
+            )
+        assert result is not None
+        assert "transfer" in result
+
+    def test_openai_backend(self):
+        mock_resp = MagicMock()
+        openai_response = {"choices": [{"message": {"content": '{"transfer": 3, "precision": 2, "actionability": 4}'}}]}
+        mock_resp.read.return_value = json.dumps(openai_response).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = call_judge(
+                prompt="test prompt",
+                backend="openai",
+                openai_api_key="test-key",
+                openai_model="gpt-4o-mini",
+            )
+        assert result is not None
+
+    def test_returns_none_on_error(self):
+        import urllib.error
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("fail")):
+            result = call_judge(
+                prompt="test prompt",
+                backend="ollama",
+                ollama_url="http://localhost:7683",
+                ollama_model="qwen2.5:7b",
+            )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestComputeMetrics
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMetrics:
+    """compute_metrics calculates F1, recall, precision per variant."""
+
+    def _make_scored_pair(self, variant, is_same_cluster, transfer=3, precision=3, actionability=3):
+        return {
+            "variant": variant,
+            "is_same_cluster": is_same_cluster,
+            "scores": {"transfer": transfer, "precision": precision, "actionability": actionability},
+        }
+
+    def test_perfect_scores(self):
+        pairs = [
+            self._make_scored_pair("A", True, transfer=5, precision=5, actionability=5),
+            self._make_scored_pair("A", True, transfer=5, precision=5, actionability=5),
+            self._make_scored_pair("A", False, transfer=1, precision=5, actionability=5),
+            self._make_scored_pair("A", False, transfer=1, precision=5, actionability=5),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["recall"] == 1.0
+        assert metrics["A"]["precision"] == 1.0
+        assert metrics["A"]["f1"] == 1.0
+
+    def test_zero_recall(self):
+        pairs = [
+            self._make_scored_pair("A", True, transfer=1),
+            self._make_scored_pair("A", True, transfer=2),
+            self._make_scored_pair("A", False, transfer=1),
+            self._make_scored_pair("A", False, transfer=1),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["recall"] == 0.0
+
+    def test_zero_precision(self):
+        pairs = [
+            self._make_scored_pair("A", True, transfer=5),
+            self._make_scored_pair("A", True, transfer=5),
+            self._make_scored_pair("A", False, transfer=5),
+            self._make_scored_pair("A", False, transfer=4),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["precision"] == 0.0
+
+    def test_multiple_variants(self):
+        pairs = [
+            self._make_scored_pair("A", True, transfer=5),
+            self._make_scored_pair("A", False, transfer=1),
+            self._make_scored_pair("B", True, transfer=3),
+            self._make_scored_pair("B", False, transfer=3),
+        ]
+        metrics = compute_metrics(pairs)
+        assert "A" in metrics
+        assert "B" in metrics
+
+    def test_mean_actionability(self):
+        pairs = [
+            self._make_scored_pair("A", True, actionability=4),
+            self._make_scored_pair("A", True, actionability=2),
+            self._make_scored_pair("A", False, actionability=3),
+            self._make_scored_pair("A", False, actionability=5),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["mean_actionability"] == 3.5
+
+
+# ---------------------------------------------------------------------------
+# TestRenderReport
+# ---------------------------------------------------------------------------
+
+
+class TestRenderReport:
+    """render_report produces valid markdown."""
+
+    def test_contains_summary_table(self):
+        metrics = {
+            "A": {"recall": 0.8, "precision": 0.7, "f1": 0.75, "mean_actionability": 3.5},
+            "B": {"recall": 0.9, "precision": 0.6, "f1": 0.72, "mean_actionability": 4.0},
+        }
+        report = render_report(metrics, [], {"A": {}, "B": {}})
+        assert "| Variant" in report
+        assert "0.80" in report or "0.8" in report
+
+    def test_identifies_winner(self):
+        metrics = {
+            "A": {"recall": 0.5, "precision": 0.5, "f1": 0.50, "mean_actionability": 3.0},
+            "B": {"recall": 0.9, "precision": 0.9, "f1": 0.90, "mean_actionability": 4.5},
+        }
+        report = render_report(metrics, [], {"A": {}, "B": {}})
+        assert "B" in report  # Winner mentioned
+
+
+# ---------------------------------------------------------------------------
+# TestRunEvalJudge
+# ---------------------------------------------------------------------------
+
+
+class TestRunEvalJudge:
+    """run_eval_judge orchestrates scoring of generated principles."""
+
+    def test_produces_scored_pairs_and_metrics(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        results_data = {
+            "meta": {"variants": ["A"], "per_cluster": 1, "source_lessons": [ids["A"][0]]},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "lesson_title": "Silent failure 0",
+                    "cluster_seed": "A",
+                    "principle": "Silent fallbacks mask upstream failures.",
+                    "model": "test-model",
+                    "prompt_id": "baseline-fewshot",
+                    "settings": {},
+                    "generation_time_s": 1.0,
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+        report_path = tmp_path / "report.md"
+
+        def mock_judge(prompt, **kwargs):
+            return '{"transfer": 4, "precision": 3, "actionability": 5}'
+
+        with patch("lessons_db.eval.call_judge", side_effect=mock_judge):
+            scored_pairs, metrics = run_eval_judge(
+                results_path=results_path,
+                conn=conn,
+                report_path=report_path,
+                backend="ollama",
+            )
+
+        assert len(scored_pairs) > 0
+        assert "A" in metrics
+        assert report_path.exists()
+        report_text = report_path.read_text()
+        assert "Variant" in report_text
+        conn.close()
+
+    def test_skips_error_results(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        results_data = {
+            "meta": {"variants": ["A"], "per_cluster": 1, "source_lessons": [ids["A"][0]]},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "lesson_title": "Error lesson",
+                    "cluster_seed": "A",
+                    "principle": None,
+                    "error": "generation_failed",
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+        report_path = tmp_path / "report.md"
+
+        scored_pairs, metrics = run_eval_judge(
+            results_path=results_path,
+            conn=conn,
+            report_path=report_path,
+            backend="ollama",
+        )
+
+        assert len(scored_pairs) == 0
         conn.close()
