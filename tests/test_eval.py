@@ -2,7 +2,12 @@
 
 from lessons_db.config import DATA_DIR, EVAL_DIR
 from lessons_db.db import init_db, insert_lesson
-from lessons_db.eval import VARIANT_CONFIGS, select_source_lessons, select_transfer_targets
+from lessons_db.eval import (
+    VARIANT_CONFIGS,
+    _select_diverse,
+    select_source_lessons,
+    select_transfer_targets,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -191,6 +196,41 @@ class TestSelectSourceLessons:
         required_keys = {"id", "title", "one_liner", "description", "cluster_seed", "category"}
         for r in results:
             assert required_keys <= set(r.keys()), f"Missing keys: {required_keys - set(r.keys())}"
+
+
+# ---------------------------------------------------------------------------
+# TestSelectDiverse
+# ---------------------------------------------------------------------------
+
+
+class TestSelectDiverse:
+    def test_none_category_treated_as_distinct(self):
+        """Lessons with category=None should be treated as a single category group."""
+        lessons = [
+            {"id": 1, "category": None},
+            {"id": 2, "category": None},
+            {"id": 3, "category": "testing"},
+        ]
+        result = _select_diverse(lessons, limit=2)
+        # Pass 1 picks one None and one "testing" (two distinct categories)
+        assert len(result) == 2
+        cats = [r["category"] for r in result]
+        assert None in cats
+        assert "testing" in cats
+
+    def test_limit_less_than_unique_categories(self):
+        """When limit < number of unique categories, only limit items are returned."""
+        lessons = [
+            {"id": 1, "category": "a"},
+            {"id": 2, "category": "b"},
+            {"id": 3, "category": "c"},
+            {"id": 4, "category": "d"},
+        ]
+        result = _select_diverse(lessons, limit=2)
+        assert len(result) == 2
+        # Should still be diverse — 2 different categories
+        cats = [r["category"] for r in result]
+        assert len(set(cats)) == 2
 
 
 # ---------------------------------------------------------------------------

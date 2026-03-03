@@ -9,6 +9,8 @@ _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Variant configurations (A-E)
+# Intentionally hardcoded: these are experiment parameters, not deployment config.
+# The eval pipeline tests specific prompt × model × settings combinations.
 # ---------------------------------------------------------------------------
 
 VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
@@ -150,6 +152,8 @@ def select_transfer_targets(
     """
     # Get source lesson's category for preference sorting
     source_row = conn.execute("SELECT category FROM lessons WHERE id = ?", (source_id,)).fetchone()
+    if source_row is None:
+        _log.warning("select_transfer_targets: source_id=%d not found", source_id)
     source_category = source_row["category"] if source_row else None
 
     # Same cluster, excluding source, single-loop only
