@@ -2761,6 +2761,78 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
     )
 
 
+@meta.command("eval-generate")
+@click.option("--variants", default="A,B,C,D,E", help="Comma-separated variant IDs (default: A,B,C,D,E).")
+@click.option("--per-cluster", default=4, type=int, help="Source lessons per cluster (default: 4).")
+@click.option(
+    "--output", type=click.Path(), default=None, help="Output JSON path (default: auto-timestamped in EVAL_DIR)."
+)
+@click.option("--resume", is_flag=True, help="Skip already-completed (variant, lesson_id) pairs.")
+@click.pass_context
+def meta_eval_generate(ctx, variants, per_cluster, output, resume):
+    """Generate principles across prompt variants for transfer-test evaluation.
+
+    Runs each variant (prompt x model x settings) across a fixed set of source
+    lessons. Results saved to a JSON file for later judging with eval-judge.
+    """
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from lessons_db.config import EVAL_DIR, OLLAMA_QUEUE_URL
+    from lessons_db.eval import VARIANT_CONFIGS, run_eval_generate, select_source_lessons
+
+    conn = ctx.obj["conn"]
+    variant_list = [v.strip() for v in variants.split(",")]
+
+    # Validate variant IDs
+    for v in variant_list:
+        if v not in VARIANT_CONFIGS:
+            click.echo(f"Unknown variant '{v}'. Valid: {', '.join(VARIANT_CONFIGS.keys())}", err=True)
+            ctx.exit(1)
+            return
+
+    # Check source lessons exist
+    sources = select_source_lessons(conn, per_cluster=per_cluster)
+    if not sources:
+        click.echo("No source lessons found (need clusters with >= 3 lessons).")
+        return
+
+    # Determine output path
+    if output:
+        output_path = Path(output)
+    else:
+        EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+        output_path = EVAL_DIR / f"results-{ts}.json"
+
+    click.echo(f"Eval-generate: {len(variant_list)} variants x {len(sources)} lessons")
+    click.echo(f"Output: {output_path}")
+
+    # Warm models (deduplicate)
+    models_to_warm = {VARIANT_CONFIGS[v]["model"] for v in variant_list}
+    for model_name in models_to_warm:
+        _warm_model(OLLAMA_QUEUE_URL, model_name)
+
+    def _progress(variant_id, lesson_id, success):
+        status = "OK" if success else "FAIL"
+        click.echo(f"  [{variant_id}] lesson #{lesson_id}: {status}")
+
+    result = run_eval_generate(
+        conn=conn,
+        queue_url=OLLAMA_QUEUE_URL,
+        variants=variant_list,
+        per_cluster=per_cluster,
+        output_path=output_path,
+        resume=resume,
+        progress_callback=_progress,
+    )
+
+    total = len(result["results"])
+    errors = sum(1 for r in result["results"] if r.get("error"))
+    click.echo(f"\nDone. Total: {total}  Errors: {errors}")
+    click.echo(f"Results: {output_path}")
+
+
 def find_meta_lesson_clusters(
     conn,
     min_cluster_size: int = 3,

@@ -1,10 +1,16 @@
-"""Tests for eval pipeline: config, variant definitions, test set selection."""
+"""Tests for eval pipeline: config, variant definitions, test set selection, generation."""
+
+import json
+from unittest.mock import MagicMock, patch
 
 from lessons_db.config import DATA_DIR, EVAL_DIR
 from lessons_db.db import init_db, insert_lesson
 from lessons_db.eval import (
     VARIANT_CONFIGS,
     _select_diverse,
+    build_generation_prompt,
+    call_ollama,
+    run_eval_generate,
     select_source_lessons,
     select_transfer_targets,
 )
@@ -298,3 +304,252 @@ class TestSelectTransferTargets:
         result = select_transfer_targets(conn, source_id, "A", count_same=4)
         same_ids = [r["id"] for r in result["same_cluster"]]
         assert ids["A"][1] not in same_ids
+
+
+# ---------------------------------------------------------------------------
+# TestBuildGenerationPrompt
+# ---------------------------------------------------------------------------
+
+
+class TestBuildGenerationPrompt:
+    """build_generation_prompt produces variant-specific prompts."""
+
+    def _lesson(self, **overrides):
+        base = {
+            "id": 1,
+            "title": "Test lesson",
+            "one_liner": "Test one-liner",
+            "description": "Test description of the lesson",
+            "cluster_seed": "A",
+            "category": "testing",
+        }
+        base.update(overrides)
+        return base
+
+    def test_variant_a_includes_examples(self):
+        prompt = build_generation_prompt("A", self._lesson())
+        assert "Examples of good principles" in prompt
+        assert "Test lesson" in prompt
+
+    def test_variant_b_is_zero_shot(self):
+        prompt = build_generation_prompt("B", self._lesson())
+        assert "Examples of good principles" not in prompt
+        assert "causal" in prompt.lower() or "causes" in prompt.lower()
+
+    def test_variant_c_requires_siblings(self):
+        siblings = [self._lesson(id=2, title="Sibling 1"), self._lesson(id=3, title="Sibling 2")]
+        prompt = build_generation_prompt("C", self._lesson(), siblings=siblings)
+        assert "Sibling 1" in prompt
+        assert "Sibling 2" in prompt
+
+    def test_variant_c_without_siblings_falls_back(self):
+        prompt = build_generation_prompt("C", self._lesson(), siblings=None)
+        # Should fall back to variant B's zero-shot prompt
+        assert "Test lesson" in prompt
+
+    def test_variant_d_same_prompt_as_b(self):
+        prompt_b = build_generation_prompt("B", self._lesson())
+        prompt_d = build_generation_prompt("D", self._lesson())
+        # Same prompt template, different model (handled at call level)
+        assert prompt_b == prompt_d
+
+    def test_variant_e_same_prompt_as_c(self):
+        siblings = [self._lesson(id=2)]
+        prompt_c = build_generation_prompt("C", self._lesson(), siblings=siblings)
+        prompt_e = build_generation_prompt("E", self._lesson(), siblings=siblings)
+        assert prompt_c == prompt_e
+
+    def test_truncates_long_descriptions(self):
+        long_desc = "x" * 1000
+        prompt = build_generation_prompt("A", self._lesson(description=long_desc))
+        assert "x" * 501 not in prompt  # description truncated at 500
+
+
+# ---------------------------------------------------------------------------
+# TestCallOllama
+# ---------------------------------------------------------------------------
+
+
+class TestCallOllama:
+    """call_ollama sends HTTP request and returns cleaned response."""
+
+    def test_returns_cleaned_response(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "  Test principle.  "}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = call_ollama("http://localhost:7683", "test-model", "prompt", {})
+        assert result == "Test principle."
+
+    def test_strips_think_tags(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "<think>reasoning here</think>Clean principle."}).encode(
+            "utf-8"
+        )
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = call_ollama("http://localhost:7683", "test-model", "prompt", {})
+        assert result == "Clean principle."
+
+    def test_returns_none_on_http_error(self):
+        import urllib.error
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+        ):
+            result = call_ollama("http://localhost:7683", "test-model", "prompt", {})
+        assert result is None
+
+    def test_sends_correct_payload(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "ok"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+            call_ollama(
+                "http://localhost:7683",
+                "my-model",
+                "my prompt",
+                {"temperature": 0.6, "num_ctx": 8192},
+            )
+        req = mock_url.call_args[0][0]
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload["model"] == "my-model"
+        assert payload["prompt"] == "my prompt"
+        assert payload["options"]["temperature"] == 0.6
+        assert payload["options"]["num_ctx"] == 8192
+
+
+# ---------------------------------------------------------------------------
+# TestRunEvalGenerate
+# ---------------------------------------------------------------------------
+
+
+class TestRunEvalGenerate:
+    """run_eval_generate orchestrates variant x lesson generation."""
+
+    def test_generates_results_json(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "Test principle from model."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        assert output_path.exists()
+        data = json.loads(output_path.read_text())
+        assert "meta" in data
+        assert "results" in data
+        assert len(data["results"]) > 0
+        assert data["results"][0]["variant"] == "A"
+        assert data["results"][0]["principle"] is not None
+        conn.close()
+
+    def test_resume_skips_existing(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        # Pre-seed a partial results file
+        existing = {
+            "meta": {"variants": ["A"], "per_cluster": 1},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "principle": "Already done",
+                    "error": None,
+                }
+            ],
+        }
+        output_path.write_text(json.dumps(existing))
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "New principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=True,
+            )
+
+        data = json.loads(output_path.read_text())
+        a_results = [r for r in data["results"] if r["variant"] == "A" and r["lesson_id"] == ids["A"][0]]
+        assert len(a_results) == 1
+        assert a_results[0]["principle"] == "Already done"
+        conn.close()
+
+    def test_records_errors(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        import urllib.error
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+        ):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        data = json.loads(output_path.read_text())
+        error_results = [r for r in data["results"] if r["error"] is not None]
+        assert len(error_results) > 0
+        conn.close()
+
+    def test_includes_metadata(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "Principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A", "B"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        data = json.loads(output_path.read_text())
+        assert data["meta"]["variants"] == ["A", "B"]
+        assert "generated_at" in data["meta"]
+        assert "source_lessons" in data["meta"]
+        conn.close()
