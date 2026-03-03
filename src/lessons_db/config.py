@@ -13,6 +13,7 @@ DATA_DIR = Path(
 SQLITE_PATH = DATA_DIR / "lessons.db"
 LANCE_DIR = DATA_DIR / "lance"
 RULES_DIR = DATA_DIR / "rules"
+EVAL_DIR = DATA_DIR / "eval"
 
 # Source lesson files (for migration)
 LESSONS_SOURCE_DIR = Path(
