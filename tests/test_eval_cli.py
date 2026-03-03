@@ -250,3 +250,81 @@ class TestEvalJudgeCommand:
             ],
         )
         assert result.exit_code != 0 or "not found" in result.output.lower() or "Error" in result.output
+
+
+# ---------------------------------------------------------------------------
+# End-to-end integration
+# ---------------------------------------------------------------------------
+
+
+class TestEvalPipelineIntegration:
+    """End-to-end: eval-generate → eval-judge → report."""
+
+    def test_full_pipeline(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        _seed_eval_db(conn)
+        conn.close()
+
+        results_file = tmp_path / "results.json"
+        report_file = tmp_path / "report.md"
+
+        # Mock Ollama for generation
+        gen_resp = MagicMock()
+        gen_resp.read.return_value = json.dumps(
+            {"response": "Pattern masking causes delayed detection when errors are silently swallowed."}
+        ).encode("utf-8")
+        gen_resp.__enter__ = lambda s: s
+        gen_resp.__exit__ = MagicMock(return_value=False)
+
+        runner = CliRunner()
+
+        # Stage 1: eval-generate
+        with patch("urllib.request.urlopen", return_value=gen_resp):
+            result = runner.invoke(
+                main,
+                [
+                    "--db",
+                    str(db_path),
+                    "meta",
+                    "eval-generate",
+                    "--variants",
+                    "A",
+                    "--per-cluster",
+                    "1",
+                    "--output",
+                    str(results_file),
+                ],
+            )
+        assert result.exit_code == 0, f"eval-generate failed: {result.output}"
+        assert results_file.exists()
+
+        # Stage 2: eval-judge (with mocked judge)
+        judge_resp = MagicMock()
+        judge_resp.read.return_value = json.dumps(
+            {"response": '{"transfer": 4, "precision": 3, "actionability": 4}'}
+        ).encode("utf-8")
+        judge_resp.__enter__ = lambda s: s
+        judge_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=judge_resp):
+            result = runner.invoke(
+                main,
+                [
+                    "--db",
+                    str(db_path),
+                    "meta",
+                    "eval-judge",
+                    str(results_file),
+                    "--output",
+                    str(report_file),
+                ],
+            )
+        assert result.exit_code == 0, f"eval-judge failed: {result.output}"
+        assert report_file.exists()
+
+        # Verify report content
+        report = report_file.read_text()
+        assert "# Transfer-Test Evaluation Report" in report
+        assert "| Variant" in report
+        assert "Winner" in report
+        assert "Variant A" in report or "| A |" in report
