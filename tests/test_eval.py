@@ -601,6 +601,11 @@ class TestBuildJudgePrompt:
         prompt = build_judge_prompt("Principle.", {"title": "T", "one_liner": "O", "description": "D"})
         assert "JSON" in prompt or "json" in prompt
 
+    def test_truncates_long_descriptions(self):
+        long_desc = "x" * 600
+        prompt = build_judge_prompt("Principle.", {"title": "T", "one_liner": "O", "description": long_desc})
+        assert "x" * 301 not in prompt  # description truncated at 300
+
 
 # ---------------------------------------------------------------------------
 # TestParseJudgeScores
@@ -785,6 +790,46 @@ class TestRenderReport:
         report = render_report(metrics, [], {"A": {}, "B": {}})
         assert "B" in report  # Winner mentioned
 
+    def test_renders_per_cluster_breakdown(self):
+        metrics = {"A": {"recall": 0.8, "precision": 0.7, "f1": 0.75, "mean_actionability": 3.5}}
+        scored_pairs = [
+            {
+                "variant": "A",
+                "is_same_cluster": True,
+                "cluster_seed": "X",
+                "scores": {"transfer": 4, "precision": 3, "actionability": 5},
+                "principle": "Test",
+                "target_title": "Target",
+            },
+            {
+                "variant": "A",
+                "is_same_cluster": False,
+                "cluster_seed": "X",
+                "scores": {"transfer": 2, "precision": 4, "actionability": 3},
+                "principle": "Test",
+                "target_title": "Target2",
+            },
+        ]
+        report = render_report(metrics, scored_pairs, {"A": {}})
+        assert "Per-Cluster Breakdown" in report
+        assert "Cluster X" in report
+
+    def test_renders_failure_analysis(self):
+        metrics = {"A": {"recall": 0.5, "precision": 0.5, "f1": 0.5, "mean_actionability": 3.0}}
+        scored_pairs = [
+            {
+                "variant": "A",
+                "is_same_cluster": True,
+                "cluster_seed": "Y",
+                "scores": {"transfer": 1, "precision": 2, "actionability": 2},
+                "principle": "Weak principle that fails transfer",
+                "target_title": "Some target lesson",
+            },
+        ]
+        report = render_report(metrics, scored_pairs, {"A": {}})
+        assert "Failure Analysis" in report
+        assert "scored below threshold" in report
+
 
 # ---------------------------------------------------------------------------
 # TestRunEvalJudge
@@ -866,4 +911,44 @@ class TestRunEvalJudge:
         )
 
         assert len(scored_pairs) == 0
+        conn.close()
+
+    def test_fallback_scores_on_judge_failure(self, db_path, tmp_path):
+        """When call_judge returns None, scored pair should get all-1 default scores."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        results_data = {
+            "meta": {"variants": ["A"], "per_cluster": 1, "source_lessons": [ids["A"][0]]},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "lesson_title": "Silent failure 0",
+                    "cluster_seed": "A",
+                    "principle": "Test principle for fallback.",
+                    "model": "test-model",
+                    "prompt_id": "baseline-fewshot",
+                    "settings": {},
+                    "generation_time_s": 1.0,
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+        report_path = tmp_path / "report.md"
+
+        # Mock judge to always return None (simulates network failure / parse failure)
+        with patch("lessons_db.eval.call_judge", return_value=None):
+            scored_pairs, metrics = run_eval_judge(
+                results_path=results_path,
+                conn=conn,
+                report_path=report_path,
+                backend="ollama",
+            )
+
+        assert len(scored_pairs) > 0
+        for pair in scored_pairs:
+            assert pair["scores"] == {"transfer": 1, "precision": 1, "actionability": 1}
         conn.close()
