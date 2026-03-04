@@ -47,12 +47,17 @@ def get_embedding(text: str) -> list[float] | None:
         resp = requests.post(
             f"{OLLAMA_EMBED_URL}/api/embed",
             json={"model": EMBED_MODEL, "input": text},
-            timeout=30,
+            timeout=300,
         )
         resp.raise_for_status()
         return cast(list[float], resp.json()["embeddings"][0])
-    except Exception:
-        logger.warning("Embedding request failed for text: %s", text[:80])
+    except Exception as exc:
+        logger.warning(
+            "Embedding request failed (%s: %s) for text: %s",
+            type(exc).__name__,
+            exc,
+            text[:80],
+        )
         return None
 
 

@@ -511,6 +511,8 @@ def extract_nonpython_candidates(
                         continue
                     blocks.append((repo_key, snippet, vector))
                     repo_counts[repo_key] = repo_counts.get(repo_key, 0) + 1
+            if repo_counts.get(repo_key, 0) >= MAX_BLOCKS_PER_REPO:
+                break
 
     if not blocks:
         return []

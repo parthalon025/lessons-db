@@ -112,6 +112,7 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 - **POST /api/mining/run** — queues GitHub mining task
 - **GET /api/security/findings** — open scan findings
 - **POST /api/security/scan** — trigger Semgrep security scan
+- **GET /api/scan/summary** — decision-context dashboard: promotion rate, drafts captured last run, sessions processed, scan age, embed failure rate, FSRS review backlog
 
 ## Deployment
 
@@ -133,7 +134,7 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 - **SQLite** (stdlib) for structured queries — no external DB dependency
 - **LanceDB** for semantic vector search — embedded, no server
 - **Semgrep** for pattern detection — reused, not rebuilt
-- **Ollama** via ollama-queue for generation tasks; direct for embeddings (nomic-embed-text, 768 dims) and analysis (default: qwen3:8b)
+- **Ollama** via ollama-queue for all tasks including embeddings (nomic-embed-text, 768 dims) and analysis (default: qwen3:8b); embed calls route through queue at port 7683 (PROXY_WAIT_TIMEOUT=300s)
 - **FSRS-6** implemented directly (~500 lines, no external deps) — power-law forgetting curve R=(1+F*t/S)^DECAY with 19 optimized parameters
 - **Click CLI** with subcommands matching design doc
 
