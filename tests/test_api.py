@@ -154,3 +154,262 @@ def test_post_calibration_run_queues(client):
     assert resp.status_code in (200, 202)
     data = resp.json()
     assert data.get("status") == "queued"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/scan/summary — decision-context dashboard
+# ---------------------------------------------------------------------------
+
+SCAN_SUMMARY_METRICS = [
+    "promotion_rate",
+    "drafts_captured_last_run",
+    "sessions_processed_last_run",
+    "last_scan_age_hours",
+    "embed_failure_rate",
+    "lessons_due_for_review",
+]
+METRIC_KEYS = {"value", "label", "decision_context", "status"}
+VALID_STATUSES = {"ok", "warn", "alert"}
+
+
+def test_scan_summary_returns_200(client):
+    """GET /api/scan/summary returns 200 on an empty DB."""
+    resp = client.get("/api/scan/summary")
+    assert resp.status_code == 200
+
+
+def test_scan_summary_has_all_metrics(client):
+    """Response contains every required top-level metric key."""
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    for metric in SCAN_SUMMARY_METRICS:
+        assert metric in data, f"missing metric: {metric}"
+
+
+def test_scan_summary_metric_structure(client):
+    """Every metric has value, label, decision_context, and status fields."""
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    for metric in SCAN_SUMMARY_METRICS:
+        obj = data[metric]
+        assert set(obj.keys()) == METRIC_KEYS, f"{metric} has wrong keys: {set(obj.keys())}"
+        assert obj["status"] in VALID_STATUSES, f"{metric}.status invalid: {obj['status']}"
+        assert isinstance(obj["label"], str) and obj["label"], f"{metric}.label must be non-empty string"
+        assert (
+            isinstance(obj["decision_context"], str) and obj["decision_context"]
+        ), f"{metric}.decision_context must be non-empty string"
+
+
+def test_scan_summary_promotion_rate_empty_db(client):
+    """With no decided drafts, promotion_rate.value is None and status is ok."""
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    pr = data["promotion_rate"]
+    assert pr["value"] is None
+    assert pr["status"] == "ok"
+
+
+def test_scan_summary_promotion_rate_with_data(client, db_path):
+    """promotion_rate reflects actual promoted/dismissed counts."""
+    import json
+
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    # Insert 2 promoted, 18 dismissed in last 7 days -> rate = 0.10 -> ok
+    for i in range(2):
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'promoted', date('now'), 'test')",
+            [f"raw{i}", json.dumps({})],
+        )
+    for i in range(18):
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'dismissed', date('now'), 'test')",
+            [f"raw_d{i}", json.dumps({})],
+        )
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    pr = data["promotion_rate"]
+    assert pr["value"] == pytest.approx(0.10, abs=0.01)
+    assert pr["status"] == "ok"
+
+
+def test_scan_summary_promotion_rate_alert(client, db_path):
+    """promotion_rate < 0.02 triggers alert status."""
+    import json
+
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    # 0 promoted, 100 dismissed -> rate = 0.0 -> alert
+    for i in range(100):
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'dismissed', date('now'), 'test')",
+            [f"raw_d{i}", json.dumps({})],
+        )
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    pr = data["promotion_rate"]
+    assert pr["value"] == pytest.approx(0.0)
+    assert pr["status"] == "alert"
+
+
+def test_scan_summary_promotion_rate_warn(client, db_path):
+    """promotion_rate in [0.02, 0.05) triggers warn status."""
+    import json
+
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    # 3 promoted, 97 dismissed -> rate = 0.03 -> warn
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'promoted', date('now'), 'test')",
+            [f"raw_p{i}", json.dumps({})],
+        )
+    for i in range(97):
+        conn.execute(
+            "INSERT INTO capture_drafts (raw_content, extracted_data, status, created_date, source) "
+            "VALUES (?, ?, 'dismissed', date('now'), 'test')",
+            [f"raw_d{i}", json.dumps({})],
+        )
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    pr = data["promotion_rate"]
+    assert pr["status"] == "warn"
+
+
+def test_scan_summary_last_scan_age_fresh(client, db_path):
+    """last_scan_age_hours is ok when timestamp is recent."""
+    from datetime import UTC, datetime
+
+    from lessons_db.db import init_db, set_scan_state
+
+    conn = init_db(db_path)
+    # Set timestamp to 2 hours ago
+    recent = (datetime.now(UTC).replace(microsecond=0)).isoformat()
+    set_scan_state(conn, "last_scan_timestamp", recent)
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    age = data["last_scan_age_hours"]
+    assert age["status"] == "ok"
+    assert age["value"] is not None
+    assert age["value"] < 25
+
+
+def test_scan_summary_last_scan_age_never_run(client):
+    """Default epoch timestamp (never run) gives warn status."""
+    # Default DB has '1970-01-01T00:00:00' seeded by _seed_scan_state
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    age = data["last_scan_age_hours"]
+    # Never-run epoch -> None value, warn status
+    assert age["value"] is None
+    assert age["status"] == "warn"
+
+
+def test_scan_summary_last_scan_age_stale(client, db_path):
+    """Timestamp older than 25 hours gives warn or alert."""
+    from datetime import UTC, datetime, timedelta
+
+    from lessons_db.db import init_db, set_scan_state
+
+    conn = init_db(db_path)
+    stale = (datetime.now(UTC) - timedelta(hours=30)).replace(microsecond=0).isoformat()
+    set_scan_state(conn, "last_scan_timestamp", stale)
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    age = data["last_scan_age_hours"]
+    assert age["status"] in ("warn", "alert")
+    assert age["value"] is not None
+    assert age["value"] > 25
+
+
+def test_scan_summary_lessons_due_empty_db(client):
+    """With no lessons, lessons_due_for_review.value is 0 and status is ok."""
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    due = data["lessons_due_for_review"]
+    assert due["value"] == 0
+    assert due["status"] == "ok"
+
+
+def test_scan_summary_lessons_due_with_overdue(client, db_path):
+    """Lessons with retrievability < 0.9 are counted correctly."""
+    from lessons_db.db import init_db, insert_lesson
+
+    conn = init_db(db_path)
+    # Insert 35 lessons with low retrievability -> alert threshold (>30)
+    for i in range(35):
+        lid = insert_lesson(conn, {"title": f"Lesson {i}", "created_date": "2026-01-01"})
+        conn.execute("UPDATE lessons SET retrievability = 0.5 WHERE id = ?", [lid])
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    due = data["lessons_due_for_review"]
+    assert due["value"] == 35
+    assert due["status"] == "alert"
+
+
+def test_scan_summary_lessons_due_warn_threshold(client, db_path):
+    """15 lessons with low retrievability -> warn status."""
+    from lessons_db.db import init_db, insert_lesson
+
+    conn = init_db(db_path)
+    for i in range(15):
+        lid = insert_lesson(conn, {"title": f"Lesson {i}", "created_date": "2026-01-01"})
+        conn.execute("UPDATE lessons SET retrievability = 0.7 WHERE id = ?", [lid])
+    conn.commit()
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    due = data["lessons_due_for_review"]
+    assert due["value"] == 15
+    assert due["status"] == "warn"
+
+
+def test_scan_summary_nightly_run_metadata(client, db_path):
+    """scan_state keys for last_run_drafted and sessions_processed are reflected."""
+    from lessons_db.db import init_db, set_scan_state
+
+    conn = init_db(db_path)
+    set_scan_state(conn, "last_run_drafted", "7")
+    set_scan_state(conn, "last_run_sessions_processed", "12")
+    conn.close()
+
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    assert data["drafts_captured_last_run"]["value"] == 7
+    assert data["drafts_captured_last_run"]["status"] == "ok"
+    assert data["sessions_processed_last_run"]["value"] == 12
+    assert data["sessions_processed_last_run"]["status"] == "ok"
+
+
+def test_scan_summary_nightly_run_missing_keys(client):
+    """When scan_state lacks run metadata, value is None and status is warn."""
+    resp = client.get("/api/scan/summary")
+    data = resp.json()
+    assert data["drafts_captured_last_run"]["value"] is None
+    assert data["drafts_captured_last_run"]["status"] == "warn"
+    assert data["sessions_processed_last_run"]["value"] is None
+    assert data["sessions_processed_last_run"]["status"] == "warn"
