@@ -457,6 +457,377 @@ def create_app(  # noqa: C901, PLR0915
         finally:
             conn.close()
 
+    # -----------------------------------------------------------------------
+    # Scan health dashboard
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/scan/summary")
+    def scan_summary() -> dict:  # noqa: C901, PLR0912, PLR0915
+        """Decision-context dashboard for scan pipeline health.
+
+        Returns each metric with both the raw value and a plain-English
+        decision_context explaining what the number means, whether it's
+        good or bad, and what you should do about it.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        conn = get_conn()
+        try:
+            result: dict[str, Any] = {}
+            seven_days_ago = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
+
+            # ------------------------------------------------------------------
+            # 1. promotion_rate — last 7 days
+            # ------------------------------------------------------------------
+            try:
+                row = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE status = 'promoted') AS promoted,
+                        COUNT(*) FILTER (WHERE status = 'dismissed') AS dismissed
+                    FROM capture_drafts
+                    WHERE created_date >= ?
+                    """,
+                    (seven_days_ago,),
+                ).fetchone()
+                promoted = row["promoted"] if row else 0
+                dismissed = row["dismissed"] if row else 0
+                total_decided = promoted + dismissed
+                rate = promoted / total_decided if total_decided > 0 else None
+
+                if rate is None:
+                    status_val = "ok"
+                    label = f"No decided drafts in last 7 days (promoted={promoted}, dismissed={dismissed})"
+                elif rate >= 0.05:
+                    status_val = "ok"
+                    label = f"{promoted} of {total_decided} candidates promoted ({rate:.1%})"
+                elif rate >= 0.02:
+                    status_val = "warn"
+                    label = f"{promoted} of {total_decided} candidates promoted ({rate:.1%})"
+                else:
+                    status_val = "alert"
+                    label = f"{promoted} of {total_decided} candidates promoted ({rate:.1%})"
+
+                result["promotion_rate"] = {
+                    "value": round(rate, 4) if rate is not None else None,
+                    "label": label,
+                    "decision_context": (
+                        "This is your signal-to-noise ratio for the capture pipeline. "
+                        "Below 5% means the triage criteria are too loose — consider tightening "
+                        "the QUALITY_MIN_SCORE threshold in config.py. "
+                        "Above 20% means the filter is too aggressive and valuable patterns "
+                        "may be dismissed prematurely. "
+                        "null means no drafts reached a final status this week — check whether "
+                        "the nightly pipeline is running."
+                    ),
+                    "status": status_val,
+                }
+            except Exception as exc:
+                _log.warning("scan_summary: promotion_rate query failed: %s", exc)
+                result["promotion_rate"] = {
+                    "value": None,
+                    "label": "Query failed",
+                    "decision_context": (
+                        "Failed to compute promotion rate. "
+                        "Diagnose with: sqlite3 ~/.local/share/lessons-db/lessons.db "
+                        '"SELECT status, COUNT(*) FROM capture_drafts GROUP BY status"'
+                    ),
+                    "status": "alert",
+                }
+
+            # ------------------------------------------------------------------
+            # 2. drafts_captured_last_run — most recent nightly run
+            # ------------------------------------------------------------------
+            try:
+                # scan_state stores metadata about the most recent nightly run
+                drafted_val = conn.execute("SELECT value FROM scan_state WHERE key = 'last_run_drafted'").fetchone()
+                sessions_val = conn.execute(
+                    "SELECT value FROM scan_state WHERE key = 'last_run_sessions_processed'"
+                ).fetchone()
+
+                drafted_count = int(drafted_val["value"]) if drafted_val else None
+                sessions_count = int(sessions_val["value"]) if sessions_val else None
+
+                if drafted_count is None:
+                    result["drafts_captured_last_run"] = {
+                        "value": None,
+                        "label": "No nightly run record found",
+                        "decision_context": (
+                            "The nightly pipeline has not written run metadata to scan_state yet. "
+                            "This is normal on first install. After the first nightly run at 03:30, "
+                            "this will show how many lesson candidates were captured. "
+                            "Check service status: journalctl --user -u lessons-db-nightly.service --since today"
+                        ),
+                        "status": "warn",
+                    }
+                else:
+                    status_val = "ok" if drafted_count > 0 else "warn"
+                    result["drafts_captured_last_run"] = {
+                        "value": drafted_count,
+                        "label": f"{drafted_count} drafts captured in last run",
+                        "decision_context": (
+                            "Zero drafts on a run with sessions processed usually means the Ollama "
+                            "extraction model returned no candidates — check "
+                            "journalctl --user -u lessons-db-nightly.service for extraction errors. "
+                            "A healthy run captures 3-15 drafts per batch."
+                        ),
+                        "status": status_val,
+                    }
+            except Exception as exc:
+                _log.warning("scan_summary: drafts_captured_last_run query failed: %s", exc)
+                result["drafts_captured_last_run"] = {
+                    "value": None,
+                    "label": "Query failed",
+                    "decision_context": (
+                        "Failed to retrieve last-run draft count from scan_state. "
+                        "Check the scan_state table for key 'last_run_drafted'."
+                    ),
+                    "status": "alert",
+                }
+
+            # ------------------------------------------------------------------
+            # 3. sessions_processed_last_run
+            # ------------------------------------------------------------------
+            try:
+                sessions_val = conn.execute(
+                    "SELECT value FROM scan_state WHERE key = 'last_run_sessions_processed'"
+                ).fetchone()
+                sessions_count = int(sessions_val["value"]) if sessions_val else None
+
+                if sessions_count is None:
+                    result["sessions_processed_last_run"] = {
+                        "value": None,
+                        "label": "No nightly run record found",
+                        "decision_context": (
+                            "No session count recorded yet. The nightly pipeline writes this after "
+                            "each batch-capture run. If the service has run and this is still null, "
+                            "check whether batch-capture-transcripts.sh writes to scan_state."
+                        ),
+                        "status": "warn",
+                    }
+                else:
+                    status_val = "ok" if sessions_count > 0 else "warn"
+                    result["sessions_processed_last_run"] = {
+                        "value": sessions_count,
+                        "label": f"{sessions_count} sessions processed in last run",
+                        "decision_context": (
+                            "Zero sessions processed means either no new transcripts existed since "
+                            "the last run, or the --since DATE filter excluded all files. "
+                            "If this is consistently zero, check that Claude session transcripts "
+                            "are accumulating in the expected directory."
+                        ),
+                        "status": status_val,
+                    }
+            except Exception as exc:
+                _log.warning("scan_summary: sessions_processed_last_run query failed: %s", exc)
+                result["sessions_processed_last_run"] = {
+                    "value": None,
+                    "label": "Query failed",
+                    "decision_context": (
+                        "Failed to retrieve session count from scan_state. "
+                        "Check the scan_state table for key 'last_run_sessions_processed'."
+                    ),
+                    "status": "alert",
+                }
+
+            # ------------------------------------------------------------------
+            # 4. last_scan_age_hours — pattern-scan freshness
+            # ------------------------------------------------------------------
+            try:
+                ts_row = conn.execute("SELECT value FROM scan_state WHERE key = 'last_scan_timestamp'").fetchone()
+                ts_str = ts_row["value"] if ts_row else None
+
+                if ts_str is None or ts_str == "1970-01-01T00:00:00":
+                    age_hours = None
+                    status_val = "warn"
+                    label = "Pattern scan has never run"
+                else:
+                    # Parse ISO timestamp — try both with and without timezone
+                    try:
+                        ts = datetime.fromisoformat(ts_str)
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=UTC)
+                        now = datetime.now(UTC)
+                        age_hours = round((now - ts).total_seconds() / 3600, 1)
+                    except ValueError:
+                        age_hours = None
+
+                    if age_hours is None:
+                        status_val = "warn"
+                        label = f"Could not parse timestamp: {ts_str}"
+                    elif age_hours < 25:
+                        status_val = "ok"
+                        label = f"Last scan: {age_hours} hours ago"
+                    elif age_hours < 48:
+                        status_val = "warn"
+                        label = f"Last scan: {age_hours} hours ago"
+                    else:
+                        status_val = "alert"
+                        label = f"Last scan: {age_hours} hours ago"
+
+                result["last_scan_age_hours"] = {
+                    "value": age_hours,
+                    "label": label,
+                    "decision_context": (
+                        "Pattern scan runs nightly at 03:00 via lessons-db-pattern-scan.service. "
+                        "If this exceeds 25 hours, the timer has likely failed. "
+                        "Diagnose with: journalctl --user -u lessons-db-pattern-scan.service --since today "
+                        "and: systemctl --user status lessons-db-pattern-scan.timer"
+                    ),
+                    "status": status_val,
+                }
+            except Exception as exc:
+                _log.warning("scan_summary: last_scan_age_hours query failed: %s", exc)
+                result["last_scan_age_hours"] = {
+                    "value": None,
+                    "label": "Query failed",
+                    "decision_context": (
+                        "Failed to read last_scan_timestamp from scan_state. "
+                        "Run: lessons-db scan to trigger a manual pattern scan."
+                    ),
+                    "status": "alert",
+                }
+
+            # ------------------------------------------------------------------
+            # 5. embed_failure_rate — cross_project_scan drafts, last 7 days
+            # ------------------------------------------------------------------
+            try:
+                # Embed failures are proxied by capture_drafts with
+                # detection_source='cross_project_scan' that stayed 'pending'
+                # past the triage window (older than 24h and not decided).
+                # If the detection_source column doesn't exist, skip gracefully.
+                cols = [r[1] for r in conn.execute("PRAGMA table_info('capture_drafts')").fetchall()]
+                if "detection_source" not in cols:
+                    result["embed_failure_rate"] = {
+                        "value": None,
+                        "label": "detection_source column not present",
+                        "decision_context": (
+                            "Embed failure tracking requires the detection_source column on "
+                            "capture_drafts. Run: lessons-db migrate to apply schema migrations."
+                        ),
+                        "status": "warn",
+                    }
+                else:
+                    row = conn.execute(
+                        """
+                        SELECT
+                            COUNT(*) FILTER (WHERE detection_source = 'cross_project_scan') AS scan_count,
+                            COUNT(*) AS total_count
+                        FROM capture_drafts
+                        WHERE created_date >= ?
+                        """,
+                        (seven_days_ago,),
+                    ).fetchone()
+                    scan_count = row["scan_count"] if row else 0
+
+                    # Stale pending scan drafts = proxies for embed failures
+                    stale_row = conn.execute(
+                        """
+                        SELECT COUNT(*) AS stale
+                        FROM capture_drafts
+                        WHERE detection_source = 'cross_project_scan'
+                          AND status = 'pending'
+                          AND created_date < date('now', '-1 day')
+                        """,
+                    ).fetchone()
+                    stale = stale_row["stale"] if stale_row else 0
+
+                    rate = stale / scan_count if scan_count > 0 else None
+
+                    if rate is None:
+                        status_val = "ok"
+                        label = "No cross-project scan drafts in last 7 days"
+                    elif rate < 0.1:
+                        status_val = "ok"
+                        label = f"{stale} of {scan_count} scan drafts stale/unresolved ({rate:.1%})"
+                    elif rate < 0.3:
+                        status_val = "warn"
+                        label = f"{stale} of {scan_count} scan drafts stale/unresolved ({rate:.1%})"
+                    else:
+                        status_val = "alert"
+                        label = f"{stale} of {scan_count} scan drafts stale/unresolved ({rate:.1%})"
+
+                    result["embed_failure_rate"] = {
+                        "value": round(rate, 4) if rate is not None else None,
+                        "label": label,
+                        "decision_context": (
+                            "Stale cross-project scan drafts indicate embedding or triage failures — "
+                            "the pattern scanner found candidates but they were never triaged. "
+                            "Above 10%: check the Ollama embed service (lessons-db index --seed-only). "
+                            "Above 30%: the triage pipeline is likely broken — "
+                            "check lessons-db-nightly.service logs."
+                        ),
+                        "status": status_val,
+                    }
+            except Exception as exc:
+                _log.warning("scan_summary: embed_failure_rate query failed: %s", exc)
+                result["embed_failure_rate"] = {
+                    "value": None,
+                    "label": "Query failed",
+                    "decision_context": (
+                        "Failed to compute embed failure rate. "
+                        "Check capture_drafts table and detection_source column."
+                    ),
+                    "status": "alert",
+                }
+
+            # ------------------------------------------------------------------
+            # 6. lessons_due_for_review — FSRS retrievability < 0.9
+            # ------------------------------------------------------------------
+            try:
+                # Check if retrievability column exists (added in v8)
+                cols = [r[1] for r in conn.execute("PRAGMA table_info('lessons')").fetchall()]
+                if "retrievability" not in cols:
+                    result["lessons_due_for_review"] = {
+                        "value": None,
+                        "label": "FSRS columns not present",
+                        "decision_context": (
+                            "FSRS spaced repetition columns are not yet initialized. "
+                            "Run: lessons-db fsrs init  to backfill defaults on all lessons."
+                        ),
+                        "status": "warn",
+                    }
+                else:
+                    due_count = conn.execute("SELECT COUNT(*) FROM lessons WHERE retrievability < 0.9").fetchone()[0]
+                    total_lessons = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+
+                    if due_count < 10:
+                        status_val = "ok"
+                    elif due_count < 30:
+                        status_val = "warn"
+                    else:
+                        status_val = "alert"
+
+                    result["lessons_due_for_review"] = {
+                        "value": due_count,
+                        "label": f"{due_count} of {total_lessons} lessons due for review (R < 0.9)",
+                        "decision_context": (
+                            "Retrievability < 0.9 means FSRS predicts a >10% chance you've forgotten "
+                            "the lesson since last review. "
+                            "Under 10 due: healthy — run 'lessons-db fsrs due' to review them. "
+                            "10-30 due: review backlog building — consider a dedicated review session. "
+                            "Over 30 due: review is significantly overdue; "
+                            "run 'lessons-db fsrs due --threshold 0.7' to prioritize the most critical."
+                        ),
+                        "status": status_val,
+                    }
+            except Exception as exc:
+                _log.warning("scan_summary: lessons_due_for_review query failed: %s", exc)
+                result["lessons_due_for_review"] = {
+                    "value": None,
+                    "label": "Query failed",
+                    "decision_context": (
+                        "Failed to query FSRS retrievability. "
+                        "Run: lessons-db fsrs init  to ensure FSRS columns are populated."
+                    ),
+                    "status": "alert",
+                }
+
+            return result
+
+        finally:
+            conn.close()
+
     return app
 
 
