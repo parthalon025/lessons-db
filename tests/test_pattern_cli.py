@@ -60,6 +60,29 @@ class TestPatternScan:
         ts = get_scan_state(conn, "last_scan_timestamp")
         assert ts != "1970-01-01T00:00:00"
 
+    def test_scan_verify_rejection_does_not_crash(self, runner, cli_db):
+        """verify_candidate returns (None, gate_tag) on rejection — must not raise AttributeError."""
+        from unittest.mock import MagicMock
+
+        fake_candidate = MagicMock()
+
+        with (
+            patch("lessons_db.cli.pattern_extract") as mock_extract,
+            patch("lessons_db.cli.pattern_verify") as mock_verify,
+            patch("lessons_db.cli.pattern_triage") as mock_triage,
+        ):
+            mock_extract.list_active_repos.return_value = [MagicMock(name="repo")]
+            mock_extract.build_semgrep_patterns.return_value = []
+            mock_extract.extract_python_candidates.return_value = [fake_candidate]
+            mock_extract.extract_nonpython_candidates.return_value = []
+            # Simulate dedup rejection — returns tuple, not None
+            mock_verify.verify_candidate.return_value = (None, "dedup")
+
+            result = runner.invoke(main, ["--db", str(cli_db), "pattern", "scan"])
+
+        assert result.exit_code == 0, result.output
+        mock_triage.triage_candidate.assert_not_called()
+
 
 class TestPatternReview:
     def test_review_shows_pending_drafts(self, runner, cli_db):

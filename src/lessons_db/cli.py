@@ -1539,7 +1539,7 @@ def pattern_scan(ctx):
             auto_approved = 0
             queued = 0
             for cand in candidates:
-                verified = pattern_verify.verify_candidate(cand, conn, lance_dir)
+                verified, _gate = pattern_verify.verify_candidate(cand, conn, lance_dir)
                 if verified is None:
                     continue
                 triage_result = pattern_triage.triage_candidate(verified, conn, lance_dir)

@@ -40,8 +40,10 @@ tests/
 cd ~/Documents/projects/lessons-db
 source .venv/bin/activate
 
-# Run tests
-pytest --timeout=120 -x -q
+# Run tests (always use parallel — suite takes ~5min single-threaded)
+pytest --timeout=120 -x -q -n 6       # standard parallel run
+pytest --timeout=120 -x -q -n auto    # light parallel
+pytest --timeout=120 -x -q -n 0      # debug (single thread)
 
 # Core CLI
 lessons-db status
