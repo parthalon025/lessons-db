@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from lessons_db.config import LANCE_DIR, SQLITE_PATH
-from lessons_db.db import init_db
+from lessons_db.db import get_scan_state, init_db
 from lessons_db.gap_analyzer import get_gap_report
 
 _log = logging.getLogger(__name__)
@@ -540,13 +540,11 @@ def create_app(  # noqa: C901, PLR0915
             # ------------------------------------------------------------------
             try:
                 # scan_state stores metadata about the most recent nightly run
-                drafted_val = conn.execute("SELECT value FROM scan_state WHERE key = 'last_run_drafted'").fetchone()
-                sessions_val = conn.execute(
-                    "SELECT value FROM scan_state WHERE key = 'last_run_sessions_processed'"
-                ).fetchone()
+                drafted_raw = get_scan_state(conn, "last_run_drafted")
+                sessions_raw = get_scan_state(conn, "last_run_sessions_processed")
 
-                drafted_count = int(drafted_val["value"]) if drafted_val else None
-                sessions_count = int(sessions_val["value"]) if sessions_val else None
+                drafted_count = int(drafted_raw) if drafted_raw is not None else None
+                sessions_count = int(sessions_raw) if sessions_raw is not None else None
 
                 if drafted_count is None:
                     result["drafts_captured_last_run"] = {
@@ -589,10 +587,8 @@ def create_app(  # noqa: C901, PLR0915
             # 3. sessions_processed_last_run
             # ------------------------------------------------------------------
             try:
-                sessions_val = conn.execute(
-                    "SELECT value FROM scan_state WHERE key = 'last_run_sessions_processed'"
-                ).fetchone()
-                sessions_count = int(sessions_val["value"]) if sessions_val else None
+                sessions_raw = get_scan_state(conn, "last_run_sessions_processed")
+                sessions_count = int(sessions_raw) if sessions_raw is not None else None
 
                 if sessions_count is None:
                     result["sessions_processed_last_run"] = {
@@ -634,8 +630,7 @@ def create_app(  # noqa: C901, PLR0915
             # 4. last_scan_age_hours — pattern-scan freshness
             # ------------------------------------------------------------------
             try:
-                ts_row = conn.execute("SELECT value FROM scan_state WHERE key = 'last_scan_timestamp'").fetchone()
-                ts_str = ts_row["value"] if ts_row else None
+                ts_str = get_scan_state(conn, "last_scan_timestamp")
 
                 if ts_str is None or ts_str == "1970-01-01T00:00:00":
                     age_hours = None

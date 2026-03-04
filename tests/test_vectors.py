@@ -35,8 +35,8 @@ class TestEmbedding:
         assert result is None
 
     @patch("lessons_db.vectors.requests.post")
-    def test_get_embedding_uses_30s_timeout(self, mock_post):
-        """Embedding timeout must be 30s — fast once model is warm; avoid long hangs."""
+    def test_get_embedding_uses_300s_timeout(self, mock_post):
+        """Embedding timeout must be 300s — matches ollama-queue PROXY_WAIT_TIMEOUT."""
         from lessons_db.vectors import get_embedding
 
         mock_response = MagicMock()
@@ -47,7 +47,7 @@ class TestEmbedding:
         get_embedding("test text")
 
         _, kwargs = mock_post.call_args
-        assert kwargs.get("timeout") == 30, f"Expected timeout=30, got {kwargs.get('timeout')}"
+        assert kwargs.get("timeout") == 300, f"Expected timeout=300, got {kwargs.get('timeout')}"
 
     @patch("lessons_db.vectors.requests.post")
     def test_get_embedding_routes_to_queue_port(self, mock_post):
