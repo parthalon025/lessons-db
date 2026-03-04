@@ -8,6 +8,7 @@ two or more project repositories. Detection runs via two complementary paths:
    by cosine similarity across repos.
 """
 
+import hashlib
 import json
 import logging
 import shutil
@@ -23,6 +24,7 @@ import requests
 
 from lessons_db.config import (
     ANALYSIS_MODEL,
+    DATA_DIR,
     OLLAMA_ANALYSIS_URL,
     PROJECTS_DIR,
 )
@@ -173,6 +175,50 @@ BOOTSTRAP_PATTERNS: list[dict] = [
 _NONPYTHON_EXTS = {".sh", ".yaml", ".yml", ".js", ".ts", ".json", ".toml"}
 
 # ---------------------------------------------------------------------------
+# Config / lock / linter files that produce only noise when embedded
+# ---------------------------------------------------------------------------
+
+_SKIP_FILENAMES: frozenset[str] = frozenset(
+    {
+        "package-lock.json",
+        "yarn.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        ".markdownlintrc",
+        ".eslintrc",
+        ".eslintrc.json",
+        ".eslintrc.js",
+        ".prettierrc",
+        ".prettierrc.json",
+        ".stylelintrc",
+        "tsconfig.json",
+        "jsconfig.json",
+        "babel.config.js",
+        "jest.config.js",
+        "jest.config.ts",
+        "vite.config.ts",
+        "vite.config.js",
+        "rollup.config.js",
+        "webpack.config.js",
+    }
+)
+
+_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "__pycache__",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        "coverage",
+    }
+)
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -218,6 +264,9 @@ def list_active_repos(since_timestamp: str) -> list[Path]:
     return repos
 
 
+_SEMGREP_PATTERNS_CACHE_PATH = DATA_DIR / "semgrep-patterns-cache.json"
+
+
 def build_semgrep_patterns(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Build Semgrep pattern dicts from DB lessons or fall back to bootstrap.
 
@@ -226,6 +275,10 @@ def build_semgrep_patterns(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     immediately. Otherwise asks Ollama to convert each corrective action to a
     Semgrep YAML rule and returns those (with ``source_lesson_id`` set). If
     Ollama generates nothing useful, falls back to BOOTSTRAP_PATTERNS.
+
+    Results are cached in ``~/.local/share/lessons-db/semgrep-patterns-cache.json``
+    keyed by SHA256 of the concatenated corrective actions. Cache hit skips all
+    Ollama calls (~378 calls avoided on a warm run).
     """
     try:
         rows = conn.execute(
@@ -239,6 +292,21 @@ def build_semgrep_patterns(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
     if len(rows) < 10:
         return list(BOOTSTRAP_PATTERNS)
+
+    # Compute cache key from all corrective actions (order-stable via id sort)
+    sorted_actions = sorted((row["id"], row["corrective_action"]) for row in rows)
+    cache_payload = "\n".join(f"{lid}:{ca}" for lid, ca in sorted_actions)
+    cache_key = hashlib.sha256(cache_payload.encode()).hexdigest()
+
+    # Check file-based cache
+    if _SEMGREP_PATTERNS_CACHE_PATH.exists():
+        try:
+            cached = json.loads(_SEMGREP_PATTERNS_CACHE_PATH.read_text())
+            if cached.get("cache_key") == cache_key:
+                _log.debug("build_semgrep_patterns: cache hit (%s)", cache_key[:12])
+                return cast(list[dict[str, Any]], cached["patterns"])
+        except Exception as exc:
+            _log.warning("build_semgrep_patterns: failed to read cache: %s", exc)
 
     patterns: list[dict] = []
     for row in rows:
@@ -269,7 +337,15 @@ def build_semgrep_patterns(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             _log.warning("Ollama pattern generation failed for lesson %d: %s", lesson_id, exc)
 
     if not patterns:
-        return BOOTSTRAP_PATTERNS
+        return list(BOOTSTRAP_PATTERNS)
+
+    # Persist cache
+    try:
+        _SEMGREP_PATTERNS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _SEMGREP_PATTERNS_CACHE_PATH.write_text(json.dumps({"cache_key": cache_key, "patterns": patterns}))
+        _log.debug("build_semgrep_patterns: wrote cache (%d patterns)", len(patterns))
+    except Exception as exc:
+        _log.warning("build_semgrep_patterns: failed to write cache: %s", exc)
 
     return patterns
 
@@ -414,6 +490,11 @@ def extract_nonpython_candidates(
             for filepath in repo.rglob(f"*{ext}"):
                 if repo_counts.get(repo_key, 0) >= MAX_BLOCKS_PER_REPO:
                     break
+                # Skip known config/lock/linter noise files before embedding
+                if filepath.name in _SKIP_FILENAMES:
+                    continue
+                if any(part in _SKIP_DIRS for part in filepath.parts):
+                    continue
                 try:
                     text = filepath.read_text(errors="replace")
                 except Exception as exc:

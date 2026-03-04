@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from lessons_db.db import init_db
 from lessons_db.pattern_extract import (
+    _SKIP_DIRS,
+    _SKIP_FILENAMES,
     BOOTSTRAP_PATTERNS,
     CandidatePattern,
     _sliding_window,
@@ -155,3 +157,177 @@ class TestExtractNonpythonCandidates:
 
         assert len(candidates) >= 1
         assert len(candidates[0].source_repos) >= 2
+
+
+class TestSkipFilenamesAndDirs:
+    """Config/lock/linter noise files must be skipped before embedding."""
+
+    def test_skip_filenames_set_is_nonempty(self):
+        assert len(_SKIP_FILENAMES) > 0
+        assert "package-lock.json" in _SKIP_FILENAMES
+        assert "tsconfig.json" in _SKIP_FILENAMES
+
+    def test_skip_dirs_set_is_nonempty(self):
+        assert len(_SKIP_DIRS) > 0
+        assert "node_modules" in _SKIP_DIRS
+        assert ".venv" in _SKIP_DIRS
+
+    def test_package_lock_json_is_not_embedded(self, tmp_path, db_path):
+        """package-lock.json must be silently skipped — no embed call emitted."""
+        conn = init_db(db_path)
+        repo_a = tmp_path / "repo-a"
+        repo_a.mkdir()
+        # Write a package-lock.json with enough lines to produce windows
+        block = "\n".join([f'"dep-{i}": {{"version": "1.0.{i}"}}' for i in range(20)])
+        (repo_a / "package-lock.json").write_text(block)
+
+        call_log: list[str] = []
+
+        def tracking_embed(text: str):
+            call_log.append(text[:40])
+            return [0.1] * 768
+
+        with patch("lessons_db.pattern_extract.get_embedding", side_effect=tracking_embed):
+            extract_nonpython_candidates(repos=[repo_a], conn=conn)
+
+        # No embed calls should have been triggered by package-lock.json
+        assert len(call_log) == 0
+
+    def test_node_modules_dir_is_not_embedded(self, tmp_path, db_path):
+        """Files inside node_modules must be skipped — no embed call emitted."""
+        conn = init_db(db_path)
+        repo_a = tmp_path / "repo-a"
+        nm_dir = repo_a / "node_modules" / "some-pkg"
+        nm_dir.mkdir(parents=True)
+        block = "\n".join([f"export function fn{i}() {{}}" for i in range(20)])
+        (nm_dir / "index.js").write_text(block)
+
+        call_log: list[str] = []
+
+        def tracking_embed(text: str):
+            call_log.append(text[:40])
+            return [0.1] * 768
+
+        with patch("lessons_db.pattern_extract.get_embedding", side_effect=tracking_embed):
+            extract_nonpython_candidates(repos=[repo_a], conn=conn)
+
+        assert len(call_log) == 0
+
+    def test_non_skip_file_is_still_embedded(self, tmp_path, db_path):
+        """A normal .sh file outside skip dirs must still be processed."""
+        conn = init_db(db_path)
+        repo_a = tmp_path / "repo-a"
+        repo_a.mkdir()
+        block = "\n".join([f"echo step {i}" for i in range(20)])
+        (repo_a / "deploy.sh").write_text(block)
+
+        call_log: list[str] = []
+
+        def tracking_embed(text: str):
+            call_log.append(text[:40])
+            return [0.1] * 768
+
+        with patch("lessons_db.pattern_extract.get_embedding", side_effect=tracking_embed):
+            extract_nonpython_candidates(repos=[repo_a], conn=conn)
+
+        assert len(call_log) > 0
+
+
+class TestBuildSemgrepPatternsCache:
+    """File-based cache for build_semgrep_patterns avoids redundant Ollama calls."""
+
+    def _seed_lessons(self, conn, n=10):
+        for i in range(n):
+            conn.execute(
+                "INSERT INTO lessons "
+                "(title, one_liner, corrective_action, tier, created_date, polarity) "
+                "VALUES (?, ?, ?, 'lesson_learned', '2026-03-04', 'negative')",
+                [f"Test {i}", f"one-liner {i}", f"wrap calls in contextlib.closing #{i}"],
+            )
+        conn.commit()
+
+    def test_cache_hit_skips_ollama(self, db_path, tmp_path, monkeypatch):
+        """Second call with same lessons must not invoke Ollama at all."""
+        cache_file = tmp_path / "semgrep-patterns-cache.json"
+        monkeypatch.setattr("lessons_db.pattern_extract._SEMGREP_PATTERNS_CACHE_PATH", cache_file)
+
+        conn = init_db(db_path)
+        self._seed_lessons(conn)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "pattern: with closing($C): ..."}
+
+        call_count = 0
+
+        def counting_post(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return mock_resp
+
+        with patch("lessons_db.pattern_extract.requests.post", side_effect=counting_post):
+            patterns_first = build_semgrep_patterns(conn)
+
+        first_call_count = call_count
+
+        # Second call — cache should be populated, Ollama must not be called
+        call_count = 0
+        with patch("lessons_db.pattern_extract.requests.post", side_effect=counting_post):
+            patterns_second = build_semgrep_patterns(conn)
+
+        assert call_count == 0, f"Expected 0 Ollama calls on cache hit, got {call_count}"
+        assert patterns_first == patterns_second
+
+    def test_cache_miss_on_changed_lessons(self, db_path, tmp_path, monkeypatch):
+        """Adding a new lesson invalidates the cache key → Ollama called again."""
+        cache_file = tmp_path / "semgrep-patterns-cache.json"
+        monkeypatch.setattr("lessons_db.pattern_extract._SEMGREP_PATTERNS_CACHE_PATH", cache_file)
+
+        conn = init_db(db_path)
+        self._seed_lessons(conn, n=10)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "pattern: with closing($C): ..."}
+
+        with patch("lessons_db.pattern_extract.requests.post", return_value=mock_resp):
+            build_semgrep_patterns(conn)
+
+        # Add another lesson — cache key changes
+        conn.execute(
+            "INSERT INTO lessons "
+            "(title, one_liner, corrective_action, tier, created_date, polarity) "
+            "VALUES (?, ?, ?, 'lesson_learned', '2026-03-04', 'negative')",
+            ["New lesson", "new one-liner", "always validate input"],
+        )
+        conn.commit()
+
+        second_call_count = 0
+
+        def counting_post(*a, **kw):
+            nonlocal second_call_count
+            second_call_count += 1
+            return mock_resp
+
+        with patch("lessons_db.pattern_extract.requests.post", side_effect=counting_post):
+            build_semgrep_patterns(conn)
+
+        assert second_call_count > 0, "Expected Ollama calls after cache invalidation"
+
+    def test_cache_file_written_after_generation(self, db_path, tmp_path, monkeypatch):
+        """Cache JSON file must be created after a successful Ollama generation run."""
+        cache_file = tmp_path / "semgrep-patterns-cache.json"
+        monkeypatch.setattr("lessons_db.pattern_extract._SEMGREP_PATTERNS_CACHE_PATH", cache_file)
+
+        conn = init_db(db_path)
+        self._seed_lessons(conn)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "pattern: with closing($C): ..."}
+
+        with patch("lessons_db.pattern_extract.requests.post", return_value=mock_resp):
+            build_semgrep_patterns(conn)
+
+        assert cache_file.exists(), "Cache file was not created after generation"
+        cached = json.loads(cache_file.read_text())
+        assert "cache_key" in cached
+        assert "patterns" in cached
+        assert len(cached["patterns"]) > 0

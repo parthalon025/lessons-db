@@ -194,6 +194,66 @@ class TestCaptureFromTranscript:
         result = capture_from_transcript("too short", conn)
         assert result == []
 
+    @patch("lessons_db.capture.requests.post")
+    def test_draft_cap_truncates_at_50(self, mock_post, db_path):
+        """LLM returning >50 lessons must be silently truncated to 50."""
+        from lessons_db.capture import capture_from_transcript
+        from lessons_db.db import init_db
+
+        # Simulate LLM returning 100 lessons — should be capped at 50
+        many_lessons = [{"one_liner": f"Lesson {i}", "cluster": "A", "tier": "lesson"} for i in range(100)]
+        mock_post.return_value = MagicMock(
+            json=lambda: {"response": json.dumps({"lessons": many_lessons})},
+            raise_for_status=lambda: None,
+        )
+        # score_one_liner is called per lesson — mock it to always pass quality gate
+        with patch("lessons_db.capture.score_one_liner", return_value=5):
+            conn = init_db(db_path)
+            result = capture_from_transcript("Session transcript text. " * 10, conn)
+
+        assert len(result) <= 50, f"Expected ≤50 lessons, got {len(result)}"
+        rows = conn.execute("SELECT COUNT(*) as cnt FROM capture_drafts").fetchone()
+        assert rows["cnt"] <= 50
+
+    @patch("lessons_db.capture.requests.post")
+    def test_draft_cap_logs_warning_when_exceeded(self, mock_post, db_path, caplog):
+        """When LLM returns >50 lessons, a WARNING log must be emitted."""
+        import logging
+
+        from lessons_db.capture import capture_from_transcript
+        from lessons_db.db import init_db
+
+        many_lessons = [{"one_liner": f"Lesson {i}", "cluster": "A", "tier": "lesson"} for i in range(75)]
+        mock_post.return_value = MagicMock(
+            json=lambda: {"response": json.dumps({"lessons": many_lessons})},
+            raise_for_status=lambda: None,
+        )
+        conn = init_db(db_path)
+        with patch("lessons_db.capture.score_one_liner", return_value=5):
+            with caplog.at_level(logging.WARNING, logger="lessons_db.capture"):
+                capture_from_transcript("Session transcript text. " * 10, conn)
+
+        assert any(
+            "75" in r.message and "truncating" in r.message for r in caplog.records
+        ), "Expected a WARNING log mentioning 75 and truncating"
+
+    @patch("lessons_db.capture.requests.post")
+    def test_exactly_50_lessons_not_truncated(self, mock_post, db_path):
+        """Exactly 50 lessons must pass through without truncation."""
+        from lessons_db.capture import capture_from_transcript
+        from lessons_db.db import init_db
+
+        exactly_50 = [{"one_liner": f"Lesson {i}", "cluster": "A", "tier": "lesson"} for i in range(50)]
+        mock_post.return_value = MagicMock(
+            json=lambda: {"response": json.dumps({"lessons": exactly_50})},
+            raise_for_status=lambda: None,
+        )
+        with patch("lessons_db.capture.score_one_liner", return_value=5):
+            conn = init_db(db_path)
+            result = capture_from_transcript("Session transcript text. " * 10, conn)
+
+        assert len(result) == 50
+
 
 class TestCaptureFromDiff:
     @patch("lessons_db.capture.requests.post")

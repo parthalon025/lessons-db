@@ -179,3 +179,62 @@ class TestVerifyCandidate:
             result, gate_tag = verify_candidate(candidate, conn, lance_dir=str(tmp_path / "lance"))
         assert result is None
         assert gate_tag == "specificity"  # Ollama failure at Gate 3
+
+
+class TestSuppressionVectorCache:
+    """Module-level cache prevents re-embedding the same suppression snippet twice."""
+
+    def test_cache_populated_after_first_call(self, db_path, tmp_path):
+        """After _suppression_similarity runs, rejected snippets must be cached."""
+        import lessons_db.pattern_verify as pv
+
+        pv._suppression_vector_cache.clear()
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO suppression_vectors (embedding_id, rejected_snippet, rejection_date) "
+            "VALUES ('emb-1', 'some snippet to cache', '2026-03-04')"
+        )
+        conn.commit()
+
+        embed_calls: list[str] = []
+
+        def tracking_embed(text: str):
+            embed_calls.append(text)
+            return [0.1] * 768
+
+        with patch("lessons_db.pattern_verify.get_embedding", side_effect=tracking_embed):
+            pv._suppression_similarity("query snippet", conn, lance_dir=str(tmp_path / "lance"))
+
+        # Cache must now hold the rejected snippet
+        assert len(pv._suppression_vector_cache) >= 1
+
+    def test_second_call_does_not_re_embed_cached_snippets(self, db_path, tmp_path):
+        """On the second call, the rejected snippet must not be re-embedded."""
+        import lessons_db.pattern_verify as pv
+
+        pv._suppression_vector_cache.clear()
+        conn = init_db(db_path)
+        conn.execute(
+            "INSERT INTO suppression_vectors (embedding_id, rejected_snippet, rejection_date) "
+            "VALUES ('emb-2', 'cached rejection snippet', '2026-03-04')"
+        )
+        conn.commit()
+
+        embed_calls: list[str] = []
+
+        def tracking_embed(text: str):
+            embed_calls.append(text)
+            return [0.1] * 768
+
+        with patch("lessons_db.pattern_verify.get_embedding", side_effect=tracking_embed):
+            pv._suppression_similarity("first query", conn, lance_dir=str(tmp_path / "lance"))
+            calls_after_first = len(embed_calls)
+
+            # Second call with different query: rejected snippet must come from cache
+            pv._suppression_similarity("second query", conn, lance_dir=str(tmp_path / "lance"))
+            calls_after_second = len(embed_calls)
+
+        # First call: 1 (query) + 1 (rejected snippet) = 2
+        # Second call: 1 (new query) + 0 (cached rejected) = 1
+        assert calls_after_first == 2
+        assert calls_after_second == 3  # only the new query was re-embedded

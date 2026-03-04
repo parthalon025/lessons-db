@@ -34,6 +34,38 @@ class TestEmbedding:
 
         assert result is None
 
+    @patch("lessons_db.vectors.requests.post")
+    def test_get_embedding_uses_30s_timeout(self, mock_post):
+        """Embedding timeout must be 30s — fast once model is warm; avoid long hangs."""
+        from lessons_db.vectors import get_embedding
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"embeddings": [FAKE_VECTOR]}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        get_embedding("test text")
+
+        _, kwargs = mock_post.call_args
+        assert kwargs.get("timeout") == 30, f"Expected timeout=30, got {kwargs.get('timeout')}"
+
+    @patch("lessons_db.vectors.requests.post")
+    def test_get_embedding_routes_to_queue_port(self, mock_post):
+        """Default embed URL must point to ollama-queue (port 7683), not direct Ollama (11434)."""
+        from lessons_db.vectors import OLLAMA_EMBED_URL, get_embedding
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"embeddings": [FAKE_VECTOR]}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        get_embedding("test text")
+
+        called_url = mock_post.call_args[0][0]
+        assert (
+            "7683" in called_url or "7683" in OLLAMA_EMBED_URL
+        ), f"Embed URL should route through ollama-queue (7683), got: {called_url}"
+
 
 class TestLanceDB:
     """Tests for LanceDB init, upsert, and search."""

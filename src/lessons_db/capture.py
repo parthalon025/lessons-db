@@ -206,6 +206,14 @@ def capture_from_transcript(
     if not lessons:
         return []
 
+    raw_count = len(lessons)
+    if raw_count > 50:
+        _log.warning(
+            "capture_from_transcript: LLM returned %d lessons — truncating to 50 (runaway response guard)",
+            raw_count,
+        )
+    lessons = lessons[:50]  # safety cap — prevents runaway LLM responses
+
     inserted = []
     try:
         for entry in lessons:

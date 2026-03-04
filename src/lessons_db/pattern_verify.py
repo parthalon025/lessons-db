@@ -10,6 +10,7 @@ Takes a CandidatePattern from Stage 1 and runs it through three gates:
 Returns a VerifiedCandidate on success, None if any gate rejects.
 """
 
+import hashlib
 import logging
 import re
 import sqlite3
@@ -30,6 +31,10 @@ _log = logging.getLogger(__name__)
 DEDUP_DISTANCE_THRESHOLD = 0.15  # LanceDB L2 distance; lower = more similar
 SUPPRESSION_SIMILARITY = 0.85  # cosine similarity; above = suppressed
 SPECIFICITY_MIN = 0.4  # reject before generality if below this
+
+# Process-level cache: SHA256(raw_content) → embedding vector.
+# Prevents re-embedding up to 500 suppression snippets on every candidate call.
+_suppression_vector_cache: dict[str, list[float]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +99,13 @@ def _suppression_similarity(snippet: str, conn: sqlite3.Connection, lance_dir: s
     max_sim = 0.0
     for row in rows:
         rejected = row[0] if isinstance(row, tuple | list) else row["rejected_snippet"]
-        rejected_vec = get_embedding(rejected)
+        cache_key = hashlib.sha256(rejected.encode()).hexdigest()
+        rejected_vec = _suppression_vector_cache.get(cache_key)
         if rejected_vec is None:
-            continue
+            rejected_vec = get_embedding(rejected)
+            if rejected_vec is None:
+                continue
+            _suppression_vector_cache[cache_key] = rejected_vec
         sim = cosine_similarity(snippet_vec, rejected_vec)
         max_sim = max(max_sim, sim)
 
