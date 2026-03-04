@@ -217,6 +217,42 @@ pytest --timeout=120 -x -q -n 6   # parallel (recommended, ~1 min)
 pytest --timeout=120 -x -q -n 0   # single-threaded (debug)
 ```
 
+## Research
+
+The learning mechanisms are grounded in peer-reviewed research. Key sources by mechanism:
+
+**Spaced repetition & forgetting**
+- [Ebbinghaus Forgetting Curve Replication — PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC4492928/)
+- [FSRS Algorithm (open-spaced-repetition)](https://github.com/open-spaced-repetition/fsrs4anki/wiki/The-Algorithm)
+- [Why FSRS Outperforms SM-2 (Denicola, 2025)](https://domenic.me/fsrs/)
+
+**Desirable difficulties & encoding via effort**
+- [Bjork Lab: Desirable Difficulties (UCLA)](https://bjorklab.psych.ucla.edu/wp-content/uploads/sites/13/2016/07/RBjork_inpress.pdf)
+- [Desirable Difficulties in Theory and Practice (ResearchGate)](https://www.researchgate.net/publication/347931447_Desirable_Difficulties_in_Theory_and_Practice)
+
+**Expertise reversal (adaptive fading)**
+- [Kalyuga (2007): Expertise Reversal Effect](https://www.uky.edu/~gmswan3/EDC608/Kalyuga2007_Article_ExpertiseReversalEffectAndItsI.pdf)
+
+**Learning from success, not just failure**
+- [Learning from Success or Failure? — Frontiers in Psychology](https://www.frontiersin.org/articles/10.3389/fpsyg.2020.01627/full)
+- [Not Learning From Failure — Eskreis-Winkler & Fishbach (2019)](https://journals.sagepub.com/doi/abs/10.1177/0956797619881133)
+- [Safety-II: Learning from What Goes Right — Hollnagel](https://erikhollnagel.com/ideas/safety-i%20and%20safety-ii.html)
+
+**Exception finding (SFBT)**
+- [Solution-Focused Brief Therapy — PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC10098109/)
+
+**Feedforward (positive reinforcement framing)**
+- [Feedforward Instead of Feedback — Marshall Goldsmith](https://www.marshallgoldsmith.com/post/try-feedforward-instead-of-feedback)
+
+**Variable-ratio reinforcement (positive pattern gate)**
+- [Schedules of Reinforcement — Simply Psychology](https://www.simplypsychology.org/schedules-of-reinforcement.html)
+
+**Pre-mortem (prospective hindsight at planning boundary)**
+- [The Pro-Mortem Method — Psychology Today](https://www.psychologytoday.com/us/blog/seeing-what-others-dont/201510/the-pro-mortem-method)
+
+**Double-loop learning (meta-lessons)**
+- [Argyris (1977): Double Loop Learning in Organizations — HBR](https://theisrm.org/documents/Argyris%20(1977)%20Double%20Loop%20Learning%20in%20Organizations.pdf)
+
 ## License
 
 MIT
