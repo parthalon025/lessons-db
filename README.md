@@ -1,5 +1,10 @@
 # lessons-db
 
+[![Python](https://img.shields.io/badge/python-3.12+-blue)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Security](https://github.com/parthalon025/lessons-db/actions/workflows/security.yml/badge.svg)](https://github.com/parthalon025/lessons-db/actions/workflows/security.yml)
+[![CodeQL](https://github.com/parthalon025/lessons-db/actions/workflows/codeql.yml/badge.svg)](https://github.com/parthalon025/lessons-db/actions/workflows/codeql.yml)
+
 Lessons-learned system that prevents you from repeating the same coding mistakes. Captures bugs into a database, surfaces them before you code using spaced repetition, and generates Semgrep rules to catch anti-patterns in CI.
 
 ## Why
