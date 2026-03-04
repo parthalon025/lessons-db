@@ -38,6 +38,7 @@ lessons-db --help
 **Prerequisites:**
 - Python 3.12+
 - [Ollama](https://ollama.ai) running locally: `ollama pull nomic-embed-text`
+- [ollama-queue](https://github.com/parthalon025/ollama-queue) running at port 7683 — all embed (nomic-embed-text) and analysis (qwen3:8b) calls route through the queue to prevent model thrashing. Override with `LESSONS_DB_OLLAMA_EMBED_URL` / `LESSONS_DB_OLLAMA_ANALYSIS_URL` to point directly at Ollama port 11434 if needed.
 - [Semgrep](https://semgrep.dev) (optional, for rule generation): `pip install semgrep`
 
 ## Use
@@ -169,6 +170,31 @@ Copy or symlink scripts from `hooks/` to `~/.claude/hooks/`, then register in `~
 | `lessons-db-post-bash.sh` | PostToolUse:Bash | Test failure diagnostics + feedforward |
 | `lessons-db-post-commit.sh` | post-commit | Evaluate-commit outcome recording |
 | `lessons-db-stop.sh` | Stop | Auto-capture + win detection + AAR prompt |
+
+## API Endpoints
+
+FastAPI server at `localhost:7685`. Used by project-hub for dashboard widgets.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/calibration/history` | GET | Paginated calibration run history |
+| `/api/calibration/run` | POST | Queue a calibration pipeline run |
+| `/api/mining/history` | GET | Paginated GitHub mining run history |
+| `/api/mining/run` | POST | Queue a GitHub mining task |
+| `/api/security/findings` | GET | Open Semgrep scan findings |
+| `/api/security/scan` | POST | Trigger a Semgrep security scan |
+| `/api/scan/summary` | GET | Decision-context dashboard: 6 metrics (promotion_rate, drafts_captured_last_run, sessions_processed_last_run, last_scan_age_hours, embed_failure_rate, lessons_due_for_review), each with `value`, `label`, `decision_context`, and `status` fields |
+
+## Performance
+
+Pattern-scan runs are optimized to avoid redundant Ollama calls:
+
+- **File filter** — `_SKIP_FILENAMES` and `_SKIP_DIRS` drop lock files, config files, and dependency directories (node_modules, .venv) before any embedding occurs.
+- **Suppression embedding cache** — module-level dict keyed by SHA256 of snippet content; avoids re-embedding up to 500 suppression snippets on every candidate evaluation call.
+- **Semgrep patterns cache** — SHA256-keyed JSON file at `~/.local/share/lessons-db/semgrep-patterns-cache.json`; a cache hit skips ~378 Ollama calls on warm runs.
+- **Per-repo block cap** — `MAX_BLOCKS_PER_REPO=20` applied in the outer loop of `extract_nonpython_candidates()`, preventing unbounded embedding across large repos.
+- **Draft cap** — transcript capture truncates LLM output at 50 lessons per session to prevent runaway responses.
+- **Embed timeout** — 300s, matching `PROXY_WAIT_TIMEOUT` in ollama-queue so long embedding jobs don't time out prematurely.
 
 ## Configuration
 
