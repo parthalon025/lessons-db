@@ -2,7 +2,7 @@
 
 Automated lessons-learned system with human-like learning. Captures mistakes and successes, surfaces them via FSRS spaced repetition, tracks outcomes, and adapts presentation through 8 learning science mechanisms.
 
-**Repo:** https://github.com/parthalon025/lessons-db (private)
+**Repo:** https://github.com/parthalon025/lessons-db
 
 ## Structure
 
@@ -163,7 +163,7 @@ language:python, domain:lessons-db
 
 ## Design Doc
 
-`~/Documents/docs/plans/2026-02-26-lessons-db-design.md`
+See `docs/` for implementation notes and design decisions.
 
 ## Code Quality
 - Lint: `make lint`

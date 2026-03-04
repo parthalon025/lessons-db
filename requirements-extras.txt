@@ -1,0 +1,13 @@
+# Optional extras — mirrors [project.optional-dependencies] in pyproject.toml
+
+# Clustering (umap/hdbscan analysis)
+# Install: pip install -r requirements-extras.txt
+# Or: pip install ".[clustering]"
+umap-learn>=0.5.0
+hdbscan>=0.8.0
+scikit-learn>=1.0.0
+numpy>=1.24.0
+
+# Mining (mutation testing)
+# Or: pip install ".[mining]"
+mutmut>=3.5.0

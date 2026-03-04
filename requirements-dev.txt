@@ -1,0 +1,8 @@
+# Development + test dependencies — mirrors [project.optional-dependencies.dev] in pyproject.toml
+# Install: pip install -r requirements-dev.txt
+# Or: pip install ".[dev]"
+-r requirements.txt
+pytest>=8.0.0
+pytest-xdist>=3.5.0
+pytest-timeout>=2.4.0
+mypy>=1.8.0
