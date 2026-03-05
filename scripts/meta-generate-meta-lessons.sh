@@ -33,7 +33,7 @@ print(len(rows))
 
 if [ -z "$pending" ] || [ "$pending" -eq 0 ] 2>/dev/null; then
     log "All clusters have meta-lessons — nothing to do"
-    exit 1
+    exit 0
 fi
 
 log "=== generate-meta-lessons start ==="

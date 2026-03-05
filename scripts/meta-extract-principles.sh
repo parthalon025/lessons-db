@@ -21,7 +21,7 @@ remaining=$("$PYTHON" -c "import sqlite3; c=sqlite3.connect('$DB_PATH'); print(c
 
 if [ "$remaining" -eq 0 ]; then
     log "All lessons have principles — nothing to do"
-    exit 1
+    exit 0
 fi
 
 log "=== extract-principles start: $remaining lessons remaining ==="

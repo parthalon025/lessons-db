@@ -39,7 +39,7 @@ print(sum(r[0] for r in rows) * 5)
 
     if [ "$completed" -ge "$max_expected" ] 2>/dev/null; then
         log "All $completed pairs complete — nothing to do"
-        exit 2
+        exit 0
     fi
     log "=== eval-generate start: $completed/$max_expected pairs complete, resuming ==="
 else
