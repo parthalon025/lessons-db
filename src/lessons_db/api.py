@@ -5,11 +5,13 @@ All routes are thin wrappers over existing DB/analyzer functions.
 """
 
 import logging
+import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -820,6 +822,214 @@ def create_app(  # noqa: C901, PLR0915
 
             return result
 
+        finally:
+            conn.close()
+
+    # -----------------------------------------------------------------------
+    # Eval data source contract
+    # -----------------------------------------------------------------------
+
+    class EvalResultItem(BaseModel):
+        source_item_id: str
+        target_item_id: str
+        variant: str
+        principle: str | None = None
+        is_same_cluster: int | None = None
+        score_transfer: int | None = None
+        score_precision: int | None = None
+        score_action: int | None = None
+
+    class EvalResultsBody(BaseModel):
+        run_id: str
+        source: str
+        results: list[EvalResultItem]
+
+    class EvalProductionVariantBody(BaseModel):
+        variant_id: str
+        model: str
+        prompt_template_id: str
+        temperature: float
+        num_ctx: int
+
+    def _check_eval_auth(authorization: str | None) -> None:
+        """Verify Bearer token if eval.data_source_token is configured."""
+        token = os.environ.get("LESSONS_DB_EVAL_TOKEN", "").strip()
+        if not token:
+            return  # no token configured — auth disabled
+        if authorization is None:
+            raise HTTPException(status_code=401, detail="Authorization header required")
+        parts = authorization.split(" ", 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer" or parts[1] != token:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+    @app.get("/eval/health")
+    def eval_health(authorization: str | None = Header(default=None)) -> dict:
+        """Health check — returns item count and cluster count (clusters with >= 3 items)."""
+        _check_eval_auth(authorization)
+        conn = get_conn()
+        try:
+            item_count = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+            cluster_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT cluster_seed
+                    FROM lessons
+                    WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                    GROUP BY cluster_seed
+                    HAVING COUNT(*) >= 3
+                )
+                """
+            ).fetchone()[0]
+            return {"ok": True, "item_count": item_count, "cluster_count": cluster_count}
+        finally:
+            conn.close()
+
+    @app.get("/eval/items")
+    def eval_items(
+        cluster_id: str | None = None,
+        limit: int = Query(100, ge=1, le=1000),
+        authorization: str | None = Header(default=None),
+    ) -> list:
+        """Return lessons from clusters with >= 3 items, optionally filtered by cluster_id."""
+        _check_eval_auth(authorization)
+        conn = get_conn()
+        try:
+            # Build subquery: clusters with >= 3 items
+            params: list[Any] = []
+            if cluster_id is not None:
+                where = """
+                    WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                      AND cluster_seed IN (
+                          SELECT cluster_seed FROM lessons
+                          WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                          GROUP BY cluster_seed HAVING COUNT(*) >= 3
+                      )
+                      AND cluster_seed = ?
+                """
+                params.append(cluster_id)
+            else:
+                where = """
+                    WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                      AND cluster_seed IN (
+                          SELECT cluster_seed FROM lessons
+                          WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                          GROUP BY cluster_seed HAVING COUNT(*) >= 3
+                      )
+                """
+            rows = conn.execute(
+                f"SELECT id, title, one_liner, description, cluster_seed, category FROM lessons {where} LIMIT ?",
+                params + [limit],
+            ).fetchall()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "title": r["title"],
+                    "one_liner": r["one_liner"] if r["one_liner"] else r["title"],
+                    "description": r["description"],
+                    "cluster_id": r["cluster_seed"],
+                    "category": r["category"],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    @app.get("/eval/clusters")
+    def eval_clusters(authorization: str | None = Header(default=None)) -> list:
+        """Return clusters with >= 3 items."""
+        _check_eval_auth(authorization)
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT cluster_seed, COUNT(*) as item_count,
+                       (SELECT category FROM lessons l2
+                        WHERE l2.cluster_seed = l.cluster_seed
+                          AND l2.category IS NOT NULL
+                        ORDER BY l2.id ASC LIMIT 1) as first_category
+                FROM lessons l
+                WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                GROUP BY cluster_seed
+                HAVING COUNT(*) >= 3
+                ORDER BY item_count DESC
+                """
+            ).fetchall()
+            return [
+                {
+                    "id": str(r["cluster_seed"]),
+                    "label": r["first_category"] if r["first_category"] else r["cluster_seed"],
+                    "item_count": r["item_count"],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    @app.post("/eval/results")
+    def eval_results(
+        body: EvalResultsBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        """Upsert eval results. Idempotent via INSERT OR REPLACE."""
+        _check_eval_auth(authorization)
+        conn = get_conn()
+        try:
+            now = datetime.now(UTC).isoformat()
+            accepted = 0
+            for item in body.results:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO eval_results
+                        (run_id, source_item_id, target_item_id, variant, principle,
+                         is_same_cluster, score_transfer, score_precision, score_action, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        body.run_id,
+                        item.source_item_id,
+                        item.target_item_id,
+                        item.variant,
+                        item.principle,
+                        item.is_same_cluster,
+                        item.score_transfer,
+                        item.score_precision,
+                        item.score_action,
+                        now,
+                    ],
+                )
+                accepted += 1
+            conn.commit()
+            return {"accepted": accepted}
+        finally:
+            conn.close()
+
+    @app.post("/eval/production-variant")
+    def eval_production_variant(
+        body: EvalProductionVariantBody,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        """Store (or replace) the production variant. Idempotent — keyed by fixed id 'production'."""
+        _check_eval_auth(authorization)
+        conn = get_conn()
+        try:
+            now = datetime.now(UTC).isoformat()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO eval_production_variant
+                    (id, variant_id, model, prompt_template_id, temperature, num_ctx, updated_at)
+                VALUES ('production', ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    body.variant_id,
+                    body.model,
+                    body.prompt_template_id,
+                    body.temperature,
+                    body.num_ctx,
+                    now,
+                ],
+            )
+            conn.commit()
+            return {"accepted": True}
         finally:
             conn.close()
 

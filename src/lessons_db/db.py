@@ -243,6 +243,31 @@ CREATE TABLE IF NOT EXISTS win_streaks (
     longest_streak INTEGER NOT NULL DEFAULT 0,
     last_updated TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS eval_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    source_item_id TEXT NOT NULL,
+    target_item_id TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    principle TEXT,
+    is_same_cluster INTEGER,
+    score_transfer INTEGER,
+    score_precision INTEGER,
+    score_action INTEGER,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, source_item_id, target_item_id, variant)
+);
+
+CREATE TABLE IF NOT EXISTS eval_production_variant (
+    id TEXT PRIMARY KEY,
+    variant_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_template_id TEXT NOT NULL,
+    temperature REAL NOT NULL,
+    num_ctx INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -288,7 +313,7 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
+def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912, PLR0915
     """Add v2 extension columns to lessons table (idempotent).
 
     SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS — catch OperationalError instead."""
@@ -387,6 +412,33 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912
             current_streak INTEGER NOT NULL DEFAULT 0,
             longest_streak INTEGER NOT NULL DEFAULT 0,
             last_updated TEXT NOT NULL
+        );
+    """)
+
+    # v11 eval contract tables — ollama-queue eval engine data source.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS eval_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            source_item_id TEXT NOT NULL,
+            target_item_id TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            principle TEXT,
+            is_same_cluster INTEGER,
+            score_transfer INTEGER,
+            score_precision INTEGER,
+            score_action INTEGER,
+            created_at TEXT NOT NULL,
+            UNIQUE (run_id, source_item_id, target_item_id, variant)
+        );
+        CREATE TABLE IF NOT EXISTS eval_production_variant (
+            id TEXT PRIMARY KEY,
+            variant_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_template_id TEXT NOT NULL,
+            temperature REAL NOT NULL,
+            num_ctx INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
         );
     """)
 
