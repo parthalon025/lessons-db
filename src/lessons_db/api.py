@@ -970,7 +970,7 @@ def create_app(  # noqa: C901, PLR0915
         body: EvalResultsBody,
         authorization: str | None = Header(default=None),
     ) -> dict:
-        """Upsert eval results. Idempotent via INSERT OR REPLACE."""
+        """Upsert eval results. Idempotent — INSERT OR IGNORE preserves original created_at on retry."""
         _check_eval_auth(authorization)
         conn = get_conn()
         try:
@@ -979,7 +979,7 @@ def create_app(  # noqa: C901, PLR0915
             for item in body.results:
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO eval_results
+                    INSERT OR IGNORE INTO eval_results
                         (run_id, source_item_id, target_item_id, variant, principle,
                          is_same_cluster, score_transfer, score_precision, score_action, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1000,6 +1000,8 @@ def create_app(  # noqa: C901, PLR0915
                 accepted += 1
             conn.commit()
             return {"accepted": accepted}
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"eval_results DB error: {exc}") from exc
         finally:
             conn.close()
 

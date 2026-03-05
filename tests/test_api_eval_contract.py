@@ -212,6 +212,31 @@ def test_eval_items_one_liner_fallback(db_path, tmp_path):
         assert item["one_liner"] == item["title"]
 
 
+def test_eval_items_one_liner_empty_string_fallback(db_path, tmp_path):
+    """If one_liner is empty string (not NULL), one_liner field still returns the lesson title."""
+    conn = init_db(db_path)
+    for i in range(3):
+        insert_lesson(
+            conn,
+            {
+                "title": f"Empty one-liner lesson {i}",
+                "one_liner": "",
+                "cluster_seed": "Y",
+                "created_date": "2026-01-01",
+            },
+        )
+    conn.close()
+
+    from lessons_db.api import create_app
+
+    app = create_app(db_path=db_path, lance_dir=tmp_path / "lance")
+    c = TestClient(app)
+    items = c.get("/eval/items?cluster_id=Y").json()
+    assert len(items) == 3
+    for item in items:
+        assert item["one_liner"] == item["title"]
+
+
 def test_eval_items_limit_param(seeded_client):
     resp = seeded_client.get("/eval/items?limit=3")
     assert resp.status_code == 200
@@ -321,10 +346,7 @@ def test_eval_results_idempotent(client):
     assert resp1.json()["accepted"] == 1
     assert resp2.json()["accepted"] == 1
 
-    # Verify only one row in DB (INSERT OR REPLACE)
-    from lessons_db.db import init_db
-
-    conn = init_db(client.app.state._db_path if hasattr(client.app.state, "_db_path") else None)
+    # DB-level idempotency is verified by test_eval_results_idempotent_db_check below
 
 
 def test_eval_results_idempotent_db_check(db_path, tmp_path):
