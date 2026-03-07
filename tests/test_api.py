@@ -413,3 +413,47 @@ def test_scan_summary_nightly_run_missing_keys(client):
     assert data["drafts_captured_last_run"]["status"] == "warn"
     assert data["sessions_processed_last_run"]["value"] is None
     assert data["sessions_processed_last_run"]["status"] == "warn"
+
+
+# ---------------------------------------------------------------------------
+# POST /eval/prime — backfill cluster_seed for eval readiness
+# ---------------------------------------------------------------------------
+
+
+def test_post_eval_prime_returns_ok_on_empty_db(client):
+    """POST /eval/prime on empty DB returns ok=True with zero counts."""
+    resp = client.post("/eval/prime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["updated"] == 0
+    assert data["item_count"] == 0
+    assert data["cluster_count"] == 0
+
+
+def test_post_eval_prime_backfills_cluster_seed(client, db_path):
+    """POST /eval/prime sets cluster_seed = cluster for lessons missing it.
+
+    Seeds 3 lessons in the same cluster with cluster_seed=NULL (cluster qualifies at >= 3).
+    After prime, all 3 get cluster_seed set and appear in the cluster count.
+    """
+    from datetime import date
+
+    from lessons_db.db import init_db
+
+    conn = init_db(db_path)
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO lessons (title, created_date, cluster) VALUES (?, ?, ?)",
+            (f"Lesson {i}", date.today().isoformat(), "grp-A"),
+        )
+    conn.commit()
+    conn.close()
+
+    resp = client.post("/eval/prime")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["updated"] == 3
+    assert data["cluster_count"] >= 1
+    assert data["item_count"] >= 3

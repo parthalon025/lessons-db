@@ -884,6 +884,39 @@ def create_app(  # noqa: C901, PLR0915
         finally:
             conn.close()
 
+    @app.post("/eval/prime")
+    def eval_prime(authorization: str | None = Header(default=None)) -> dict:
+        """Backfill cluster_seed from cluster field for lessons that are missing it.
+
+        Mirrors `lessons-db index --seed-only`. After this runs, lessons with a
+        cluster assignment become eligible to appear in /eval/items (which requires
+        cluster_seed to be set). Safe to call repeatedly — only affects NULL rows.
+        """
+        _check_eval_auth(authorization)
+        conn = get_conn()
+        try:
+            cur = conn.execute(
+                "UPDATE lessons SET cluster_seed = cluster "
+                "WHERE cluster IS NOT NULL AND cluster != '' AND cluster_seed IS NULL"
+            )
+            updated = cur.rowcount
+            conn.commit()
+            item_count = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
+            cluster_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT cluster_seed
+                    FROM lessons
+                    WHERE cluster_seed IS NOT NULL AND cluster_seed != ''
+                    GROUP BY cluster_seed
+                    HAVING COUNT(*) >= 3
+                )
+                """
+            ).fetchone()[0]
+            return {"ok": True, "updated": updated, "item_count": item_count, "cluster_count": cluster_count}
+        finally:
+            conn.close()
+
     @app.get("/eval/items")
     def eval_items(
         cluster_id: str | None = None,
