@@ -8,6 +8,7 @@ from lessons_db.db import init_db, insert_lesson
 from lessons_db.eval import (
     DEFAULT_JUDGE_MODEL,
     VARIANT_CONFIGS,
+    _clean_principle,
     _select_diverse,
     build_generation_prompt,
     build_judge_prompt,
@@ -703,6 +704,62 @@ class TestBuildJudgePrompt:
         long_desc = "x" * 600
         prompt = build_judge_prompt("Principle.", {"title": "T", "one_liner": "O", "description": long_desc})
         assert "x" * 301 not in prompt  # description truncated at 300
+
+
+# ---------------------------------------------------------------------------
+# TestCleanPrinciple
+# ---------------------------------------------------------------------------
+
+
+class TestCleanPrinciple:
+    """_clean_principle strips CoT artifacts from generated principles."""
+
+    def test_clean_text_unchanged(self):
+        text = "Silent fallbacks mask failures when errors are suppressed."
+        assert _clean_principle(text) == text
+
+    def test_strips_principle_marker(self):
+        text = "**Principle:** Silent fallbacks mask failures.\n\nThis principle distinguishes..."
+        assert _clean_principle(text) == "Silent fallbacks mask failures."
+
+    def test_strips_the_principle_is_marker(self):
+        text = "The principle is: **Delegation Failure causes errors.**\n\nThis principle..."
+        assert _clean_principle(text) == "Delegation Failure causes errors."
+
+    def test_strips_cot_preamble(self):
+        text = (
+            "Okay, let's analyze the pattern.\n\n"
+            "The lessons share a theme of failure suppression.\n\n"
+            "* Lesson 1: colliding changes..."
+        )
+        result = _clean_principle(text)
+        assert not result.startswith("Okay")
+        assert "lessons share a theme" in result
+
+    def test_strips_trailing_explanation(self):
+        text = "Ambiguous requirements cause errors.\n\n*(This principle applies because...)"
+        assert _clean_principle(text) == "Ambiguous requirements cause errors."
+
+    def test_strips_this_principle_applies(self):
+        text = "Resource cleanup prevents leaks. *(This principle distinguishes...)"
+        assert _clean_principle(text) == "Resource cleanup prevents leaks."
+
+    def test_strips_markdown_bold(self):
+        text = "**Guarded Merge Fails When Merging**"
+        assert _clean_principle(text) == "Guarded Merge Fails When Merging"
+
+    def test_empty_string(self):
+        assert _clean_principle("") == ""
+
+    def test_none_passthrough(self):
+        assert _clean_principle(None) is None
+
+    def test_judge_prompt_uses_cleaned_principle(self):
+        """build_judge_prompt should strip CoT before embedding."""
+        raw = "**Principle:** Clean version.\n\nThis principle applies because..."
+        prompt = build_judge_prompt(raw, {"title": "T", "one_liner": "O", "description": "D"})
+        assert "Clean version." in prompt
+        assert "This principle applies" not in prompt
 
 
 # ---------------------------------------------------------------------------

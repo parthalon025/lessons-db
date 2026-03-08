@@ -483,6 +483,56 @@ def call_ollama(
     return None
 
 
+def _clean_principle(text: str) -> str:
+    """Strip Chain-of-Thought artifacts from a generated principle.
+
+    deepseek-r1 often includes reasoning traces, lesson-by-lesson analysis,
+    and "This principle applies because..." explanations.  The judge should
+    score the principle statement alone, not the surrounding rationale.
+    """
+    if not text:
+        return text
+
+    text = text.strip()
+
+    # 1. If text starts with CoT preamble, try to find actual principle below
+    cot_start = _re.match(
+        r"^(okay|let me|let's|the lessons|here's|i'll|to analyze|looking at)",
+        text,
+        _re.IGNORECASE,
+    )
+    if cot_start:
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        for para in paragraphs[1:]:
+            # Skip paragraphs that are bullet lists or continuations of analysis
+            if para.startswith("*") or para.startswith("-"):
+                continue
+            if len(para) > 20:
+                text = para
+                break
+
+    # 2. Extract text after "**Principle:**" or "The principle is:" markers
+    marker = _re.search(
+        r"(?:\*\*Principle:\*\*|The principle is:)\s*(.+?)(?:\n\n|$)",
+        text,
+        _re.DOTALL,
+    )
+    if marker:
+        text = marker.group(1).strip()
+
+    # 3. Take only the first paragraph (strip trailing explanations)
+    if "\n\n" in text:
+        text = text.split("\n\n")[0].strip()
+
+    # 4. Strip markdown bold markers
+    text = _re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+
+    # 5. Strip trailing parenthetical explanations like "*(This principle...)"
+    text = _re.sub(r"\s*\*?\(This principle\b.*", "", text, flags=_re.DOTALL)
+
+    return text.strip()
+
+
 # ---------------------------------------------------------------------------
 # Generation orchestrator
 # ---------------------------------------------------------------------------
@@ -566,6 +616,10 @@ def _generate_for_lesson(
         )
         if refined and len(refined.strip()) > 10:
             principle = refined.strip()
+
+    # Clean CoT artifacts before storing
+    if principle:
+        principle = _clean_principle(principle)
 
     return {
         "variant": variant_id,
@@ -675,9 +729,11 @@ def run_eval_generate(
 def build_judge_prompt(principle: str, target: dict[str, Any]) -> str:
     """Build rubric-based scoring prompt with calibration anchors.
 
+    Cleans CoT artifacts from the principle before embedding in the prompt.
     Includes concrete scored examples so the judge's internal scale is
     anchored, reducing score inflation on cross-cluster pairs.
     """
+    principle = _clean_principle(principle)
     title = target.get("title") or ""
     one_liner = target.get("one_liner") or ""
     description = (target.get("description") or "")[:300]
