@@ -78,6 +78,15 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
         "chunked": False,
         "contrastive": True,
     },
+    "H": {
+        "prompt_id": "contrastive-multistage",
+        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "temperature": 0.6,
+        "num_ctx": 8192,
+        "chunked": False,
+        "contrastive": True,
+        "multi_stage": True,
+    },
 }
 
 
@@ -369,6 +378,34 @@ def _build_contrastive_prompt(
     )
 
 
+def _build_self_critique_prompt(
+    principle: str,
+    diff_cluster_items: list[dict],
+) -> str:
+    """Build a self-critique prompt that tests if a principle is too general."""
+    diff_lines = []
+    for i, item in enumerate(diff_cluster_items, 1):
+        t = item.get("title") or ""
+        o = item.get("one_liner") or ""
+        diff_lines.append(f"  {i}. {t} — {o}")
+    diff_block = "\n".join(diff_lines)
+
+    return (
+        f'You previously extracted this principle: "{principle}"\n\n'
+        "Here are UNRELATED lessons from different failure categories:\n"
+        f"{diff_block}\n\n"
+        "Question: Does this principle also apply to ANY of the "
+        "unrelated lessons above?\n\n"
+        "If YES — the principle is too general. Rewrite it to be more "
+        "specific, so it ONLY matches the original failure type and NOT "
+        "the unrelated ones.\n"
+        "If NO — the principle is specific enough. Return it unchanged.\n\n"
+        "Return ONLY the (possibly refined) principle. One sentence. "
+        "Causal form: '<pattern> causes <consequence> when <condition>'\n"
+        "No explanation."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Ollama integration
 # ---------------------------------------------------------------------------
@@ -515,6 +552,20 @@ def _generate_for_lesson(
     t0 = time.monotonic()
     principle = call_ollama(queue_url, model, prompt, settings, priority=priority, source="eval-generate")
     elapsed = round(time.monotonic() - t0, 1)
+
+    # Self-critique: refine if principle is too general
+    if principle and config.get("multi_stage") and diff_cluster_items:
+        critique_prompt = _build_self_critique_prompt(principle, diff_cluster_items)
+        refined = call_ollama(
+            queue_url,
+            model,
+            critique_prompt,
+            settings,
+            priority=priority,
+            source="eval-generate-critique",
+        )
+        if refined and len(refined.strip()) > 10:
+            principle = refined.strip()
 
     return {
         "variant": variant_id,
