@@ -100,8 +100,8 @@ class TestEvalConfig:
 
 
 class TestVariantConfigs:
-    def test_has_five_variants(self):
-        assert set(VARIANT_CONFIGS.keys()) == {"A", "B", "C", "D", "E"}
+    def test_has_seven_variants(self):
+        assert set(VARIANT_CONFIGS.keys()) == {"A", "B", "C", "D", "E", "F", "G"}
 
     def test_each_variant_has_required_fields(self):
         required = {"prompt_id", "model", "temperature", "num_ctx", "chunked"}

@@ -62,6 +62,22 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
         "num_ctx": 8192,
         "chunked": True,
     },
+    "F": {
+        "prompt_id": "contrastive",
+        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "temperature": 0.6,
+        "num_ctx": 8192,
+        "chunked": False,
+        "contrastive": True,
+    },
+    "G": {
+        "prompt_id": "contrastive",
+        "model": "qwen3:14b",
+        "temperature": 0.6,
+        "num_ctx": 8192,
+        "chunked": False,
+        "contrastive": True,
+    },
 }
 
 
@@ -218,11 +234,13 @@ def build_generation_prompt(
     variant_id: str,
     lesson: dict[str, Any],
     siblings: list[dict[str, Any]] | None = None,
+    diff_cluster_items: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the principle-extraction prompt for a given variant.
 
     Variants A use few-shot examples. B/D use zero-shot causal framing.
     C/E use chunked (multiple sibling lessons from same cluster).
+    F/G use contrastive (same-cluster + diff-cluster for specificity).
     """
     title = lesson.get("title") or ""
     one_liner = lesson.get("one_liner") or ""
@@ -230,7 +248,9 @@ def build_generation_prompt(
 
     config = VARIANT_CONFIGS[variant_id]
 
-    if config["chunked"] and siblings:
+    if config.get("contrastive") and siblings and diff_cluster_items:
+        return _build_contrastive_prompt(lesson, siblings, diff_cluster_items)
+    elif config["chunked"] and siblings:
         return _build_chunked_prompt(lesson, siblings)
     elif config["prompt_id"] == "baseline-fewshot":
         return _build_fewshot_prompt(title, one_liner, description)
@@ -307,6 +327,43 @@ def _build_chunked_prompt(
         "across different technologies:\n\n"
         f"{lesson_block}\n\n"
         "What is the ONE structural principle that explains ALL of these?\n\n"
+        "Causal form: '<pattern> causes <consequence> when <condition>'\n"
+        "One sentence, 10-25 words. No technology names."
+    )
+
+
+def _build_contrastive_prompt(
+    primary: dict[str, Any],
+    same_cluster_items: list[dict[str, Any]],
+    diff_cluster_items: list[dict[str, Any]],
+) -> str:
+    """Variants F/G: show same-cluster AND diff-cluster items to force specificity."""
+    same_lines = []
+    all_same = [primary, *same_cluster_items]
+    for i, item in enumerate(all_same, 1):
+        t = item.get("title") or ""
+        o = item.get("one_liner") or ""
+        same_lines.append(f"  {i}. {t} — {o}")
+    same_block = "\n".join(same_lines)
+
+    diff_lines = []
+    for i, item in enumerate(diff_cluster_items, 1):
+        t = item.get("title") or ""
+        o = item.get("one_liner") or ""
+        diff_lines.append(f"  {i}. {t} — {o}")
+    diff_block = "\n".join(diff_lines)
+
+    return (
+        "SAME PATTERN (these lessons share the same structural failure):\n"
+        f"{same_block}\n\n"
+        "DIFFERENT PATTERNS (these are UNRELATED failure types):\n"
+        f"{diff_block}\n\n"
+        "Extract ONE structural principle that:\n"
+        "- Is TRUE for ALL lessons in the SAME PATTERN group\n"
+        "- Is FALSE or IRRELEVANT for the DIFFERENT PATTERNS group\n"
+        "- Names the structural pattern, not the technology\n\n"
+        "The principle must be specific enough to DISTINGUISH this failure type "
+        "from the others listed above.\n\n"
         "Causal form: '<pattern> causes <consequence> when <condition>'\n"
         "One sentence, 10-25 words. No technology names."
     )
@@ -439,11 +496,21 @@ def _generate_for_lesson(
     settings = {"temperature": config["temperature"], "num_ctx": config["num_ctx"]}
 
     siblings = None
-    if config["chunked"]:
-        all_sibs = siblings_by_cluster.get(lesson["cluster_seed"], [])
+    diff_cluster_items = None
+    seed = lesson.get("cluster_seed", "")
+
+    if config["chunked"] or config.get("contrastive"):
+        all_sibs = siblings_by_cluster.get(seed, [])
         siblings = [s for s in all_sibs if s["id"] != lesson_id][:3]
 
-    prompt = build_generation_prompt(variant_id, lesson, siblings=siblings)
+    if config.get("contrastive"):
+        all_diff = []
+        for other_seed, other_items in sorted(siblings_by_cluster.items()):
+            if other_seed != seed:
+                all_diff.extend(other_items[:2])
+        diff_cluster_items = all_diff[:4]
+
+    prompt = build_generation_prompt(variant_id, lesson, siblings=siblings, diff_cluster_items=diff_cluster_items)
 
     t0 = time.monotonic()
     principle = call_ollama(queue_url, model, prompt, settings, priority=priority, source="eval-generate")
@@ -518,9 +585,9 @@ def run_eval_generate(
     for variant_id in sorted_variants:
         config = VARIANT_CONFIGS[variant_id]
 
-        # Pre-fetch siblings for chunked variants
+        # Pre-fetch siblings for chunked and contrastive variants
         siblings_by_cluster: dict[str, list[dict[str, Any]]] = {}
-        if config["chunked"]:
+        if config["chunked"] or config.get("contrastive"):
             siblings_by_cluster = _load_siblings_by_cluster(conn, sources)
 
         for lesson in sources:
@@ -555,10 +622,10 @@ def run_eval_generate(
 
 
 def build_judge_prompt(principle: str, target: dict[str, Any]) -> str:
-    """Build the rubric-based scoring prompt for a (principle, target) pair.
+    """Build rubric-based scoring prompt with calibration anchors.
 
-    The judge evaluates whether the principle helps recognize the same
-    structural pattern in the target lesson.
+    Includes concrete scored examples so the judge's internal scale is
+    anchored, reducing score inflation on cross-cluster pairs.
     """
     title = target.get("title") or ""
     one_liner = target.get("one_liner") or ""
@@ -572,14 +639,24 @@ def build_judge_prompt(principle: str, target: dict[str, Any]) -> str:
         f"Title: {title}\n"
         f"One-liner: {one_liner}\n"
         f"Description: {description}\n\n"
-        "Score this (principle, target) pair on three criteria, each 1-5:\n\n"
-        "1. **Transfer Recognition** — does the principle help identify the "
-        "structural pattern in the target?\n"
-        "   1=No connection  3=Vague connection  5=Clear structural match\n\n"
-        "2. **Precision** — would this principle false-positive on unrelated lessons?\n"
-        "   1=Would match anything  3=Somewhat specific  5=Only matches structurally similar\n\n"
-        "3. **Actionability** — could an LLM use this principle to prevent this bug class?\n"
-        "   1=Too abstract to act on  3=Useful with context  5=Immediately actionable\n\n"
+        "Score this (principle, target) pair on three criteria, each 1-5.\n\n"
+        "## Scoring Guide with Examples\n\n"
+        "**Transfer Recognition** — does the principle structurally match the target?\n"
+        "  1 = No structural connection. E.g. principle about resource cleanup → target about naming conventions → 1\n"
+        "  3 = Vague thematic overlap but different mechanism. "
+        "E.g. error handling principle → logging gaps target → 3\n"
+        "  5 = Same structural pattern, different technology. "
+        "E.g. resource cleanup principle → unclosed DB connections → 5\n\n"
+        "**Precision** — would this principle false-positive on unrelated lessons?\n"
+        "  1 = So general it matches everything (e.g. 'always test your code')\n"
+        "  3 = Matches a broad category but not everything\n"
+        "  5 = Only matches lessons with the same specific structural failure\n\n"
+        "**Actionability** — could an LLM use this to prevent this class of bug?\n"
+        "  1 = Too abstract to act on (e.g. 'be careful with state')\n"
+        "  3 = Useful with additional context\n"
+        "  5 = Specific enough to implement a check or review step\n\n"
+        "IMPORTANT: Be skeptical. Most principles do NOT transfer to unrelated lessons. "
+        "Default to low transfer scores unless there is a clear structural match.\n\n"
         'Return ONLY a JSON object: {"transfer": N, "precision": N, "actionability": N}\n'
         "No explanation."
     )
