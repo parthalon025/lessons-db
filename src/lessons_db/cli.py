@@ -2921,6 +2921,26 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
     click.echo(f"Report: {report_path}")
 
 
+@meta.command("eval-confusion")
+@click.argument("scored_path", type=click.Path(exists=True))
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output report path")
+def eval_confusion(scored_path: str, output: str | None) -> None:
+    """Build cluster confusion matrix from scored eval pairs."""
+    import json as _json
+
+    from lessons_db.eval_diagnostics import build_confusion_matrix, render_confusion_report
+
+    scored_pairs = _json.loads(Path(scored_path).read_text())
+    matrix = build_confusion_matrix(scored_pairs)
+    report = render_confusion_report(matrix)
+
+    if output:
+        Path(output).write_text(report)
+        click.echo(f"Confusion matrix written to {output}")
+    else:
+        click.echo(report)
+
+
 def find_meta_lesson_clusters(
     conn,
     min_cluster_size: int = 3,

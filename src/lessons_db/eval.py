@@ -923,6 +923,7 @@ def run_eval_judge(
                     "target_id": target["id"],
                     "target_title": target.get("title", ""),
                     "cluster_seed": cluster_seed,
+                    "target_cluster_seed": target.get("cluster_seed", ""),
                     "is_same_cluster": is_same,
                     "scores": scores,
                 }
@@ -937,5 +938,9 @@ def run_eval_judge(
     report = render_report(metrics, scored_pairs, VARIANT_CONFIGS)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report)
+
+    # Save scored pairs for diagnostic tools (confusion matrix, etc.)
+    scored_path = report_path.with_suffix(".scored.json")
+    scored_path.write_text(_json.dumps(scored_pairs, indent=2))
 
     return scored_pairs, metrics
