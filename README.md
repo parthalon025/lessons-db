@@ -195,7 +195,7 @@ lessons-db --help
 **Prerequisites:**
 - Python 3.12+
 - [Ollama](https://ollama.ai) running locally: `ollama pull nomic-embed-text`
-- [ollama-queue](https://github.com/parthalon025/ollama-queue) at port 7683 — all embed (`nomic-embed-text`) and analysis (`qwen3:8b`) calls route through the queue to prevent model thrashing. Override with `LESSONS_DB_OLLAMA_EMBED_URL` / `LESSONS_DB_OLLAMA_ANALYSIS_URL` to point directly at Ollama port 11434 if needed.
+- [ollama-queue](https://github.com/parthalon025/ollama-queue) at port 7683 — all embed (`nomic-embed-text`) and analysis (`qwen3.5:9b`) calls route through the queue to prevent model thrashing. Override with `LESSONS_DB_OLLAMA_EMBED_URL` / `LESSONS_DB_OLLAMA_ANALYSIS_URL` to point directly at Ollama port 11434 if needed.
 - [Semgrep](https://semgrep.dev) (optional, for rule generation): `pip install semgrep`
 
 ---
@@ -421,7 +421,7 @@ Pattern-scan and embedding calls are optimized to avoid redundant Ollama round-t
 | `LESSONS_DB_OLLAMA_EMBED_URL` | `http://127.0.0.1:7683` | Embedding API (routes through ollama-queue) |
 | `LESSONS_DB_OLLAMA_ANALYSIS_URL` | `http://127.0.0.1:7683` | Analysis/capture API |
 | `LESSONS_DB_OLLAMA_QUEUE_URL` | `http://127.0.0.1:7683` | Queue API for generation tasks |
-| `LESSONS_DB_OLLAMA_ANALYSIS_MODEL` | `qwen3:8b` | Model for analysis and capture |
+| `LESSONS_DB_OLLAMA_ANALYSIS_MODEL` | `qwen3.5:9b` | Model for analysis and capture |
 | `LESSONS_DB_REPO_CACHE_DIR` | `~/.local/share/lessons-db/repo-cache` | Local git clone cache for GitHub mining |
 
 ---
@@ -436,7 +436,7 @@ Pattern-scan and embedding calls are optimized to avoid redundant Ollama round-t
 | Keyword search | `rank-bm25` (BM25Okapi) — fused with semantic via RRF |
 | Pattern detection | Semgrep — reused, not rebuilt |
 | Spaced repetition | FSRS-6 — implemented directly (~500 lines, no external deps) |
-| Analysis / capture | Ollama (`qwen3:8b` default) via ollama-queue |
+| Analysis / capture | Ollama (`qwen3.5:9b` default) via ollama-queue |
 | Graph indexing | Microsoft GraphRAG (`~/.local/venvs/notion-rag/`) — artifacts at `~/.local/share/lessons-db/.graphrag/` |
 | CLI | Click with subcommands |
 | API | FastAPI + uvicorn |

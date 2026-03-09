@@ -56,10 +56,25 @@ from lessons_db.eval.learn import (
     LEARNINGS_FILE as LEARNINGS_FILE,
 )
 from lessons_db.eval.learn import (
+    compute_ablations as compute_ablations,
+)
+from lessons_db.eval.learn import (
+    compute_dimension_impacts as compute_dimension_impacts,
+)
+from lessons_db.eval.learn import (
+    compute_variant_trends as compute_variant_trends,
+)
+from lessons_db.eval.learn import (
     derive_insights as derive_insights,
 )
 from lessons_db.eval.learn import (
+    format_ablation_summary as format_ablation_summary,
+)
+from lessons_db.eval.learn import (
     load_best as load_best,
+)
+from lessons_db.eval.learn import (
+    load_learnings as load_learnings,
 )
 
 # --- learn (post-judge insights, always-on) ---

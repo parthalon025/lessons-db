@@ -43,30 +43,23 @@ _read_best_f1() {
     fi
 }
 
-# Append a learning note for crashes (learn.py handles the rest)
+# Append a crash learning note via learn.py (reuses the same code path)
 _learn_crash() {
     local variant="$1" reason="$2"
-    local note="$(date +%Y-%m-%d): [$variant] CRASH — $reason. Fix before retrying this config."
-    # Append to program.md "Learned so far" section
-    if [[ -f "$PROJECT_DIR/program.md" ]]; then
-        python3 - <<PYEOF
-import re
-path = "$PROJECT_DIR/program.md"
-content = open(path).read()
-marker = "## Learned so far"
-if marker in content:
-    lines = content.splitlines()
-    for i, line in enumerate(lines):
-        if line.strip() == marker:
-            insert_at = i + 1
-            if insert_at < len(lines) and lines[insert_at].startswith("*("):
-                insert_at += 1
-            lines.insert(insert_at, "- $note")
-            open(path, "w").write("\n".join(lines) + "\n")
-            print("program.md updated")
-            break
-PYEOF
-    fi
+    python3 -c "
+from pathlib import Path
+from lessons_db.eval.learn import append_to_program_md
+insight = {
+    'date': '$(date +%Y-%m-%d)',
+    'variant': '$variant',
+    'summary': 'CRASH',
+    'diagnosis': '$reason',
+    'recommendation': 'fix config before retrying',
+}
+p = Path('$PROJECT_DIR/program.md')
+if append_to_program_md([insight], p):
+    print('program.md updated with crash note')
+" 2>/dev/null || echo "Warning: crash learning failed (non-fatal)"
 }
 
 BEST_F1_BEFORE="$(_read_best_f1)"
@@ -112,14 +105,6 @@ fi
 # --- 3. Read result from best.json (written by learn.py during judge) ---
 echo "[3/3] reading result..."
 BEST_F1_AFTER="$(_read_best_f1)"
-BEST_VARIANT_AFTER="$(python3 -c "
-import json, sys
-try:
-    d = json.load(open('$BEST_JSON'))
-    print(d.get('variant','?'))
-except:
-    print('?')
-" 2>/dev/null)"
 
 # Extract this variant's metrics from the report for TSV logging
 VARIANT_ROW="$(grep "^| $VARIANT " "$REPORT_OUT" 2>/dev/null | head -1)"
@@ -134,11 +119,11 @@ fi
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo 'none')"
 GIT_MSG="$(git log -1 --pretty=%s 2>/dev/null | head -c 60 || echo 'no commit')"
 
-# Keep if this variant is the new best; discard otherwise
-IMPROVED="$(python3 -c "print('yes' if '$BEST_VARIANT_AFTER' == '$VARIANT' else 'no')" 2>/dev/null || echo 'no')"
+# Keep if this variant's F1 exceeds the prior best (compare numbers, not names)
+IMPROVED="$(python3 -c "print('yes' if float('$F1') > float('$BEST_F1_BEFORE') else 'no')" 2>/dev/null || echo 'no')"
 
 if [[ "$IMPROVED" == "yes" ]]; then
-    echo "KEEP: $VARIANT is new best (F1=$BEST_F1_AFTER, was $BEST_F1_BEFORE)"
+    echo "KEEP: $VARIANT is new best (F1=$F1, was $BEST_F1_BEFORE)"
     printf "%s\t%s\t%s\t%s\t%s\tkeep\t%s\n" \
         "$COMMIT" "$VARIANT" "$F1" "$PRECISION" "$RECALL" "$GIT_MSG" >> "$RESULTS_TSV"
     exit 0
