@@ -20,6 +20,7 @@ from lessons_db.db import insert_lesson
 _log = logging.getLogger(__name__)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _strip_think(text: str) -> str:
@@ -27,7 +28,29 @@ def _strip_think(text: str) -> str:
     return _THINK_RE.sub("", text).strip()
 
 
-_QUEUE_TIMEOUT = 300  # seconds — matches ollama-queue PROXY_WAIT_TIMEOUT
+def _extract_json(text: str) -> dict:
+    """Strip think blocks, then extract the first JSON object from the response.
+
+    Returns {} on failure. More robust than bare json.loads() when the model
+    wraps the JSON in extra prose (e.g. 'Here is the result: {...}').
+    """
+    cleaned = _strip_think(text)
+    # Fast path: the whole string is valid JSON
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    # Fallback: find the first {...} block
+    m = _JSON_OBJ_RE.search(cleaned)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+_QUEUE_TIMEOUT = 600  # seconds — matches ollama-queue PROXY_WAIT_TIMEOUT
 
 
 def score_one_liner(text: str) -> int:
@@ -67,17 +90,17 @@ def capture_from_design_doc(doc_path: Path, conn: sqlite3.Connection) -> list[di
                 "model": ANALYSIS_MODEL,
                 "prompt": (
                     "Extract positive knowledge patterns (what worked well, effective approaches) "
-                    "from this document. Return JSON with this exact structure: "
-                    '{"entries": [{"one_liner": "...", "why": "...", "category": "..."}]}\n\n'
+                    "from this document. Return ONLY JSON with this exact structure, no explanation: "
+                    '{"entries": [{"one_liner": "...", "why": "...", "category": "..."}]}'
+                    " /no_think\n\n"
                     f"Document:\n{content}"
                 ),
                 "stream": False,
-                "format": "json",
                 "_timeout": _QUEUE_TIMEOUT,
             },
             timeout=_QUEUE_TIMEOUT + 10,
         )
-        data = json.loads(_strip_think(r.json().get("response", "{}")))
+        data = _extract_json(r.json().get("response", "{}"))
         entries = data.get("entries", [])
     except Exception as e:
         _log.warning("capture_from_design_doc Ollama call failed: %s", e)
@@ -175,8 +198,9 @@ def capture_from_transcript(
             "Extract effective approaches, good patterns, and techniques that worked well. "
             "Focus on what was done RIGHT — design decisions, testing strategies, debugging approaches, "
             "architectural choices that paid off. "
-            "Return JSON: "
-            '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+            "Return ONLY JSON, no explanation: "
+            '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}'
+            " /no_think\n\n"
             f"Transcript excerpt:\n{excerpt}"
         )
         source = "auto_transcript_positive"
@@ -184,8 +208,9 @@ def capture_from_transcript(
         prompt = (
             "Analyze this Claude Code session transcript. "
             "Extract any coding mistakes, bugs, or anti-patterns that were discovered and fixed. "
-            "Return JSON: "
-            '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+            "Return ONLY JSON, no explanation: "
+            '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}'
+            " /no_think\n\n"
             f"Transcript excerpt:\n{excerpt}"
         )
         source = "auto_transcript"
@@ -197,13 +222,12 @@ def capture_from_transcript(
                 "model": ANALYSIS_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json",
                 "_timeout": _QUEUE_TIMEOUT,
             },
             timeout=_QUEUE_TIMEOUT + 10,
         )
         r.raise_for_status()
-        data = json.loads(_strip_think(r.json().get("response", "{}")))
+        data = _extract_json(r.json().get("response", "{}"))
         lessons = data.get("lessons", [])
     except Exception as e:
         _log.warning("capture_from_transcript Ollama call failed: %s", e)
@@ -267,18 +291,18 @@ def capture_from_diff(diff_text: str, conn: sqlite3.Connection) -> list[dict[str
                     "Analyze this git diff. Look for anti-patterns in REMOVED lines (prefixed with -) "
                     "that were fixed in ADDED lines (prefixed with +). "
                     "Extract any coding lessons. "
-                    "Return JSON: "
-                    '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}\n\n'
+                    "Return ONLY JSON, no explanation: "
+                    '{"lessons": [{"one_liner": "...", "cluster": "A-F or empty", "tier": "observation|insight|lesson|lesson_learned"}]}'
+                    " /no_think\n\n"
                     f"Diff:\n{excerpt}"
                 ),
                 "stream": False,
-                "format": "json",
                 "_timeout": _QUEUE_TIMEOUT,
             },
             timeout=_QUEUE_TIMEOUT + 10,
         )
         r.raise_for_status()
-        data = json.loads(_strip_think(r.json().get("response", "{}")))
+        data = _extract_json(r.json().get("response", "{}"))
         lessons = data.get("lessons", [])
     except Exception as e:
         _log.warning("capture_from_diff Ollama call failed: %s", e)

@@ -167,6 +167,8 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 
 - **All Ollama calls go through ollama-queue** — never call `localhost:11434` directly. All eval functions (`call_judge`, `run_eval_judge`, `run_paired_tournament`) default `ollama_url` to `OLLAMA_QUEUE_URL` (`http://127.0.0.1:7683`). Override via `LESSONS_DB_OLLAMA_QUEUE_URL` env var.
 - **Patch at the usage site, not the definition** — `call_judge` is imported into `judge.py` as a local binding. Tests must patch `"lessons_db.eval.judge.call_judge"`, not `"lessons_db.eval.call_judge"`. Similarly, `call_ollama` in `generate.py` must be patched as `"lessons_db.eval.generate.call_ollama"`. Patching the `__init__` re-export does nothing.
+- **qwen3/qwen3.5 + `format: "json"` = empty `response`** — thinking models put their output in `thinking`, not `response`, when `format: "json"` is set. Workaround: omit `format: "json"`, append `/no_think` to the prompt, and use `_extract_json()` in `capture.py` to parse JSON from free-text response.
+- **`capture transcript` timeout with CPU models** — qwen3.5:9b is CPU-bound and can time out on large transcripts (504 from queue after 300s). Use `LESSONS_DB_OLLAMA_ANALYSIS_MODEL=qwen3.5:4b` (GPU-native) or override `PROXY_WAIT_TIMEOUT` in ollama-queue for large-context jobs.
 
 ## Eval Pipeline — Variants & Tests
 
