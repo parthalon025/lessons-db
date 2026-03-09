@@ -2945,6 +2945,111 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
     click.echo(f"Report: {report_path}")
 
 
+@meta.command("eval-tournament")
+@click.argument("results_file", type=click.Path(exists=True))
+@click.option("--output", type=click.Path(), default=None, help="Output JSON path for tournament results.")
+@click.option("--judge-model", default=None, help="Judge model (default: gemma3:12b).")
+@click.option(
+    "--group-by",
+    type=click.Choice(["cluster_seed", "category"]),
+    default="category",
+    help="Grouping field (default: category).",
+)
+@click.option(
+    "--pairs-per-principle",
+    type=int,
+    default=4,
+    help="Number of paired comparisons per principle.",
+)
+@click.option("--priority", type=int, default=None, help="Queue priority (1=highest).")
+@click.pass_context
+def meta_eval_tournament(ctx, results_file, output, judge_model, group_by, pairs_per_principle, priority):
+    """Run paired tournament evaluation on generated principles.
+
+    Takes a results JSON from eval-generate and runs paired A/B comparisons
+    for each principle. Reports win rates per variant.
+    """
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from lessons_db.config import EVAL_DIR, OLLAMA_QUEUE_URL
+    from lessons_db.eval import (
+        DEFAULT_BINARY_JUDGE_MODEL,
+        compute_tournament_metrics,
+        run_paired_tournament,
+    )
+
+    conn = ctx.obj["conn"]
+    results_path = Path(results_file)
+
+    if judge_model is None:
+        judge_model = DEFAULT_BINARY_JUDGE_MODEL  # gemma3:12b
+
+    # Determine output path
+    if output:
+        output_path = Path(output)
+    else:
+        EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+        output_path = EVAL_DIR / f"tournament-{ts}.json"
+
+    click.echo(f"Tournament: {results_path.name}")
+    click.echo(f"Judge: {judge_model} | Group by: {group_by} | Pairs: {pairs_per_principle}")
+
+    # Warm model
+    _warm_model(OLLAMA_QUEUE_URL, judge_model)
+
+    def _progress(variant, lesson_id, win_rate, comparisons):
+        click.echo(f"  [{variant}] lesson #{lesson_id}: win_rate={win_rate:.2f} ({comparisons} pairs)")
+
+    tournament_results = run_paired_tournament(
+        results_path=results_path,
+        conn=conn,
+        backend="ollama",
+        ollama_url=OLLAMA_QUEUE_URL,
+        ollama_model=judge_model,
+        group_by=group_by,
+        pairs_per_principle=pairs_per_principle,
+        progress_callback=_progress,
+        priority=priority,
+    )
+
+    # Compute metrics
+    metrics = compute_tournament_metrics(tournament_results)
+
+    # Save results
+    import json
+
+    output_data = {
+        "meta": {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "source_results": str(results_path),
+            "judge_model": judge_model,
+            "group_by": group_by,
+            "pairs_per_principle": pairs_per_principle,
+        },
+        "tournament_results": tournament_results,
+        "metrics": metrics,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output_data, indent=2))
+
+    # Print summary
+    click.echo(f"\nResults saved to: {output_path}")
+    click.echo("\nMetrics by variant:")
+    for variant_id, m in sorted(metrics.items()):
+        click.echo(
+            f"  {variant_id}: win_rate={m['mean_win_rate']:.3f} "
+            f"discriminating={m['discriminating_frac']:.1%} "
+            f"({m['principle_count']} principles, {m['comparison_count']} comparisons)"
+        )
+
+    # Print winner
+    if metrics:
+        winner = max(metrics.items(), key=lambda x: x[1]["mean_win_rate"])
+        click.echo(f"\nWinner: {winner[0]} (win_rate={winner[1]['mean_win_rate']:.3f})")
+
+
 @meta.command("eval-confusion")
 @click.argument("scored_path", type=click.Path(exists=True))
 @click.option("--output", "-o", type=click.Path(), default=None, help="Output report path")
