@@ -123,3 +123,5 @@ if [[ -n "$POSITIVE_MATCHES" ]]; then
         fi
     done <<< "$POSITIVE_MATCHES"
 fi
+
+exit 0

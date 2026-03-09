@@ -38,3 +38,5 @@ if [[ -n "$RESULTS" && "$RESULTS" != "No results found." ]]; then
         fi
     done <<< "$RESULTS"
 fi
+
+exit 0
