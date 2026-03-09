@@ -1,0 +1,13 @@
+You are analyzing a cluster of related software development lessons.
+
+# Cluster Entities and Relationships
+{entities}
+
+# Task
+Write a concise report (under {max_length} words) describing:
+1. What anti-patterns this cluster captures
+2. Key lessons and their relationships
+3. Why these patterns are connected
+
+Output as JSON:
+{"title": "...", "summary": "...", "findings": ["...", "..."], "importance_score": 0-10}

@@ -1,0 +1,3 @@
+Summarize the following descriptions of '{entity_name}' into a single coherent description under {max_length} words:
+
+{description_list}

@@ -2,6 +2,8 @@
 
 import json
 import logging
+import subprocess
+import urllib.request
 from pathlib import Path
 
 import click
@@ -3559,3 +3561,119 @@ def hybrid_search(ctx, query, top, as_json):
     else:
         for item in output:
             click.echo(f"[{item['rank']}] #{item['id']} ({item['score']:.6f}) {item['title']}")
+
+
+@main.command("graph-build")
+@click.option("--status", is_flag=True, help="Show last build status")
+@click.option(
+    "--local",
+    "run_local",
+    is_flag=True,
+    help="Run graphrag directly instead of via ollama-queue",
+)
+@click.pass_context
+def graph_build(ctx: click.Context, status: bool, run_local: bool) -> None:
+    """Build GraphRAG index over the lessons corpus."""
+    graphrag_dir = Path(__file__).parent.parent.parent.parent / "graphrag"
+    output_dir = Path.home() / ".local" / "share" / "lessons-db" / ".graphrag" / "output"
+    export_dir = Path("/tmp/lessons-export")  # noqa: S108 — shared ephemeral export for graphrag
+    graphrag_bin = Path.home() / ".local" / "venvs" / "notion-rag" / "bin" / "graphrag"
+
+    if status:
+        if output_dir.exists():
+            parquet_files = list(output_dir.rglob("*.parquet"))
+            click.echo(f"GraphRAG output: {output_dir} ({len(parquet_files)} parquet files)")
+        else:
+            click.echo("No GraphRAG artifacts found. Run: lessons-db graph-build")
+        return
+
+    # Export lessons to markdown
+    export_dir.mkdir(parents=True, exist_ok=True)
+    conn = ctx.obj["conn"]
+
+    rows = conn.execute("SELECT id, title, description, keywords, cluster_seed FROM lessons").fetchall()
+
+    for row in rows:
+        lesson_id = row["id"]
+        title = row["title"] or ""
+        description = row["description"] or ""
+        keywords = row["keywords"] or ""
+        cluster_seed = row["cluster_seed"] or ""
+        md_path = export_dir / f"{lesson_id}.md"
+        content = f"# {title}\n\n{description}\n\nTags: {keywords}\nCluster: {cluster_seed}"
+        md_path.write_text(content, encoding="utf-8")
+
+    click.echo(f"Exported {len(rows)} lessons to {export_dir}")
+
+    if run_local:
+        cmd = [str(graphrag_bin), "index", "--root", str(graphrag_dir)]
+        click.echo(f"Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            click.echo(f"ERROR: graphrag index failed (exit {result.returncode})", err=True)
+            ctx.exit(1)
+    else:
+        queue_base = "http://localhost:7683"
+        cmd_str = f"{graphrag_bin} index --root {graphrag_dir}"
+        payload = json.dumps(
+            {
+                "command": cmd_str,
+                "model": "qwen3:8b",
+                "priority": 3,
+                "source": "lessons-db-graph-build",
+                "timeout": 21600,
+            }
+        ).encode()
+        req = urllib.request.Request(  # noqa: S310 — localhost ollama-queue, not user input
+            f"{queue_base}/api/jobs",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+                data = json.loads(resp.read())
+            click.echo(f"Build job submitted: {data.get('job_id', 'unknown')}")
+        except Exception as e:
+            click.echo(f"ERROR: Failed to submit to ollama-queue: {e}", err=True)
+            click.echo("Tip: Run with --local to execute directly")
+            ctx.exit(1)
+
+
+@main.command("graph-search")
+@click.argument("query")
+@click.option(
+    "--mode",
+    type=click.Choice(["global", "local"]),
+    default="global",
+    help="Search mode: global (community synthesis) or local (entity-focused)",
+)
+@click.pass_context
+def graph_search(ctx: click.Context, query: str, mode: str) -> None:
+    """Search the lessons GraphRAG index."""
+    output_dir = Path.home() / ".local" / "share" / "lessons-db" / ".graphrag" / "output"
+    graphrag_dir = Path(__file__).parent.parent.parent.parent / "graphrag"
+    graphrag_bin = Path.home() / ".local" / "venvs" / "notion-rag" / "bin" / "graphrag"
+
+    if not output_dir.exists():
+        click.echo(
+            "ERROR: GraphRAG artifacts not found. Run: lessons-db graph-build --local",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+
+    cmd = [
+        str(graphrag_bin),
+        "query",
+        "--root",
+        str(graphrag_dir),
+        "--method",
+        mode,
+        "--query",
+        query,
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        click.echo(f"ERROR: graphrag query failed (exit {result.returncode})", err=True)
+        ctx.exit(1)
