@@ -16,11 +16,13 @@ from lessons_db.eval import (
     build_binary_judge_prompt,
     build_generation_prompt,
     build_judge_prompt,
+    build_paired_judge_prompt,
     call_judge,
     call_ollama,
     compute_metrics,
     parse_binary_judge,
     parse_judge_scores,
+    parse_paired_judge,
     render_report,
     run_eval_generate,
     run_eval_judge,
@@ -1500,3 +1502,87 @@ class TestDefaultBinaryJudgeModel:
 
     def test_default_binary_model(self):
         assert DEFAULT_BINARY_JUDGE_MODEL == "gemma3:12b"
+
+
+class TestBuildPairedPrompt:
+    def test_contains_both_targets(self):
+        same = {
+            "title": "Resource cleanup",
+            "one_liner": "Close connections",
+            "description": "DB connections left open",
+        }
+        diff = {"title": "CSS specificity", "one_liner": "Use BEM", "description": "CSS specificity wars"}
+        prompt, same_is_a = build_paired_judge_prompt("Always close resources", same, diff)
+        assert "TARGET A" in prompt
+        assert "TARGET B" in prompt
+        assert "Resource cleanup" in prompt
+        assert "CSS specificity" in prompt
+
+    def test_asks_for_a_or_b(self):
+        same = {"title": "T1", "one_liner": "O1", "description": "D1"}
+        diff = {"title": "T2", "one_liner": "O2", "description": "D2"}
+        prompt, _ = build_paired_judge_prompt("Principle", same, diff)
+        assert "A" in prompt
+        assert "B" in prompt
+        assert "NEITHER" in prompt
+
+    def test_randomizes_position(self):
+        """Over many seeds, same-cluster target should appear in both A and B positions."""
+        same = {"title": "Same", "one_liner": "S", "description": "S"}
+        diff = {"title": "Diff", "one_liner": "D", "description": "D"}
+        positions = set()
+        for seed in range(20):
+            prompt, same_is_a = build_paired_judge_prompt("P", same, diff, position_seed=seed)
+            positions.add("A" if same_is_a else "B")
+        assert len(positions) == 2  # both positions used
+
+    def test_returns_same_is_a_flag(self):
+        same = {"title": "Same", "one_liner": "S", "description": "S"}
+        diff = {"title": "Diff", "one_liner": "D", "description": "D"}
+        prompt, same_is_a = build_paired_judge_prompt("P", same, diff, position_seed=1)
+        assert isinstance(same_is_a, bool)
+        # Verify the flag matches actual placement
+        if same_is_a:
+            # Same target should be in position A (before "TARGET B")
+            a_section = prompt.split("TARGET B")[0]
+            assert "Same" in a_section
+        else:
+            b_section = prompt.split("TARGET B")[1]
+            assert "Same" in b_section
+
+    def test_cleans_principle(self):
+        """Principle should be cleaned (strip CoT artifacts)."""
+        same = {"title": "T1", "one_liner": "O1", "description": "D1"}
+        diff = {"title": "T2", "one_liner": "O2", "description": "D2"}
+        prompt, _ = build_paired_judge_prompt("<think>reasoning</think>The actual principle", same, diff)
+        assert "<think>" not in prompt
+        assert "The actual principle" in prompt
+
+
+class TestParsePairedJudge:
+    def test_parses_a(self):
+        assert parse_paired_judge("A") == "A"
+
+    def test_parses_b(self):
+        assert parse_paired_judge("B") == "B"
+
+    def test_parses_neither(self):
+        assert parse_paired_judge("NEITHER") == "NEITHER"
+
+    def test_parses_a_with_explanation(self):
+        assert parse_paired_judge("A - Target A matches the structural pattern better") == "A"
+
+    def test_parses_b_with_explanation(self):
+        assert parse_paired_judge("B. The principle specifically addresses this failure mode.") == "B"
+
+    def test_strips_think_tags(self):
+        assert parse_paired_judge("<think>Let me analyze...</think>A") == "A"
+
+    def test_returns_none_for_empty(self):
+        assert parse_paired_judge("") is None
+
+    def test_returns_none_for_ambiguous(self):
+        assert parse_paired_judge("I think both targets are equally applicable to this principle") is None
+
+    def test_parses_neither_in_sentence(self):
+        assert parse_paired_judge("NEITHER target applies well here") == "NEITHER"

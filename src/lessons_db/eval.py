@@ -1048,6 +1048,71 @@ def parse_binary_judge(response: str) -> bool | None:
     return None
 
 
+def build_paired_judge_prompt(
+    principle: str,
+    same_target: dict[str, Any],
+    diff_target: dict[str, Any],
+    position_seed: int | None = None,
+) -> tuple[str, bool]:
+    """Paired comparison prompt — which target does the principle apply to more?
+
+    Randomizes A/B position to eliminate position bias.
+    Returns (prompt_text, same_is_a) where same_is_a indicates if the same-group
+    target was placed in position A.
+    """
+    # Strip think tags before cleaning (case-insensitive — models emit both cases)
+    principle = _re.sub(r"<think>.*?</think>", "", principle, flags=_re.DOTALL | _re.IGNORECASE).strip()
+    principle = _clean_principle(principle)
+    import hashlib
+
+    if position_seed is None:
+        position_seed = int(hashlib.md5(principle.encode(), usedforsecurity=False).hexdigest()[:8], 16)
+    swap = position_seed % 2 == 0
+
+    target_a = diff_target if swap else same_target
+    target_b = same_target if swap else diff_target
+
+    def _fmt(t: dict[str, Any]) -> str:
+        title = t.get("title") or ""
+        one_liner = t.get("one_liner") or ""
+        desc = (t.get("description") or "")[:200]
+        return f"Title: {title}\nOne-liner: {one_liner}\nDescription: {desc}"
+
+    prompt = (
+        f'PRINCIPLE: "{principle}"\n\n'
+        f"TARGET A:\n{_fmt(target_a)}\n\n"
+        f"TARGET B:\n{_fmt(target_b)}\n\n"
+        "Which target does this principle apply to MORE specifically?\n"
+        "Consider the STRUCTURAL failure mechanism, not surface-level topic similarity.\n\n"
+        "Rules:\n"
+        "- Pick the target where the principle identifies the EXACT same bug class.\n"
+        "- If neither applies well, answer NEITHER.\n\n"
+        "Answer ONLY: A, B, or NEITHER"
+    )
+    same_is_a = not swap
+    return prompt, same_is_a
+
+
+def parse_paired_judge(response: str) -> str | None:
+    """Parse A/B/NEITHER from paired comparison response."""
+    if not response:
+        return None
+    text = response.strip().upper()
+    # Strip thinking tags (some models like deepseek-r1 emit these)
+    text = _re.sub(r"<THINK>.*?</THINK>", "", text, flags=_re.DOTALL).strip()
+    if text.startswith("A"):
+        return "A"
+    if text.startswith("B"):
+        return "B"
+    if "NEITHER" in text:
+        return "NEITHER"
+    # Fallback: look for single letter in short response
+    for ch in ["A", "B"]:
+        if ch in text and len(text) < 30:
+            return ch
+    return None
+
+
 def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
     """Render failure analysis for binary-judged pairs."""
     failures = [p for p in scored_pairs if p.get("is_same_cluster") and not p["scores"].get("matched")]
