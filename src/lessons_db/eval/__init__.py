@@ -3,6 +3,26 @@
 Re-exports all public symbols so ``from lessons_db.eval import X`` keeps working.
 """
 
+# --- analysis ---
+from lessons_db.eval.analysis import (
+    bootstrap_f1_ci as bootstrap_f1_ci,
+)
+from lessons_db.eval.analysis import (
+    compute_per_lesson_breakdown as compute_per_lesson_breakdown,
+)
+from lessons_db.eval.analysis import (
+    compute_stability as compute_stability,
+)
+from lessons_db.eval.analysis import (
+    describe_prompt_diff as describe_prompt_diff,
+)
+from lessons_db.eval.analysis import (
+    extract_failure_cases as extract_failure_cases,
+)
+from lessons_db.eval.analysis import (
+    propose_next_variant as propose_next_variant,
+)
+
 # --- variants (zero internal deps) ---
 from lessons_db.eval.client import (
     _clean_principle as _clean_principle,
@@ -48,6 +68,38 @@ from lessons_db.eval.judge import (
 )
 from lessons_db.eval.judge import (
     run_paired_tournament as run_paired_tournament,
+)
+from lessons_db.eval.learn import (
+    BEST_JSON as BEST_JSON,
+)
+from lessons_db.eval.learn import (
+    LEARNINGS_FILE as LEARNINGS_FILE,
+)
+from lessons_db.eval.learn import (
+    compute_ablations as compute_ablations,
+)
+from lessons_db.eval.learn import (
+    compute_dimension_impacts as compute_dimension_impacts,
+)
+from lessons_db.eval.learn import (
+    compute_variant_trends as compute_variant_trends,
+)
+from lessons_db.eval.learn import (
+    derive_insights as derive_insights,
+)
+from lessons_db.eval.learn import (
+    format_ablation_summary as format_ablation_summary,
+)
+from lessons_db.eval.learn import (
+    load_best as load_best,
+)
+from lessons_db.eval.learn import (
+    load_learnings as load_learnings,
+)
+
+# --- learn (post-judge insights, always-on) ---
+from lessons_db.eval.learn import (
+    run_eval_learn as run_eval_learn,
 )
 from lessons_db.eval.prompts import (
     _build_self_critique_prompt as _build_self_critique_prompt,

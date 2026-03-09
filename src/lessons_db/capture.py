@@ -27,6 +27,9 @@ def _strip_think(text: str) -> str:
     return _THINK_RE.sub("", text).strip()
 
 
+_QUEUE_TIMEOUT = 300  # seconds — matches ollama-queue PROXY_WAIT_TIMEOUT
+
+
 def score_one_liner(text: str) -> int:
     """Ask Ollama to score one-liner specificity 1-5. Returns 3 on any error."""
     try:
@@ -40,8 +43,9 @@ def score_one_liner(text: str) -> int:
                     "Respond with only a single integer 1-5."
                 ),
                 "stream": False,
+                "_timeout": 60,
             },
-            timeout=30,
+            timeout=70,
         )
         score = int(_strip_think(r.json().get("response", "3")))
         return max(1, min(5, score))
@@ -69,8 +73,9 @@ def capture_from_design_doc(doc_path: Path, conn: sqlite3.Connection) -> list[di
                 ),
                 "stream": False,
                 "format": "json",
+                "_timeout": _QUEUE_TIMEOUT,
             },
-            timeout=120,
+            timeout=_QUEUE_TIMEOUT + 10,
         )
         data = json.loads(_strip_think(r.json().get("response", "{}")))
         entries = data.get("entries", [])
@@ -193,8 +198,9 @@ def capture_from_transcript(
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "_timeout": _QUEUE_TIMEOUT,
             },
-            timeout=120,
+            timeout=_QUEUE_TIMEOUT + 10,
         )
         r.raise_for_status()
         data = json.loads(_strip_think(r.json().get("response", "{}")))
@@ -267,8 +273,9 @@ def capture_from_diff(diff_text: str, conn: sqlite3.Connection) -> list[dict[str
                 ),
                 "stream": False,
                 "format": "json",
+                "_timeout": _QUEUE_TIMEOUT,
             },
-            timeout=120,
+            timeout=_QUEUE_TIMEOUT + 10,
         )
         r.raise_for_status()
         data = json.loads(_strip_think(r.json().get("response", "{}")))

@@ -2862,6 +2862,7 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, gro
 @click.option(
     "--binary", is_flag=True, help="Use binary YES/NO judge instead of 1-5 rubric. Default model: gemma3:12b."
 )
+@click.option("--no-learn", is_flag=True, help="Skip the always-learn step after judging.")
 @click.option(
     "--group-by",
     type=click.Choice(["cluster_seed", "category"]),
@@ -2869,7 +2870,7 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, gro
     help="Grouping field for same/diff targets (default: category).",
 )
 @click.pass_context
-def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority, binary, group_by):
+def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority, binary, no_learn, group_by):
     """Score generated principles against transfer test targets.
 
     Reads a results JSON from eval-generate, constructs transfer tests
@@ -2945,6 +2946,173 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
         if binary:
             click.echo(f"  TP={wm.get('tp', 0)} FP={wm.get('fp', 0)} FN={wm.get('fn', 0)} TN={wm.get('tn', 0)}")
     click.echo(f"Report: {report_path}")
+
+    # --- Always-learn step: runs after every judge, regardless of outcome ---
+    if metrics and not no_learn:
+        from pathlib import Path
+
+        from lessons_db.eval.learn import format_ablation_summary, run_eval_learn
+        from lessons_db.eval.variants import VARIANT_CONFIGS
+
+        program_md = Path.cwd() / "program.md"
+        insights, ablations, analysis = run_eval_learn(
+            metrics_by_variant=metrics,
+            variant_configs=VARIANT_CONFIGS,
+            program_md_path=program_md if program_md.exists() else None,
+            scored_pairs=scored_pairs,
+        )
+        click.echo("\nLearnings:")
+        for ins in insights:
+            click.echo(f"  [{ins['variant']}] {ins['summary']}")
+            click.echo(f"    → {ins['diagnosis']}")
+            click.echo(f"    → next: {ins['recommendation']}")
+        if ablations:
+            click.echo("\nAblations (what config dimensions matter most):")
+            for line in format_ablation_summary(ablations):
+                click.echo(f"  {line}")
+        if analysis:
+            if analysis.get("confidence_intervals"):
+                click.echo("\nConfidence intervals (95%):")
+                for vid, ci in sorted(analysis["confidence_intervals"].items()):
+                    click.echo(f"  {vid}: F1 = {ci['mid']:.3f} [{ci['low']:.3f} – {ci['high']:.3f}]")
+            if analysis.get("per_lesson"):
+                worst = analysis["per_lesson"][:5]
+                if worst:
+                    click.echo(f"\nHardest lessons (lowest F1, top {len(worst)}):")
+                    for pl in worst:
+                        click.echo(
+                            f"  lesson #{pl['source_lesson_id']} [{pl['variant']}]: F1={pl['f1']:.3f} (TP={pl['tp']} FN={pl['fn']} FP={pl['fp']})"
+                        )
+            if analysis.get("failure_cases"):
+                fp_count = sum(1 for f in analysis["failure_cases"] if f["failure_type"] == "false_positive")
+                fn_count = sum(1 for f in analysis["failure_cases"] if f["failure_type"] == "false_negative")
+                click.echo(f"\nFailure cases: {fp_count} false positives, {fn_count} false negatives")
+        if program_md.exists():
+            click.echo(f"\n  program.md updated: {program_md}")
+
+
+@meta.command("eval-learn")
+@click.argument("results_file", type=click.Path(exists=True))
+@click.option("--trends", is_flag=True, help="Show variant trends across all historical runs.")
+@click.pass_context
+def meta_eval_learn(ctx, results_file, trends):
+    """Run learning analysis on existing eval results (without re-judging).
+
+    Reads a scored-pairs JSON from a prior eval-judge run and derives insights,
+    ablation analysis, and optionally trend data from all historical runs.
+    """
+    import json as json_mod
+    from pathlib import Path
+
+    from lessons_db.eval.learn import (
+        compute_dimension_impacts,
+        compute_variant_trends,
+        format_ablation_summary,
+        load_learnings,
+        run_eval_learn,
+    )
+    from lessons_db.eval.variants import VARIANT_CONFIGS
+
+    results_path = Path(results_file)
+    data = json_mod.loads(results_path.read_text())
+
+    # Extract metrics from the results file — supports both report.json and results.json formats
+    metrics: dict[str, dict[str, float]] = {}
+    if "metrics" in data:
+        metrics = data["metrics"]
+    elif "results" in data:
+        # Reconstruct from scored pairs if metrics not pre-computed
+        click.echo("Note: results file has no 'metrics' key. Use a scored-pairs JSON from eval-judge.", err=True)
+        ctx.exit(1)
+        return
+
+    if not metrics:
+        click.echo("No metrics found in results file.", err=True)
+        ctx.exit(1)
+        return
+
+    program_md = Path.cwd() / "program.md"
+    insights, ablations, _analysis = run_eval_learn(
+        metrics_by_variant=metrics,
+        variant_configs=VARIANT_CONFIGS,
+        program_md_path=program_md if program_md.exists() else None,
+    )
+
+    click.echo("Learnings:")
+    for ins in insights:
+        click.echo(f"  [{ins['variant']}] {ins['summary']}")
+        click.echo(f"    → {ins['diagnosis']}")
+        click.echo(f"    → next: {ins['recommendation']}")
+    if ablations:
+        click.echo("\nAblations (what config dimensions matter most):")
+        for line in format_ablation_summary(ablations):
+            click.echo(f"  {line}")
+
+    if trends:
+        entries = load_learnings()
+        if not entries:
+            click.echo("\nNo historical learnings found.")
+        else:
+            vt = compute_variant_trends(entries)
+            click.echo(f"\nTrends ({len(entries)} entries across {len(vt)} variants):")
+            for vid, points in sorted(vt.items()):
+                f1s = [p["f1"] for p in points]
+                latest = points[-1]
+                click.echo(
+                    f"  {vid}: {len(points)} runs, latest F1={latest['f1']:.3f}, "
+                    f"range [{min(f1s):.3f}–{max(f1s):.3f}]"
+                )
+
+            dim_impacts = compute_dimension_impacts(entries)
+            if dim_impacts:
+                click.echo("\nDimension impact (mean |delta F1| across all runs):")
+                for dim, deltas in sorted(
+                    dim_impacts.items(), key=lambda kv: sum(abs(d) for d in kv[1]) / len(kv[1]), reverse=True
+                ):
+                    mean_abs = sum(abs(d) for d in deltas) / len(deltas)
+                    click.echo(f"  {dim}: mean |ΔF1|={mean_abs:.3f} ({len(deltas)} observations)")
+
+
+@meta.command("eval-propose")
+@click.option("--dry-run", is_flag=True, help="Show proposal without writing to disk.")
+@click.pass_context
+def meta_eval_propose(ctx, dry_run):
+    """Propose the next variant config based on ablation trends and best-so-far."""
+    import json as json_mod
+    from pathlib import Path
+
+    from lessons_db.eval.analysis import propose_next_variant
+    from lessons_db.eval.learn import compute_dimension_impacts, load_best, load_learnings
+    from lessons_db.eval.variants import VARIANT_CONFIGS
+
+    best = load_best()
+    if not best:
+        click.echo("No best.json found. Run eval-judge first.", err=True)
+        ctx.exit(1)
+        return
+
+    entries = load_learnings()
+    dim_impacts = compute_dimension_impacts(entries)
+
+    proposal = propose_next_variant(
+        best=best,
+        ablation_impacts=dim_impacts,
+        existing_ids=list(VARIANT_CONFIGS.keys()),
+    )
+
+    if not proposal:
+        click.echo("Cannot propose: best.json has no config or ID space exhausted.")
+        return
+
+    click.echo(f"Proposed: {proposal['variant_id']}")
+    click.echo(f"  Hypothesis: {proposal['hypothesis']}")
+    click.echo(f"  Config: {proposal['config']}")
+
+    if not dry_run:
+        proposal_path = Path.home() / ".local" / "share" / "lessons-db" / "eval" / "proposed_variant.json"
+        proposal_path.parent.mkdir(parents=True, exist_ok=True)
+        proposal_path.write_text(json_mod.dumps(proposal, indent=2))
+        click.echo(f"  Written to: {proposal_path}")
 
 
 @meta.command("eval-tournament")
@@ -3618,7 +3786,7 @@ def graph_build(ctx: click.Context, status: bool, run_local: bool) -> None:
         payload = json.dumps(
             {
                 "command": cmd_str,
-                "model": "qwen3:8b",
+                "model": "qwen3.5:9b",
                 "priority": 3,
                 "source": "lessons-db-graph-build",
                 "timeout": 21600,

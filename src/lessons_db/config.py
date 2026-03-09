@@ -39,7 +39,7 @@ OLLAMA_ANALYSIS_URL = os.environ.get("LESSONS_DB_OLLAMA_ANALYSIS_URL", "http://1
 
 EMBED_MODEL = "nomic-embed-text"
 EMBED_DIMS = 768
-ANALYSIS_MODEL = os.environ.get("LESSONS_DB_OLLAMA_ANALYSIS_MODEL", "qwen2.5:7b")
+ANALYSIS_MODEL = os.environ.get("LESSONS_DB_OLLAMA_ANALYSIS_MODEL", "qwen3.5:9b")
 
 # Thresholds
 DEDUP_THRESHOLD = 0.85
