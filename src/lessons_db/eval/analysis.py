@@ -284,6 +284,45 @@ _PROMPT_EFFECT_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+def _collect_config_diffs(
+    cfg_a: dict[str, Any],
+    cfg_b: dict[str, Any],
+) -> list[str]:
+    """Collect human-readable descriptions of config differences."""
+    changes: list[str] = []
+
+    # Model change
+    if cfg_a.get("model") != cfg_b.get("model"):
+        changes.append(f"model: {cfg_a.get('model')} → {cfg_b.get('model')} (different capacity/training)")
+
+    # Temperature change
+    if cfg_a.get("temperature") != cfg_b.get("temperature"):
+        ta, tb = cfg_a.get("temperature"), cfg_b.get("temperature")
+        if ta is not None and tb is not None:
+            direction = "more deterministic" if tb < ta else "more creative"
+            changes.append(f"temperature: {ta} → {tb} ({direction})")
+        else:
+            changes.append(f"temperature: {ta} → {tb}")
+
+    # Context window
+    if cfg_a.get("num_ctx") != cfg_b.get("num_ctx"):
+        changes.append(f"context window: {cfg_a.get('num_ctx')} → {cfg_b.get('num_ctx')} tokens")
+
+    # Boolean flags — these change what the model actually sees in the prompt
+    for flag, description in _PROMPT_EFFECT_DESCRIPTIONS.items():
+        val_a = bool(cfg_a.get(flag))
+        val_b = bool(cfg_b.get(flag))
+        if val_a != val_b:
+            action = "added" if val_b else "removed"
+            changes.append(f"{flag} {action}: {description}")
+
+    # Prompt ID change (different template entirely)
+    if cfg_a.get("prompt_id") != cfg_b.get("prompt_id"):
+        changes.append(f"prompt template: {cfg_a.get('prompt_id')} → {cfg_b.get('prompt_id')}")
+
+    return changes
+
+
 def describe_prompt_diff(
     variant_a: str,
     variant_b: str,
@@ -302,34 +341,7 @@ def describe_prompt_diff(
     if variant_a == variant_b:
         return f"identical — same config ({variant_a})"
 
-    changes: list[str] = []
-
-    # Model change
-    if cfg_a.get("model") != cfg_b.get("model"):
-        changes.append(f"model: {cfg_a.get('model')} → {cfg_b.get('model')} (different capacity/training)")
-
-    # Temperature change
-    if cfg_a.get("temperature") != cfg_b.get("temperature"):
-        ta, tb = cfg_a.get("temperature"), cfg_b.get("temperature")
-        direction = "more deterministic" if tb < ta else "more creative"
-        changes.append(f"temperature: {ta} → {tb} ({direction})")
-
-    # Context window
-    if cfg_a.get("num_ctx") != cfg_b.get("num_ctx"):
-        changes.append(f"context window: {cfg_a.get('num_ctx')} → {cfg_b.get('num_ctx')} tokens")
-
-    # Boolean flags — these change what the model actually sees in the prompt
-    for flag, description in _PROMPT_EFFECT_DESCRIPTIONS.items():
-        val_a = bool(cfg_a.get(flag))
-        val_b = bool(cfg_b.get(flag))
-        if val_a != val_b:
-            action = "added" if val_b else "removed"
-            changes.append(f"{flag} {action}: {description}")
-
-    # Prompt ID change (different template entirely)
-    if cfg_a.get("prompt_id") != cfg_b.get("prompt_id"):
-        changes.append(f"prompt template: {cfg_a.get('prompt_id')} → {cfg_b.get('prompt_id')}")
-
+    changes = _collect_config_diffs(cfg_a, cfg_b)
     if not changes:
         return "identical effective config (no prompt-level differences)"
 
@@ -396,12 +408,15 @@ def propose_next_variant(
     existing = set(existing_ids or [])
 
     # Generate next X-ID
+    candidate_id = None
     for i in range(1, 100):
-        candidate_id = f"X{i:02d}"
-        if candidate_id not in existing:
+        cid = f"X{i:02d}"
+        if cid not in existing:
+            candidate_id = cid
             break
-    else:
-        candidate_id = "X99"
+    if candidate_id is None:
+        _log.warning("X-ID space exhausted (X01-X99 all taken)")
+        return None
 
     # Strategy 1: if ablation data shows a clear winner, push it
     if ablation_impacts:
