@@ -17,7 +17,17 @@ src/lessons_db/
   prevention.py        # Velocity detection, fix queue, content checking
   github_miner.py      # GitHub mining pipeline: discover_repos, mine_repos_for_gaps, MiningConfig
   vectors.py           # LanceDB + Ollama embedding via ollama-queue
-  eval.py              # Transfer-test evaluation: eval-generate (ABCDE variants) + eval-judge (scoring + F1 report)
+  eval/                # Transfer-test evaluation package (split from monolith)
+    __init__.py        # Re-exports all public symbols for backward compatibility
+    variants.py        # Variant configs (A-H, M), retry constants, group_by values
+    sampling.py        # Test set selection: source lessons + transfer targets
+    prompts.py         # All prompt builders: generation, judge, mechanism, simulation
+    client.py          # Ollama queue + OpenAI HTTP integration, _clean_principle
+    signals.py         # Bayesian signal extractors + fusion (paired, embedding, scope, mechanism)
+    generate.py        # Generation orchestrator: produce principles for (variant, lesson) pairs
+    judge.py           # Judge orchestrator: scoring, metrics, paired tournament
+    reports.py         # Report renderers: V1/V2 markdown, diagnostics, simulation lift
+  eval_diagnostics.py  # Confusion matrix + variant comparison diagnostics
   capture.py           # Auto-capture from transcript/diff/test + win detection
   search.py            # Semantic search + file-path lookup + content match
   enforce.py           # Escalation ladder, recurrence tracking
