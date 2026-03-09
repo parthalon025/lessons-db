@@ -6,15 +6,18 @@ from unittest.mock import MagicMock, patch
 from lessons_db.config import DATA_DIR, EVAL_DIR
 from lessons_db.db import init_db, insert_lesson
 from lessons_db.eval import (
+    DEFAULT_BINARY_JUDGE_MODEL,
     DEFAULT_JUDGE_MODEL,
     VARIANT_CONFIGS,
     _clean_principle,
     _select_diverse,
+    build_binary_judge_prompt,
     build_generation_prompt,
     build_judge_prompt,
     call_judge,
     call_ollama,
     compute_metrics,
+    parse_binary_judge,
     parse_judge_scores,
     render_report,
     run_eval_generate,
@@ -1107,3 +1110,248 @@ class TestRunEvalJudge:
         for pair in scored_pairs:
             assert pair["scores"] == {"transfer": 1, "precision": 1, "actionability": 1}
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TestBinaryJudge
+# ---------------------------------------------------------------------------
+
+
+class TestBinaryJudgePrompt:
+    """build_binary_judge_prompt produces valid YES/NO prompts."""
+
+    def test_contains_principle(self):
+        target = {"title": "Test Bug", "one_liner": "A test bug", "description": "Details"}
+        prompt = build_binary_judge_prompt("Always validate input", target)
+        assert "Always validate input" in prompt
+
+    def test_contains_yes_no_instruction(self):
+        target = {"title": "Bug", "one_liner": "test", "description": "test"}
+        prompt = build_binary_judge_prompt("Test principle", target)
+        assert "YES" in prompt
+        assert "NO" in prompt
+
+    def test_cleans_principle(self):
+        target = {"title": "Bug", "one_liner": "test", "description": "test"}
+        prompt = build_binary_judge_prompt("**Principle:** Always validate input", target)
+        assert "Always validate input" in prompt
+        assert "**Principle:**" not in prompt
+
+
+class TestParseBinaryJudge:
+    """parse_binary_judge handles YES/NO responses."""
+
+    def test_parses_yes(self):
+        assert parse_binary_judge("YES") is True
+
+    def test_parses_no(self):
+        assert parse_binary_judge("NO") is False
+
+    def test_parses_yes_with_explanation(self):
+        assert parse_binary_judge("YES - the mechanism matches") is True
+
+    def test_parses_no_with_explanation(self):
+        assert parse_binary_judge("NO - different mechanism") is False
+
+    def test_strips_think_tags(self):
+        assert parse_binary_judge("<THINK>reasoning</THINK>\nYES") is True
+
+    def test_returns_none_on_empty(self):
+        assert parse_binary_judge("") is None
+
+    def test_returns_none_on_ambiguous(self):
+        assert parse_binary_judge("Maybe YES or NO depending on context" * 5) is None
+
+
+class TestComputeMetricsBinary:
+    """compute_metrics handles binary scored pairs."""
+
+    def _make_binary_pair(self, variant, is_same_cluster, matched):
+        return {
+            "variant": variant,
+            "is_same_cluster": is_same_cluster,
+            "scores": {"matched": matched},
+        }
+
+    def test_perfect_binary(self):
+        pairs = [
+            self._make_binary_pair("A", True, True),
+            self._make_binary_pair("A", True, True),
+            self._make_binary_pair("A", False, False),
+            self._make_binary_pair("A", False, False),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["recall"] == 1.0
+        assert metrics["A"]["precision"] == 1.0
+        assert metrics["A"]["f1"] == 1.0
+        assert metrics["A"]["tp"] == 2
+        assert metrics["A"]["tn"] == 2
+        assert metrics["A"]["binary"] is True
+
+    def test_zero_precision_binary(self):
+        pairs = [
+            self._make_binary_pair("A", True, True),
+            self._make_binary_pair("A", False, True),
+            self._make_binary_pair("A", False, True),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["precision"] < 0.5
+        assert metrics["A"]["fp"] == 2
+
+    def test_zero_recall_binary(self):
+        pairs = [
+            self._make_binary_pair("A", True, False),
+            self._make_binary_pair("A", True, False),
+            self._make_binary_pair("A", False, False),
+        ]
+        metrics = compute_metrics(pairs)
+        assert metrics["A"]["recall"] == 0.0
+        assert metrics["A"]["fn"] == 2
+
+    def test_no_actionability_in_binary(self):
+        pairs = [self._make_binary_pair("A", True, True)]
+        metrics = compute_metrics(pairs)
+        assert "mean_actionability" not in metrics["A"]
+
+
+class TestRenderReportBinary:
+    """render_report handles binary metrics format."""
+
+    def test_binary_summary_table(self):
+        metrics = {
+            "A": {"recall": 0.8, "precision": 0.75, "f1": 0.77, "tp": 4, "fp": 1, "fn": 1, "tn": 3, "binary": True},
+        }
+        report = render_report(metrics, [], {"A": {}})
+        assert "| TP | FP | FN | TN |" in report
+        assert "Actionability" not in report
+
+    def test_binary_failure_analysis(self):
+        scored = [
+            {
+                "variant": "A",
+                "is_same_cluster": True,
+                "scores": {"matched": False},
+                "cluster_seed": "X",
+                "principle": "Test principle",
+                "target_title": "Test target",
+            },
+        ]
+        metrics = {
+            "A": {"recall": 0.0, "precision": 0.0, "f1": 0.0, "tp": 0, "fp": 0, "fn": 1, "tn": 0, "binary": True}
+        }
+        report = render_report(metrics, scored, {"A": {}})
+        assert "false negatives" in report
+
+    def test_binary_false_positives_shown(self):
+        scored = [
+            {
+                "variant": "A",
+                "is_same_cluster": False,
+                "scores": {"matched": True},
+                "cluster_seed": "X",
+                "principle": "Bad principle",
+                "target_title": "Wrong match",
+            },
+        ]
+        metrics = {
+            "A": {"recall": 0.0, "precision": 0.0, "f1": 0.0, "tp": 0, "fp": 1, "fn": 0, "tn": 0, "binary": True}
+        }
+        report = render_report(metrics, scored, {"A": {}})
+        assert "false positives" in report
+
+
+class TestRunEvalJudgeBinary:
+    """run_eval_judge with binary=True uses binary prompt and parser."""
+
+    def test_binary_mode_uses_binary_prompt(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        results_data = {
+            "meta": {"variants": ["A"], "per_cluster": 1, "source_lessons": [ids["A"][0]]},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "lesson_title": "Silent failure 0",
+                    "cluster_seed": "A",
+                    "principle": "Silent fallbacks mask upstream failures.",
+                    "model": "test-model",
+                    "prompt_id": "baseline-fewshot",
+                    "settings": {},
+                    "generation_time_s": 1.0,
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+        report_path = tmp_path / "report.md"
+
+        def mock_judge(prompt, **kwargs):
+            # Binary prompt asks for YES/NO, not JSON
+            if "Answer ONLY 'YES' or 'NO'" in prompt:
+                return "YES"
+            return '{"transfer": 4, "precision": 3, "actionability": 5}'
+
+        with patch("lessons_db.eval.call_judge", side_effect=mock_judge):
+            scored_pairs, metrics = run_eval_judge(
+                results_path=results_path,
+                conn=conn,
+                report_path=report_path,
+                backend="ollama",
+                binary=True,
+            )
+
+        assert len(scored_pairs) > 0
+        for pair in scored_pairs:
+            assert "matched" in pair["scores"]
+            assert "transfer" not in pair["scores"]
+        assert metrics["A"]["binary"] is True
+        conn.close()
+
+    def test_binary_fallback_on_judge_failure(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        results_data = {
+            "meta": {"variants": ["A"], "per_cluster": 1, "source_lessons": [ids["A"][0]]},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "lesson_title": "Test",
+                    "cluster_seed": "A",
+                    "principle": "Test principle.",
+                    "model": "test-model",
+                    "prompt_id": "test",
+                    "settings": {},
+                    "generation_time_s": 1.0,
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+        report_path = tmp_path / "report.md"
+
+        with patch("lessons_db.eval.call_judge", return_value=None):
+            scored_pairs, metrics = run_eval_judge(
+                results_path=results_path,
+                conn=conn,
+                report_path=report_path,
+                backend="ollama",
+                binary=True,
+            )
+
+        assert len(scored_pairs) > 0
+        for pair in scored_pairs:
+            assert pair["scores"]["matched"] is False
+        conn.close()
+
+
+class TestDefaultBinaryJudgeModel:
+    """DEFAULT_BINARY_JUDGE_MODEL is gemma3:12b."""
+
+    def test_default_binary_model(self):
+        assert DEFAULT_BINARY_JUDGE_MODEL == "gemma3:12b"

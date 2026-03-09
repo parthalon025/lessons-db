@@ -2854,29 +2854,35 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority):
 @click.option("--openai", "use_openai", is_flag=True, help="Use OpenAI GPT-4o-mini as judge (requires OPENAI_API_KEY).")
 @click.option("--judge-model", default=None, help="Judge model name (Ollama model or OpenAI model with --openai).")
 @click.option("--priority", type=int, default=None, help="Queue priority (1=highest). Unset uses queue default.")
+@click.option(
+    "--binary", is_flag=True, help="Use binary YES/NO judge instead of 1-5 rubric. Default model: gemma3:12b."
+)
 @click.pass_context
-def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority):
+def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority, binary):
     """Score generated principles against transfer test targets.
 
     Reads a results JSON from eval-generate, constructs transfer tests
     (same-cluster true positives + different-cluster true negatives),
     scores each pair, and produces a markdown report with F1 metrics.
+
+    Use --binary for YES/NO discrimination (recommended — better F1).
     """
     from datetime import UTC, datetime
     from pathlib import Path
 
     from lessons_db.config import EVAL_DIR, OLLAMA_QUEUE_URL, OPENAI_API_KEY
-    from lessons_db.eval import DEFAULT_JUDGE_MODEL, run_eval_judge
+    from lessons_db.eval import DEFAULT_BINARY_JUDGE_MODEL, DEFAULT_JUDGE_MODEL, run_eval_judge
 
     conn = ctx.obj["conn"]
     results_path = Path(results_file)
 
     # Determine output path
+    suffix = "-binary" if binary else ""
     if output:
         report_path = Path(output)
     else:
         EVAL_DIR.mkdir(parents=True, exist_ok=True)
-        report_path = EVAL_DIR / f"report-{datetime.now(UTC).strftime('%Y-%m-%d')}.md"
+        report_path = EVAL_DIR / f"report{suffix}-{datetime.now(UTC).strftime('%Y-%m-%d')}.md"
 
     # Configure judge backend
     if use_openai:
@@ -2886,19 +2892,24 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
             return
         backend = "openai"
         model = judge_model or "gpt-4o-mini"
-        click.echo(f"Judge: OpenAI {model}")
+        click.echo(f"Judge: OpenAI {model} ({'binary' if binary else 'rubric'})")
     else:
         backend = "ollama"
-        model = judge_model or DEFAULT_JUDGE_MODEL
-        click.echo(f"Judge: Ollama {model}")
+        default_model = DEFAULT_BINARY_JUDGE_MODEL if binary else DEFAULT_JUDGE_MODEL
+        model = judge_model or default_model
+        click.echo(f"Judge: Ollama {model} ({'binary' if binary else 'rubric'})")
         _warm_model(OLLAMA_QUEUE_URL, model)
 
     def _progress(variant, target_id, label, scores):
-        s = scores
-        click.echo(
-            f"  [{variant}] target #{target_id} ({label}): "
-            f"T={s['transfer']} P={s['precision']} A={s['actionability']}"
-        )
+        if binary:
+            matched = scores.get("matched", False)
+            click.echo(f"  [{variant}] target #{target_id} ({label}): {'YES' if matched else 'NO'}")
+        else:
+            s = scores
+            click.echo(
+                f"  [{variant}] target #{target_id} ({label}): "
+                f"T={s['transfer']} P={s['precision']} A={s['actionability']}"
+            )
 
     scored_pairs, metrics = run_eval_judge(
         results_path=results_path,
@@ -2911,6 +2922,7 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
         openai_model=model if backend == "openai" else "",
         progress_callback=_progress,
         priority=priority,
+        binary=binary,
     )
 
     click.echo(f"\nScored {len(scored_pairs)} pairs across {len(metrics)} variants.")
@@ -2918,6 +2930,8 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
         winner = max(metrics.keys(), key=lambda v: metrics[v]["f1"])
         wm = metrics[winner]
         click.echo(f"Winner: Variant {winner} (F1={wm['f1']:.2f})")
+        if binary:
+            click.echo(f"  TP={wm.get('tp', 0)} FP={wm.get('fp', 0)} FN={wm.get('fn', 0)} TN={wm.get('tn', 0)}")
     click.echo(f"Report: {report_path}")
 
 

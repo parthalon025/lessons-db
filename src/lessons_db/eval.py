@@ -14,6 +14,7 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 DEFAULT_JUDGE_MODEL = "deepseek-r1:8b-0528-qwen3-q4_K_M"
+DEFAULT_BINARY_JUDGE_MODEL = "gemma3:12b"
 
 _RETRYABLE_CODES = {502, 503}
 _MAX_RETRIES = 2
@@ -856,13 +857,11 @@ def _call_openai(api_key: str, model: str, prompt: str) -> str | None:
 def compute_metrics(scored_pairs: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """Compute per-variant aggregate metrics from scored pairs.
 
-    Each pair has: variant, is_same_cluster, scores (dict with transfer/precision/actionability).
+    Supports two score formats:
+    - Rubric: scores = {transfer, precision, actionability} (1-5 scale)
+    - Binary: scores = {matched: True/False}
 
-    Returns dict[variant_id -> {recall, precision, f1, mean_actionability}].
-    - recall: fraction of same-cluster targets with transfer >= 3
-    - precision: fraction of diff-cluster targets with transfer <= 2
-    - f1: harmonic mean of recall and precision
-    - mean_actionability: average actionability across all targets
+    Returns dict[variant_id -> {recall, precision, f1, ...}].
     """
     by_variant: dict[str, list[dict[str, Any]]] = {}
     for pair in scored_pairs:
@@ -873,41 +872,168 @@ def compute_metrics(scored_pairs: list[dict[str, Any]]) -> dict[str, dict[str, f
         same = [p for p in pairs if p["is_same_cluster"]]
         diff = [p for p in pairs if not p["is_same_cluster"]]
 
-        recall = sum(1 for p in same if p["scores"]["transfer"] >= 3) / len(same) if same else 0.0
-        precision = sum(1 for p in diff if p["scores"]["transfer"] <= 2) / len(diff) if diff else 0.0
-        f1 = 2 * recall * precision / (recall + precision) if (recall + precision) > 0 else 0.0
-        all_act = [p["scores"]["actionability"] for p in pairs]
-        mean_act = sum(all_act) / len(all_act) if all_act else 0.0
+        # Detect binary mode from score keys
+        is_binary = any("matched" in p.get("scores", {}) for p in pairs)
+
+        if is_binary:
+            # Standard classification: TP/FP/FN/TN
+            tp = sum(1 for p in same if p["scores"].get("matched"))
+            fn = sum(1 for p in same if not p["scores"].get("matched"))
+            fp = sum(1 for p in diff if p["scores"].get("matched"))
+            tn = sum(1 for p in diff if not p["scores"].get("matched"))
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            f1 = 2 * recall * precision / (recall + precision) if (recall + precision) > 0 else 0.0
+            metrics[variant] = {
+                "recall": round(recall, 4),
+                "precision": round(precision, 4),
+                "f1": round(f1, 4),
+                "tp": tp,
+                "fp": fp,
+                "fn": fn,
+                "tn": tn,
+                "binary": True,
+            }
+        else:
+            # Rubric mode (original)
+            recall = sum(1 for p in same if p["scores"]["transfer"] >= 3) / len(same) if same else 0.0
+            precision = sum(1 for p in diff if p["scores"]["transfer"] <= 2) / len(diff) if diff else 0.0
+            f1 = 2 * recall * precision / (recall + precision) if (recall + precision) > 0 else 0.0
+            all_act = [p["scores"]["actionability"] for p in pairs]
+            mean_act = sum(all_act) / len(all_act) if all_act else 0.0
+            metrics[variant] = {
+                "recall": round(recall, 4),
+                "precision": round(precision, 4),
+                "f1": round(f1, 4),
+                "mean_actionability": round(mean_act, 4),
+            }
+
+    return metrics
+
+
+def compute_rank_metrics(scored_pairs: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Compute rank-based metrics that are immune to judge score inflation.
+
+    For each (variant, principle), groups all target scores and checks whether
+    same-cluster targets rank above diff-cluster targets.  Uses AUC
+    (area under ROC curve via Mann-Whitney U statistic) — 1.0 means perfect
+    discrimination, 0.5 means random.
+    """
+    by_variant: dict[str, list[dict[str, Any]]] = {}
+    for pair in scored_pairs:
+        by_variant.setdefault(pair["variant"], []).append(pair)
+
+    metrics: dict[str, dict[str, float]] = {}
+    for variant, pairs in by_variant.items():
+        # Group by source principle (cluster_seed + principle combo)
+        by_principle: dict[str, list[dict[str, Any]]] = {}
+        for p in pairs:
+            key = f"{p.get('cluster_seed', '')}|{p.get('principle', '')[:50]}"
+            by_principle.setdefault(key, []).append(p)
+
+        aucs: list[float] = []
+        for _key, principle_pairs in by_principle.items():
+            same_scores = [p["scores"]["transfer"] for p in principle_pairs if p["is_same_cluster"]]
+            diff_scores = [p["scores"]["transfer"] for p in principle_pairs if not p["is_same_cluster"]]
+            if not same_scores or not diff_scores:
+                continue
+            # Mann-Whitney U: proportion of (same, diff) pairs where same > diff
+            u = sum(1 for s in same_scores for d in diff_scores if s > d)
+            ties = sum(1 for s in same_scores for d in diff_scores if s == d)
+            n = len(same_scores) * len(diff_scores)
+            auc = (u + 0.5 * ties) / n if n > 0 else 0.5
+            aucs.append(auc)
+
+        mean_auc = sum(aucs) / len(aucs) if aucs else 0.5
+        # Fraction of principles that discriminate (AUC > 0.5)
+        discriminating = sum(1 for a in aucs if a > 0.5) / len(aucs) if aucs else 0.0
 
         metrics[variant] = {
-            "recall": round(recall, 4),
-            "precision": round(precision, 4),
-            "f1": round(f1, 4),
-            "mean_actionability": round(mean_act, 4),
+            "mean_auc": round(mean_auc, 4),
+            "discriminating_frac": round(discriminating, 4),
+            "n_principles": len(aucs),
         }
 
     return metrics
 
 
-def _render_pair_sections(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
-    """Append per-cluster breakdown and failure analysis to report lines."""
-    if not scored_pairs:
-        return
+def build_binary_judge_prompt(principle: str, target: dict[str, Any]) -> str:
+    """Binary discrimination prompt — forces YES/NO instead of 1-5 scale.
 
-    # Per-cluster breakdown
-    lines.append("\n## Per-Cluster Breakdown\n")
-    clusters = sorted({p.get("cluster_seed", "") for p in scored_pairs})
-    for cluster in clusters:
-        if not cluster:
-            continue
-        cluster_pairs = [p for p in scored_pairs if p.get("cluster_seed") == cluster]
-        if not cluster_pairs:
-            continue
-        avg_transfer = sum(p["scores"]["transfer"] for p in cluster_pairs) / len(cluster_pairs)
-        lines.append(f"- **Cluster {cluster}**: avg transfer = {avg_transfer:.1f} " f"({len(cluster_pairs)} pairs)")
+    Designed to be harder for models to hedge.  Asks whether the principle
+    describes the SPECIFIC mechanism in the target, not just a general theme.
+    """
+    principle = _clean_principle(principle)
+    title = target.get("title") or ""
+    one_liner = target.get("one_liner") or ""
+    description = (target.get("description") or "")[:300]
 
-    # Failure analysis
-    lines.append("\n## Failure Analysis\n")
+    return (
+        "You are a strict evaluator. Answer ONLY 'YES' or 'NO'.\n\n"
+        f'PRINCIPLE: "{principle}"\n\n'
+        f"TARGET LESSON:\n"
+        f"Title: {title}\n"
+        f"One-liner: {one_liner}\n"
+        f"Description: {description}\n\n"
+        "Question: Does this principle describe the SPECIFIC failure "
+        "mechanism in this target lesson?\n\n"
+        "Rules:\n"
+        "- YES means: the principle identifies the EXACT structural pattern "
+        "that caused this specific bug. If you removed the principle, this "
+        "bug class would not be caught.\n"
+        "- NO means: the principle is about a DIFFERENT failure mechanism, "
+        "or is so general it would match any lesson about software bugs.\n"
+        "- Two lessons both involving 'errors' is NOT enough for YES. "
+        "The mechanism must be the same (e.g. both about resource cleanup, "
+        "or both about race conditions, or both about missing validation).\n\n"
+        "Answer: YES or NO"
+    )
+
+
+def parse_binary_judge(response: str) -> bool | None:
+    """Parse YES/NO from binary judge response. Returns True/False/None."""
+    if not response:
+        return None
+    text = response.strip().upper()
+    # Strip think blocks
+    text = _re.sub(r"<THINK>.*?</THINK>", "", text, flags=_re.DOTALL).strip()
+    if text.startswith("YES"):
+        return True
+    if text.startswith("NO"):
+        return False
+    # Check for YES/NO anywhere in short response
+    if len(text) < 50:
+        if "YES" in text and "NO" not in text:
+            return True
+        if "NO" in text and "YES" not in text:
+            return False
+    return None
+
+
+def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
+    """Render failure analysis for binary-judged pairs."""
+    failures = [p for p in scored_pairs if p.get("is_same_cluster") and not p["scores"].get("matched")]
+    if failures:
+        lines.append(f"{len(failures)} same-cluster pairs judged NO (false negatives):\n")
+        for f in failures[:10]:
+            lines.append(
+                f"- [{f.get('variant', '?')}] Principle: \"{f.get('principle', '?')[:60]}...\" "
+                f"-> Target: \"{f.get('target_title', '?')[:40]}\""
+            )
+    else:
+        lines.append("No same-cluster failures (all judged YES).")
+    false_pos = [p for p in scored_pairs if not p.get("is_same_cluster") and p["scores"].get("matched")]
+    if false_pos:
+        lines.append(f"\n{len(false_pos)} diff-cluster pairs judged YES (false positives):\n")
+        for f in false_pos[:10]:
+            lines.append(
+                f"- [{f.get('variant', '?')}] Principle: \"{f.get('principle', '?')[:60]}...\" "
+                f"-> Target: \"{f.get('target_title', '?')[:40]}\""
+            )
+
+
+def _render_failure_rubric(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
+    """Render failure analysis for rubric-scored pairs."""
     failures = [p for p in scored_pairs if p.get("is_same_cluster") and p["scores"]["transfer"] < 3]
     if failures:
         lines.append(f"{len(failures)} same-cluster pairs scored below threshold:\n")
@@ -920,6 +1046,38 @@ def _render_pair_sections(scored_pairs: list[dict[str, Any]], lines: list[str]) 
         lines.append("No same-cluster failures (all scored >= 3 on transfer).")
 
 
+def _render_pair_sections(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
+    """Append per-cluster breakdown and failure analysis to report lines."""
+    if not scored_pairs:
+        return
+
+    is_binary = any("matched" in p.get("scores", {}) for p in scored_pairs)
+
+    # Per-cluster breakdown
+    lines.append("\n## Per-Cluster Breakdown\n")
+    clusters = sorted({p.get("cluster_seed", "") for p in scored_pairs})
+    for cluster in clusters:
+        if not cluster:
+            continue
+        cluster_pairs = [p for p in scored_pairs if p.get("cluster_seed") == cluster]
+        if not cluster_pairs:
+            continue
+        if is_binary:
+            same = [p for p in cluster_pairs if p.get("is_same_cluster")]
+            tp = sum(1 for p in same if p["scores"].get("matched"))
+            lines.append(f"- **Cluster {cluster}**: {tp}/{len(same)} same-cluster matched ({len(cluster_pairs)} pairs)")
+        else:
+            avg_transfer = sum(p["scores"]["transfer"] for p in cluster_pairs) / len(cluster_pairs)
+            lines.append(f"- **Cluster {cluster}**: avg transfer = {avg_transfer:.1f} ({len(cluster_pairs)} pairs)")
+
+    # Failure analysis
+    lines.append("\n## Failure Analysis\n")
+    if is_binary:
+        _render_failure_binary(scored_pairs, lines)
+    else:
+        _render_failure_rubric(scored_pairs, lines)
+
+
 def render_report(
     metrics: dict[str, dict[str, float]],
     scored_pairs: list[dict[str, Any]],
@@ -930,26 +1088,47 @@ def render_report(
     lines.append("# Transfer-Test Evaluation Report\n")
     lines.append(f"Generated: {datetime.now(UTC).isoformat()}\n")
 
-    # Summary table
+    # Summary table — detect binary mode from metrics
+    is_binary = any(m.get("binary") for m in metrics.values())
     lines.append("## Summary\n")
-    lines.append("| Variant | Recall | Precision | F1 | Actionability |")
-    lines.append("|---------|--------|-----------|-----|---------------|")
-    for vid in sorted(metrics.keys()):
-        m = metrics[vid]
-        lines.append(
-            f"| {vid} | {m['recall']:.2f} | {m['precision']:.2f} " f"| {m['f1']:.2f} | {m['mean_actionability']:.2f} |"
-        )
+    if is_binary:
+        lines.append("| Variant | Recall | Precision | F1 | TP | FP | FN | TN |")
+        lines.append("|---------|--------|-----------|-----|----|----|----|----|")
+        for vid in sorted(metrics.keys()):
+            m = metrics[vid]
+            lines.append(
+                f"| {vid} | {m['recall']:.2f} | {m['precision']:.2f} "
+                f"| {m['f1']:.2f} | {m.get('tp', 0)} | {m.get('fp', 0)} "
+                f"| {m.get('fn', 0)} | {m.get('tn', 0)} |"
+            )
+    else:
+        lines.append("| Variant | Recall | Precision | F1 | Actionability |")
+        lines.append("|---------|--------|-----------|-----|---------------|")
+        for vid in sorted(metrics.keys()):
+            m = metrics[vid]
+            lines.append(
+                f"| {vid} | {m['recall']:.2f} | {m['precision']:.2f} "
+                f"| {m['f1']:.2f} | {m['mean_actionability']:.2f} |"
+            )
 
     # Winner
     lines.append("\n## Winner\n")
     if metrics:
         winner = max(metrics.keys(), key=lambda v: metrics[v]["f1"])
         wm = metrics[winner]
-        lines.append(
-            f"**Variant {winner}** — F1: {wm['f1']:.2f} "
-            f"(Recall: {wm['recall']:.2f}, Precision: {wm['precision']:.2f}, "
-            f"Actionability: {wm['mean_actionability']:.2f})"
-        )
+        if is_binary:
+            lines.append(
+                f"**Variant {winner}** — F1: {wm['f1']:.2f} "
+                f"(Recall: {wm['recall']:.2f}, Precision: {wm['precision']:.2f}, "
+                f"TP={wm.get('tp', 0)} FP={wm.get('fp', 0)} "
+                f"FN={wm.get('fn', 0)} TN={wm.get('tn', 0)})"
+            )
+        else:
+            lines.append(
+                f"**Variant {winner}** — F1: {wm['f1']:.2f} "
+                f"(Recall: {wm['recall']:.2f}, Precision: {wm['precision']:.2f}, "
+                f"Actionability: {wm['mean_actionability']:.2f})"
+            )
         cfg = variant_configs.get(winner, {})
         if cfg:
             lines.append(f"\nModel: `{cfg.get('model', 'N/A')}`")
@@ -979,11 +1158,14 @@ def run_eval_judge(
     openai_model: str = "gpt-4o-mini",
     progress_callback: Any = None,
     priority: int | None = None,
+    binary: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, float]]]:
     """Run eval-judge: score generated principles against transfer targets.
 
     Reads results JSON, constructs transfer test cases, scores each pair,
     computes metrics, and writes a markdown report.
+
+    When binary=True, uses YES/NO discrimination instead of 1-5 rubric.
 
     Returns (scored_pairs, metrics_by_variant).
     """
@@ -1008,7 +1190,11 @@ def run_eval_judge(
             (False, targets["diff_cluster"]),
         ]:
             for target in target_list:
-                prompt = build_judge_prompt(principle, target)
+                if binary:
+                    prompt = build_binary_judge_prompt(principle, target)
+                else:
+                    prompt = build_judge_prompt(principle, target)
+
                 response = call_judge(
                     prompt=prompt,
                     backend=backend,
@@ -1019,9 +1205,13 @@ def run_eval_judge(
                     priority=priority,
                 )
 
-                scores = parse_judge_scores(response) if response else None
-                if scores is None:
-                    scores = {"transfer": 1, "precision": 1, "actionability": 1}
+                if binary:
+                    matched = parse_binary_judge(response) if response else None
+                    scores = {"matched": matched if matched is not None else False}
+                else:
+                    scores = parse_judge_scores(response) if response else None
+                    if scores is None:
+                        scores = {"transfer": 1, "precision": 1, "actionability": 1}
 
                 pair = {
                     "variant": variant,
