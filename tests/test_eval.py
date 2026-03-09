@@ -136,7 +136,7 @@ class TestVariantConfigs:
     def test_variant_a_is_baseline(self):
         a = VARIANT_CONFIGS["A"]
         assert a["prompt_id"] == "baseline-fewshot"
-        assert a["model"] == "deepseek-r1:8b-0528-qwen3-q4_K_M"
+        assert a["model"] == "deepseek-r1:8b"
         assert a["temperature"] == 0.7
         assert a["num_ctx"] == 4096
         assert a["chunked"] is False
@@ -642,7 +642,7 @@ class TestCallOllama:
         payload = json.loads(req.data.decode("utf-8"))
         assert payload["_priority"] == 1
         assert payload["_source"] == "eval-generate"
-        assert payload["_timeout"] == 300  # default timeout
+        assert payload["_timeout"] == 600  # default timeout
 
     def test_omits_queue_fields_when_priority_unset(self):
         mock_resp = MagicMock()

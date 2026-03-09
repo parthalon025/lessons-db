@@ -14,7 +14,7 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_JUDGE_MODEL = "deepseek-r1:8b-0528-qwen3-q4_K_M"
+DEFAULT_JUDGE_MODEL = "deepseek-r1:8b"
 DEFAULT_BINARY_JUDGE_MODEL = "gemma3:12b"
 
 _RETRYABLE_CODES = {502, 503}
@@ -35,21 +35,21 @@ VALID_GROUP_BY = ("category", "cluster_seed")
 VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
     "A": {
         "prompt_id": "baseline-fewshot",
-        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "model": "deepseek-r1:8b",
         "temperature": 0.7,
         "num_ctx": 4096,
         "chunked": False,
     },
     "B": {
         "prompt_id": "zero-shot-causal",
-        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "model": "deepseek-r1:8b",
         "temperature": 0.6,
         "num_ctx": 8192,
         "chunked": False,
     },
     "C": {
         "prompt_id": "zero-shot-chunked",
-        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "model": "deepseek-r1:8b",
         "temperature": 0.6,
         "num_ctx": 8192,
         "chunked": True,
@@ -70,7 +70,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "F": {
         "prompt_id": "contrastive",
-        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "model": "deepseek-r1:8b",
         "temperature": 0.6,
         "num_ctx": 8192,
         "chunked": False,
@@ -86,7 +86,7 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "H": {
         "prompt_id": "contrastive-multistage",
-        "model": "deepseek-r1:8b-0528-qwen3-q4_K_M",
+        "model": "deepseek-r1:8b",
         "temperature": 0.6,
         "num_ctx": 8192,
         "chunked": False,
@@ -441,12 +441,23 @@ def _build_self_critique_prompt(
 # ---------------------------------------------------------------------------
 
 
+def _parse_ollama_response(result: dict[str, Any]) -> str | None:
+    """Extract and clean response text from Ollama JSON result."""
+    if "error" in result:
+        _log.warning("call_ollama API error: %s", result["error"])
+        return None
+    text = result.get("response", "").strip()
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+    text = text.strip("\"'").strip()
+    return text if text else None
+
+
 def call_ollama(
     queue_url: str,
     model: str,
     prompt: str,
     settings: dict[str, Any],
-    timeout: int = 300,
+    timeout: int = 600,
     priority: int | None = None,
     source: str | None = None,
 ) -> str | None:
@@ -491,11 +502,7 @@ def call_ollama(
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
                 result = _json.loads(resp.read().decode("utf-8"))
-            text = result.get("response", "").strip()
-            # Strip reasoning blocks
-            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
-            text = text.strip("\"'").strip()
-            return text if text else None
+            return _parse_ollama_response(result)
         except urllib.error.HTTPError as exc:
             last_exc = exc
             if exc.code in _RETRYABLE_CODES and attempt < _MAX_RETRIES:
