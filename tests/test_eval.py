@@ -21,8 +21,14 @@ from lessons_db.eval import (
     build_paired_judge_prompt,
     call_judge,
     call_ollama,
+    compute_bayesian_metrics,
+    compute_embedding_signal,
+    compute_mechanism_signal,
     compute_metrics,
+    compute_paired_signal,
+    compute_scope_signal,
     compute_tournament_metrics,
+    compute_transfer_posterior,
     parse_binary_judge,
     parse_judge_scores,
     parse_mechanism_triplet,
@@ -2169,3 +2175,185 @@ class TestMechanismVariant:
         assert result["principle"] is None
         assert result["error"] == "mechanism_extraction_failed"
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Signal extractors (Task 9)
+# ---------------------------------------------------------------------------
+
+
+class TestSignalExtractors:
+    def test_paired_signal_same_positive(self):
+        """Paired comparison: same-group winner → positive log-LR."""
+        assert compute_paired_signal(winner="same") > 0
+
+    def test_paired_signal_diff_negative(self):
+        assert compute_paired_signal(winner="diff") < 0
+
+    def test_paired_signal_neither_zero(self):
+        assert compute_paired_signal(winner="neither") == 0.0
+
+    def test_paired_signal_unknown_zero(self):
+        assert compute_paired_signal(winner="unknown") == 0.0
+
+    def test_embedding_signal_high_sim_positive(self):
+        """Cosine similarity >= 0.7 → positive log-LR."""
+        assert compute_embedding_signal(0.9) > 0
+        assert compute_embedding_signal(0.7) > 0
+
+    def test_embedding_signal_low_sim_negative(self):
+        assert compute_embedding_signal(0.2) < 0
+
+    def test_embedding_signal_mid_sim_mild(self):
+        """0.3 <= sim < 0.5 → mild negative."""
+        sig = compute_embedding_signal(0.4)
+        assert sig < 0
+        assert sig > -1.5  # not as strong as very low
+
+    def test_scope_signal_full_overlap_positive(self):
+        assert compute_scope_signal({"python", "async"}, {"python", "async"}) > 0
+
+    def test_scope_signal_no_overlap_negative(self):
+        assert compute_scope_signal({"python"}, {"javascript"}) < 0
+
+    def test_scope_signal_partial_overlap_mild(self):
+        sig = compute_scope_signal({"python", "async"}, {"python", "testing"})
+        assert sig > 0  # some overlap
+
+    def test_scope_signal_empty_zero(self):
+        assert compute_scope_signal(set(), {"python"}) == 0.0
+        assert compute_scope_signal({"python"}, set()) == 0.0
+
+    def test_mechanism_signal_match_positive(self):
+        assert compute_mechanism_signal(True) > 0
+
+    def test_mechanism_signal_no_match_negative(self):
+        assert compute_mechanism_signal(False) < 0
+
+    def test_mechanism_signal_none_zero(self):
+        assert compute_mechanism_signal(None) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Bayesian fusion (Task 10)
+# ---------------------------------------------------------------------------
+
+
+class TestBayesianFusion:
+    def test_all_positive_signals_high_posterior(self):
+        """All positive signals → high posterior."""
+        posterior = compute_transfer_posterior(
+            paired_signal=2.5,
+            embedding_signal=1.5,
+            scope_signal=1.0,
+            mechanism_signal=2.0,
+        )
+        assert posterior > 0.9
+
+    def test_all_negative_signals_low_posterior(self):
+        posterior = compute_transfer_posterior(
+            paired_signal=-2.5,
+            embedding_signal=-1.5,
+            scope_signal=-0.5,
+            mechanism_signal=-1.5,
+        )
+        assert posterior < 0.1
+
+    def test_mixed_signals_moderate_posterior(self):
+        """Conflicting signals → moderate posterior."""
+        posterior = compute_transfer_posterior(
+            paired_signal=2.5,
+            embedding_signal=-1.5,
+            scope_signal=0.0,
+            mechanism_signal=0.0,
+        )
+        assert 0.3 < posterior < 0.7
+
+    def test_no_signals_equals_prior(self):
+        """With no signals, posterior equals prior (0.25)."""
+        posterior = compute_transfer_posterior(0.0, 0.0, 0.0, 0.0)
+        assert abs(posterior - 0.25) < 0.01
+
+    def test_posterior_is_probability(self):
+        """Output is always in [0, 1]."""
+        for vals in [(10, 10, 10, 10), (-10, -10, -10, -10), (0, 0, 0, 0)]:
+            p = compute_transfer_posterior(*vals)
+            assert 0.0 <= p <= 1.0
+
+    def test_monotonicity(self):
+        """More positive evidence → higher posterior."""
+        p1 = compute_transfer_posterior(2.5, 0.0, 0.0, 0.0)
+        p2 = compute_transfer_posterior(2.5, 1.5, 0.0, 0.0)
+        p3 = compute_transfer_posterior(2.5, 1.5, 1.0, 2.0)
+        assert p1 < p2 < p3
+
+
+# ---------------------------------------------------------------------------
+# Bayesian metrics (Task 11)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeBayesianMetrics:
+    def test_perfect_separation(self):
+        """Perfect fusion → high AUC and separation."""
+        scored = [
+            {"variant": "A", "is_same_group": True, "posterior": 0.9},
+            {"variant": "A", "is_same_group": True, "posterior": 0.85},
+            {"variant": "A", "is_same_group": False, "posterior": 0.1},
+            {"variant": "A", "is_same_group": False, "posterior": 0.15},
+        ]
+        metrics = compute_bayesian_metrics(scored)
+        assert metrics["A"]["same_mean_posterior"] > 0.8
+        assert metrics["A"]["diff_mean_posterior"] < 0.2
+        assert metrics["A"]["auc"] > 0.9
+        assert metrics["A"]["separation"] > 0.6
+
+    def test_random_separation(self):
+        """No discrimination → AUC ~ 0.5."""
+        scored = [
+            {"variant": "A", "is_same_group": True, "posterior": 0.5},
+            {"variant": "A", "is_same_group": True, "posterior": 0.5},
+            {"variant": "A", "is_same_group": False, "posterior": 0.5},
+            {"variant": "A", "is_same_group": False, "posterior": 0.5},
+        ]
+        metrics = compute_bayesian_metrics(scored)
+        assert abs(metrics["A"]["auc"] - 0.5) < 0.1
+        assert abs(metrics["A"]["separation"]) < 0.1
+
+    def test_multi_variant(self):
+        """Metrics computed per variant."""
+        scored = [
+            {"variant": "A", "is_same_group": True, "posterior": 0.9},
+            {"variant": "A", "is_same_group": False, "posterior": 0.1},
+            {"variant": "B", "is_same_group": True, "posterior": 0.6},
+            {"variant": "B", "is_same_group": True, "posterior": 0.4},
+            {"variant": "B", "is_same_group": False, "posterior": 0.5},
+            {"variant": "B", "is_same_group": False, "posterior": 0.55},
+        ]
+        metrics = compute_bayesian_metrics(scored)
+        assert "A" in metrics
+        assert "B" in metrics
+        assert metrics["A"]["auc"] > metrics["B"]["auc"]
+
+    def test_calibration_error(self):
+        """Calibration error: |mean_posterior - actual_fraction|."""
+        scored = [
+            {"variant": "A", "is_same_group": True, "posterior": 0.8},
+            {"variant": "A", "is_same_group": False, "posterior": 0.8},
+        ]
+        metrics = compute_bayesian_metrics(scored)
+        # mean posterior = 0.8, actual positive fraction = 0.5
+        assert metrics["A"]["calibration_error"] == pytest.approx(0.3, abs=0.05)
+
+    def test_empty_input(self):
+        """Empty input → empty output."""
+        assert compute_bayesian_metrics([]) == {}
+
+    def test_single_class_auc(self):
+        """Only same-group entries → AUC defaults to 0.5 (can't compute)."""
+        scored = [
+            {"variant": "A", "is_same_group": True, "posterior": 0.9},
+            {"variant": "A", "is_same_group": True, "posterior": 0.85},
+        ]
+        metrics = compute_bayesian_metrics(scored)
+        assert metrics["A"]["auc"] == 0.5  # degenerate case
