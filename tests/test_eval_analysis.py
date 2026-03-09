@@ -1,6 +1,11 @@
 """Tests for eval/analysis.py — per-lesson breakdown and failure case extraction."""
 
-from lessons_db.eval.analysis import compute_per_lesson_breakdown, extract_failure_cases
+from lessons_db.eval.analysis import (
+    bootstrap_f1_ci,
+    compute_per_lesson_breakdown,
+    compute_stability,
+    extract_failure_cases,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers — scored pair builders
@@ -203,3 +208,107 @@ class TestExtractFailureCases:
     def test_empty_pairs(self):
         """Empty input returns empty list."""
         assert extract_failure_cases([]) == []
+
+
+# ---------------------------------------------------------------------------
+# TestBootstrapF1CI
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapF1CI:
+    def test_returns_low_mid_high(self):
+        scored_pairs = [
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": True}},
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": True}},
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": False}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": False}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": False}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": True}},
+        ]
+        result = bootstrap_f1_ci(scored_pairs, variant="A", n_bootstrap=100, seed=42)
+        assert "low" in result
+        assert "mid" in result
+        assert "high" in result
+        assert result["low"] <= result["mid"] <= result["high"]
+
+    def test_perfect_score_narrow_ci(self):
+        scored_pairs = [
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": True}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": False}},
+        ] * 10  # 20 perfect pairs
+        result = bootstrap_f1_ci(scored_pairs, variant="A", n_bootstrap=200, seed=42)
+        assert result["low"] >= 0.9  # should be very tight around 1.0
+
+    def test_filters_by_variant(self):
+        scored_pairs = [
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": True}},
+            {"variant": "B", "is_same_cluster": True, "scores": {"matched": False}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": False}},
+            {"variant": "B", "is_same_cluster": False, "scores": {"matched": True}},
+        ]
+        result_a = bootstrap_f1_ci(scored_pairs, variant="A", n_bootstrap=100, seed=42)
+        result_b = bootstrap_f1_ci(scored_pairs, variant="B", n_bootstrap=100, seed=42)
+        assert result_a["mid"] > result_b["mid"]  # A is perfect, B is zero
+
+    def test_empty_pairs_returns_zeros(self):
+        result = bootstrap_f1_ci([], variant="A")
+        assert result == {"low": 0.0, "mid": 0.0, "high": 0.0}
+
+    def test_reproducible_with_seed(self):
+        scored_pairs = [
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": True}},
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": False}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": False}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": True}},
+        ] * 5
+        r1 = bootstrap_f1_ci(scored_pairs, variant="A", seed=123)
+        r2 = bootstrap_f1_ci(scored_pairs, variant="A", seed=123)
+        assert r1 == r2
+
+
+# ---------------------------------------------------------------------------
+# TestComputeStability
+# ---------------------------------------------------------------------------
+
+
+class TestComputeStability:
+    def test_returns_stdev_per_variant(self):
+        entries = [
+            {"variant": "A", "f1": 0.28, "date": "2026-03-08"},
+            {"variant": "A", "f1": 0.30, "date": "2026-03-09"},
+            {"variant": "A", "f1": 0.25, "date": "2026-03-10"},
+        ]
+        stability = compute_stability(entries)
+        assert "A" in stability
+        assert "stdev" in stability["A"]
+        assert stability["A"]["stdev"] > 0
+
+    def test_single_run_zero_stdev(self):
+        entries = [{"variant": "B", "f1": 0.40, "date": "2026-03-09"}]
+        stability = compute_stability(entries)
+        assert stability["B"]["stdev"] == 0.0
+
+    def test_skips_ablation_entries(self):
+        entries = [
+            {"variant": "A", "f1": 0.28, "date": "2026-03-09"},
+            {"type": "ablations", "date": "2026-03-09", "ablations": []},
+        ]
+        stability = compute_stability(entries)
+        assert len(stability) == 1
+
+    def test_flags_unstable_variants(self):
+        entries = [
+            {"variant": "A", "f1": 0.10, "date": "d1"},
+            {"variant": "A", "f1": 0.90, "date": "d2"},
+        ]
+        stability = compute_stability(entries)
+        assert stability["A"]["stable"] is False
+
+    def test_flags_stable_variants(self):
+        entries = [
+            {"variant": "A", "f1": 0.50, "date": "d1"},
+            {"variant": "A", "f1": 0.52, "date": "d2"},
+            {"variant": "A", "f1": 0.49, "date": "d3"},
+        ]
+        stability = compute_stability(entries)
+        assert stability["A"]["stable"] is True

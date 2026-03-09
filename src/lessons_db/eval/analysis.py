@@ -15,6 +15,8 @@ Both functions support binary mode (``scores.matched``) and rubric mode
 from __future__ import annotations
 
 import logging
+import random
+import statistics
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -39,6 +41,24 @@ def _is_positive(scores: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         _log.warning("_is_positive: unexpected transfer value %r; treating as negative", raw)
         return False
+
+
+def _compute_f1_from_pairs(pairs: list[dict[str, Any]]) -> float:
+    """Compute F1 from a list of scored pairs using _is_positive for mode detection."""
+    tp = fn = fp = 0
+    for p in pairs:
+        same = p["is_same_cluster"]
+        positive = _is_positive(p["scores"])
+        if same and positive:
+            tp += 1
+        elif same and not positive:
+            fn += 1
+        elif not same and positive:
+            fp += 1
+
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    return 2 * recall * precision / (recall + precision) if (recall + precision) > 0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -168,3 +188,82 @@ def extract_failure_cases(
 
     failures.sort(key=lambda f: (f["variant"], f["source_lesson_id"]))
     return failures
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_f1_ci
+# ---------------------------------------------------------------------------
+
+
+def bootstrap_f1_ci(
+    scored_pairs: list[dict[str, Any]],
+    variant: str,
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+    seed: int | None = None,
+) -> dict[str, float]:
+    """Compute bootstrap confidence interval for a variant's F1.
+
+    Resamples scored_pairs with replacement N times, computes F1 each time,
+    returns the ci-percentile interval.
+
+    Returns {"low": float, "mid": float, "high": float}.
+    """
+    pairs = [p for p in scored_pairs if p["variant"] == variant]
+    if not pairs:
+        return {"low": 0.0, "mid": 0.0, "high": 0.0}
+
+    rng = random.Random(seed)  # noqa: S311 — statistical resampling, not crypto
+    f1s: list[float] = []
+    for _ in range(n_bootstrap):
+        sample = rng.choices(pairs, k=len(pairs))
+        f1s.append(_compute_f1_from_pairs(sample))
+
+    f1s.sort()
+    alpha = (1 - ci) / 2
+    low_idx = int(alpha * len(f1s))
+    high_idx = int((1 - alpha) * len(f1s)) - 1
+    return {
+        "low": round(f1s[max(0, low_idx)], 4),
+        "mid": round(f1s[len(f1s) // 2], 4),
+        "high": round(f1s[min(high_idx, len(f1s) - 1)], 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# compute_stability
+# ---------------------------------------------------------------------------
+
+
+def compute_stability(
+    entries: list[dict[str, Any]],
+    instability_threshold: float = 0.10,
+) -> dict[str, dict[str, Any]]:
+    """Compute cross-run F1 stability per variant from learnings.jsonl entries.
+
+    A variant is "stable" if its stdev(F1) < instability_threshold.
+    High variance means model temperature or sample randomness dominates
+    over prompt design — fix that before optimizing prompts.
+
+    Returns {variant: {stdev, mean, n_runs, stable, f1s}}.
+    """
+    by_variant: dict[str, list[float]] = {}
+    for e in entries:
+        if e.get("type") == "ablations":
+            continue
+        vid = e.get("variant")
+        f1 = e.get("f1")
+        if vid and f1 is not None:
+            by_variant.setdefault(vid, []).append(float(f1))
+
+    result: dict[str, dict[str, Any]] = {}
+    for vid, f1s in by_variant.items():
+        stdev = statistics.stdev(f1s) if len(f1s) > 1 else 0.0
+        result[vid] = {
+            "stdev": round(stdev, 4),
+            "mean": round(statistics.mean(f1s), 4),
+            "n_runs": len(f1s),
+            "stable": stdev < instability_threshold,
+            "f1s": f1s,
+        }
+    return result
