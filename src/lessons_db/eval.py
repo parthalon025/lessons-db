@@ -1929,3 +1929,114 @@ def compute_simulation_lift(
         }
 
     return lift_metrics
+
+
+# ---------------------------------------------------------------------------
+# V2 report renderer
+# ---------------------------------------------------------------------------
+
+
+def _render_v2_failure_analysis(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
+    """Render failure analysis section for V2 report (false negatives + false positives)."""
+    fn_pairs = [p for p in scored_pairs if p.get("is_same_group") and p.get("posterior", 1) < 0.5]
+    fp_pairs = [p for p in scored_pairs if not p.get("is_same_group") and p.get("posterior", 0) > 0.5]
+    if not fn_pairs and not fp_pairs:
+        return
+    lines.append("## Failure Analysis\n")
+    for label, pairs in [
+        ("false negatives (same-group, low posterior)", fn_pairs),
+        ("false positives (diff-group, high posterior)", fp_pairs),
+    ]:
+        if not pairs:
+            continue
+        lines.append(f"{len(pairs)} {label}:\n")
+        for p in pairs[:10]:
+            lines.append(
+                f"- [{p.get('variant', '?')}] P={p.get('posterior', 0):.2f} "
+                f"Principle: \"{p.get('principle', '')[:60]}\" → "
+                f"Target: \"{p.get('target_title', '')[:40]}\""
+            )
+        lines.append("")
+
+
+def render_v2_report(
+    tournament_metrics: dict[str, dict[str, float]] | None = None,
+    bayesian_metrics: dict[str, dict[str, float]] | None = None,
+    reference_diagnosis: dict[str, dict[str, Any]] | None = None,
+    simulation_lift: dict[str, dict[str, float]] | None = None,
+    scored_pairs: list[dict[str, Any]] | None = None,
+) -> str:
+    """Render unified V2 evaluation report as markdown.
+
+    All sections are optional — only sections with data are rendered.
+    """
+    lines: list[str] = []
+    lines.append("# Eval V2 Report\n")
+    lines.append(f"Generated: {datetime.now(UTC).isoformat()}\n")
+
+    # 1. Tournament Results
+    if tournament_metrics:
+        lines.append("## Tournament Results\n")
+        lines.append("| Variant | Win Rate | Discriminating | Principles | Comparisons | W/L/N |")
+        lines.append("|---------|----------|----------------|------------|-------------|-------|")
+        for vid in sorted(tournament_metrics.keys()):
+            m = tournament_metrics[vid]
+            lines.append(
+                f"| {vid} | {m['mean_win_rate']:.3f} | {m['discriminating_frac']:.2f} "
+                f"| {m['principle_count']} | {m['comparison_count']} "
+                f"| {m['total_wins']}/{m['total_losses']}/{m['total_neithers']} |"
+            )
+        lines.append("")
+
+    # 2. Bayesian Fusion
+    if bayesian_metrics:
+        lines.append("## Bayesian Fusion\n")
+        lines.append("| Variant | AUC | Same Post. | Diff Post. | Separation | Cal. Error | Pairs |")
+        lines.append("|---------|-----|------------|------------|------------|------------|-------|")
+        for vid in sorted(bayesian_metrics.keys()):
+            m = bayesian_metrics[vid]
+            lines.append(
+                f"| {vid} | {m['auc']:.3f} | {m['same_mean_posterior']:.3f} "
+                f"| {m['diff_mean_posterior']:.3f} | {m['separation']:.3f} "
+                f"| {m['calibration_error']:.3f} | {m['pair_count']} |"
+            )
+        lines.append("")
+
+        # Winner by AUC
+        lines.append("### Winner\n")
+        winner = max(bayesian_metrics.keys(), key=lambda v: bayesian_metrics[v]["auc"])
+        wm = bayesian_metrics[winner]
+        lines.append(
+            f"**Variant {winner}** — AUC: {wm['auc']:.3f} "
+            f"(Separation: {wm['separation']:.3f}, "
+            f"Cal. Error: {wm['calibration_error']:.3f})"
+        )
+        lines.append("")
+
+    # 3. Reference Comparison
+    if reference_diagnosis:
+        lines.append("## Reference Comparison\n")
+        for vid in sorted(reference_diagnosis.keys()):
+            d = reference_diagnosis[vid]
+            delta_str = f"Δ={d['delta']:+.3f}" if d.get("delta") is not None else "N/A"
+            lines.append(f"- **{vid}**: {d['status']} ({delta_str})")
+        lines.append("")
+
+    # 4. Simulation Lift
+    if simulation_lift:
+        lines.append("## Simulation Lift\n")
+        lines.append("| Variant | Lift | With Rate | Without Rate | Trials |")
+        lines.append("|---------|------|-----------|--------------|--------|")
+        for vid in sorted(simulation_lift.keys()):
+            m = simulation_lift[vid]
+            lines.append(
+                f"| {vid} | {m['lift']:+.3f} | {m['with_catch_rate']:.2f} "
+                f"| {m['without_catch_rate']:.2f} | {m['trial_count']} |"
+            )
+        lines.append("")
+
+    # 5. Failure Analysis
+    if scored_pairs:
+        _render_v2_failure_analysis(scored_pairs, lines)
+
+    return "\n".join(lines) + "\n"

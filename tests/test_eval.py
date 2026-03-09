@@ -38,6 +38,7 @@ from lessons_db.eval import (
     parse_paired_judge,
     parse_simulation_result,
     render_report,
+    render_v2_report,
     run_eval_generate,
     run_eval_judge,
     run_paired_tournament,
@@ -2511,3 +2512,94 @@ class TestComputeSimulationLift:
 
     def test_empty(self):
         assert compute_simulation_lift([]) == {}
+
+
+class TestRenderV2Report:
+    def test_contains_tournament_section(self):
+        report = render_v2_report(
+            tournament_metrics={
+                "A": {
+                    "mean_win_rate": 0.75,
+                    "discriminating_frac": 0.8,
+                    "principle_count": 10,
+                    "comparison_count": 40,
+                    "total_wins": 30,
+                    "total_losses": 8,
+                    "total_neithers": 2,
+                }
+            },
+        )
+        assert "## Tournament" in report
+        assert "0.75" in report
+
+    def test_contains_bayesian_section(self):
+        report = render_v2_report(
+            bayesian_metrics={
+                "A": {
+                    "same_mean_posterior": 0.85,
+                    "diff_mean_posterior": 0.15,
+                    "separation": 0.70,
+                    "auc": 0.92,
+                    "calibration_error": 0.05,
+                    "pair_count": 20,
+                }
+            },
+        )
+        assert "## Bayesian" in report
+        assert "0.92" in report
+        assert "AUC" in report
+
+    def test_contains_reference_section(self):
+        report = render_v2_report(
+            reference_diagnosis={"A": {"status": "improved", "delta": 0.15, "new_value": 0.85, "ref_value": 0.70}},
+        )
+        assert "## Reference" in report
+        assert "improved" in report
+
+    def test_contains_simulation_section(self):
+        report = render_v2_report(
+            simulation_lift={
+                "A": {"lift": 0.35, "with_catch_rate": 0.80, "without_catch_rate": 0.45, "trial_count": 12}
+            },
+        )
+        assert "## Simulation" in report
+        assert "0.35" in report
+
+    def test_winner_by_auc(self):
+        """Winner is determined by AUC when bayesian metrics provided."""
+        report = render_v2_report(
+            bayesian_metrics={
+                "A": {
+                    "auc": 0.85,
+                    "same_mean_posterior": 0.8,
+                    "diff_mean_posterior": 0.2,
+                    "separation": 0.6,
+                    "calibration_error": 0.05,
+                    "pair_count": 20,
+                },
+                "B": {
+                    "auc": 0.92,
+                    "same_mean_posterior": 0.9,
+                    "diff_mean_posterior": 0.1,
+                    "separation": 0.8,
+                    "calibration_error": 0.03,
+                    "pair_count": 20,
+                },
+            },
+        )
+        assert "**Variant B**" in report
+
+    def test_empty_sections_omitted(self):
+        """Sections with no data are not rendered."""
+        report = render_v2_report()
+        assert "## Tournament" not in report
+        assert "## Simulation" not in report
+
+    def test_failure_analysis_section(self):
+        """Failure analysis with scored pairs."""
+        scored = [
+            {"variant": "A", "is_same_group": True, "posterior": 0.1, "principle": "p1", "target_title": "t1"},
+            {"variant": "A", "is_same_group": False, "posterior": 0.9, "principle": "p2", "target_title": "t2"},
+        ]
+        report = render_v2_report(scored_pairs=scored)
+        assert "## Failure Analysis" in report
