@@ -3085,6 +3085,26 @@ def eval_confusion(scored_path: str, output: str | None) -> None:
         click.echo(report)
 
 
+@meta.command("eval-roc")
+@click.argument("scored_path", type=click.Path(exists=True))
+@click.option("--output", "-o", type=click.Path(), default=None, help="Output report path")
+def eval_roc(scored_path: str, output: str | None) -> None:
+    """Show precision/recall at each transfer score threshold."""
+    import json as _json
+
+    from lessons_db.eval_diagnostics import compute_roc_curve, render_roc_report
+
+    scored_pairs = _json.loads(Path(scored_path).read_text())
+    curve = compute_roc_curve(scored_pairs)
+    report = render_roc_report(curve)
+
+    if output:
+        Path(output).write_text(report)
+        click.echo(f"ROC analysis written to {output}")
+    else:
+        click.echo(report)
+
+
 @meta.command("eval-simulate")
 @click.argument("results_file", type=click.Path(exists=True))
 @click.option("--output", type=click.Path(), default=None, help="Output path for simulation results JSON.")

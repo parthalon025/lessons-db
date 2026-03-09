@@ -94,3 +94,53 @@ def render_confusion_report(
         lines.append("No cross-cluster pairs with avg transfer >= 3.0.")
 
     return "\n".join(lines) + "\n"
+
+
+def compute_roc_curve(
+    scored_pairs: list[dict[str, Any]],
+    thresholds: list[int] | None = None,
+) -> dict[int, dict[str, float]]:
+    """Sweep transfer score thresholds and compute precision/recall at each.
+
+    For each threshold t:
+      recall    = fraction of same-cluster pairs with transfer >= t
+      precision = fraction of diff-cluster pairs with transfer < t
+      f1        = harmonic mean
+
+    Helps identify the optimal threshold and visualize the precision-recall trade-off.
+    """
+    if thresholds is None:
+        thresholds = [1, 2, 3, 4, 5]
+
+    same = [p for p in scored_pairs if p.get("is_same_cluster") and p.get("scores", {}).get("transfer") is not None]
+    diff = [p for p in scored_pairs if not p.get("is_same_cluster") and p.get("scores", {}).get("transfer") is not None]
+
+    curve: dict[int, dict[str, float]] = {}
+    for t in thresholds:
+        recall = sum(1 for p in same if p["scores"]["transfer"] >= t) / len(same) if same else 0.0
+        precision = sum(1 for p in diff if p["scores"]["transfer"] < t) / len(diff) if diff else 0.0
+        f1 = 2 * recall * precision / (recall + precision) if (recall + precision) > 0 else 0.0
+        curve[t] = {
+            "recall": round(recall, 4),
+            "precision": round(precision, 4),
+            "f1": round(f1, 4),
+        }
+
+    return curve
+
+
+def render_roc_report(curve: dict[int, dict[str, float]]) -> str:
+    """Render ROC curve as a text table."""
+    if not curve:
+        return "No data.\n"
+
+    lines = ["Threshold | Recall | Precision | F1"]
+    lines.append("----------|--------|-----------|----")
+
+    best_f1 = max(v["f1"] for v in curve.values())
+    for t in sorted(curve.keys()):
+        c = curve[t]
+        marker = " <-- best" if c["f1"] == best_f1 and best_f1 > 0 else ""
+        lines.append(f"    {t}     | {c['recall']:.2f}   | {c['precision']:.2f}      | {c['f1']:.2f}{marker}")
+
+    return "\n".join(lines) + "\n"
