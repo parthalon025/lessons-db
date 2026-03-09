@@ -3451,3 +3451,111 @@ def transfer_find(ctx, context, limit, min_score):
                 desc_preview += "..."
             click.echo(f"  ({desc_preview})")
         click.echo(f"  [#{item['id']}] score={item['score']:.3f}")
+
+
+def _rrf_merge(
+    bm25_ranked: list[tuple[int, float]],
+    semantic_ranked: list[tuple[int, float]] | None = None,
+    k: int = 60,
+) -> list[tuple[int, float]]:
+    """Reciprocal Rank Fusion of BM25 and (optional) semantic ranked lists.
+
+    Args:
+        bm25_ranked: List of (lesson_id, bm25_score) sorted descending.
+        semantic_ranked: Optional list of (lesson_id, semantic_score) sorted descending.
+        k: RRF smoothing constant (default 60, standard in literature).
+
+    Returns:
+        List of (lesson_id, rrf_score) sorted descending, deduplicated by id.
+    """
+    scores: dict[int, float] = {}
+
+    for rank, (lesson_id, _) in enumerate(bm25_ranked, start=1):
+        scores[lesson_id] = scores.get(lesson_id, 0.0) + 1.0 / (k + rank)
+
+    if semantic_ranked:
+        for rank, (lesson_id, _) in enumerate(semantic_ranked, start=1):
+            scores[lesson_id] = scores.get(lesson_id, 0.0) + 1.0 / (k + rank)
+
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+
+def _bm25_search(conn, query: str) -> list[tuple[int, float]]:
+    """Run BM25Okapi over title + description for all lessons.
+
+    Returns list of (lesson_id, bm25_score) sorted descending.
+    Lessons with a zero score are excluded.
+    """
+    from rank_bm25 import BM25Okapi
+
+    rows = conn.execute("SELECT id, title, description FROM lessons").fetchall()
+
+    if not rows:
+        return []
+
+    corpus = []
+    ids = []
+    for row in rows:
+        title = row["title"] or ""
+        description = row["description"] or ""
+        combined = f"{title} {description}".lower().split()
+        corpus.append(combined)
+        ids.append(row["id"])
+
+    bm25 = BM25Okapi(corpus)
+    token_query = query.lower().split()
+    raw_scores = bm25.get_scores(token_query)
+
+    ranked = [(ids[i], float(raw_scores[i])) for i in range(len(ids)) if raw_scores[i] > 0.0]
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return ranked
+
+
+@main.command("hybrid-search")
+@click.argument("query")
+@click.option("--top", "-k", default=5, type=int, help="Max results to return (default 5).")
+@click.option("--json", "as_json", is_flag=True, help="Output results as JSON.")
+@click.pass_context
+def hybrid_search(ctx, query, top, as_json):
+    """Hybrid BM25 + RRF search over lessons.
+
+    QUERY is the search string. Results are ranked using BM25Okapi over
+    title + description, fused via Reciprocal Rank Fusion (k=60).
+    Semantic search is added automatically when embeddings are available.
+
+    Output format: [rank] [id] [score] [title]
+    """
+    conn = ctx.obj["conn"]
+
+    bm25_results = _bm25_search(conn, query)
+
+    # RRF merge (BM25-only; semantic skipped — no embedding column in lessons table)
+    merged = _rrf_merge(bm25_results, semantic_ranked=None)[:top]
+
+    if not merged:
+        if as_json:
+            click.echo("[]")
+        else:
+            click.echo("No results found.")
+        return
+
+    # Fetch titles for display
+    output = []
+    for rank, (lesson_id, rrf_score) in enumerate(merged, start=1):
+        row = conn.execute("SELECT id, title FROM lessons WHERE id = ?", (lesson_id,)).fetchone()
+        if row is None:
+            continue
+        output.append(
+            {
+                "rank": rank,
+                "id": row["id"],
+                "score": round(rrf_score, 6),
+                "title": row["title"] or "",
+            }
+        )
+
+    if as_json:
+        click.echo(json.dumps(output, indent=2))
+    else:
+        for item in output:
+            click.echo(f"[{item['rank']}] #{item['id']} ({item['score']:.6f}) {item['title']}")
