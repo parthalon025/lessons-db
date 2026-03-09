@@ -1184,7 +1184,7 @@ class TestRunEvalJudge:
         def mock_judge(prompt, **kwargs):
             return '{"transfer": 4, "precision": 3, "actionability": 5}'
 
-        with patch("lessons_db.eval.call_judge", side_effect=mock_judge):
+        with patch("lessons_db.eval.judge.call_judge", side_effect=mock_judge):
             scored_pairs, metrics = run_eval_judge(
                 results_path=results_path,
                 conn=conn,
@@ -1259,7 +1259,7 @@ class TestRunEvalJudge:
         report_path = tmp_path / "report.md"
 
         # Mock judge to always return None (simulates network failure / parse failure)
-        with patch("lessons_db.eval.call_judge", return_value=None):
+        with patch("lessons_db.eval.judge.call_judge", return_value=None):
             scored_pairs, metrics = run_eval_judge(
                 results_path=results_path,
                 conn=conn,
@@ -1456,7 +1456,7 @@ class TestRunEvalJudgeBinary:
                 return "YES"
             return '{"transfer": 4, "precision": 3, "actionability": 5}'
 
-        with patch("lessons_db.eval.call_judge", side_effect=mock_judge):
+        with patch("lessons_db.eval.judge.call_judge", side_effect=mock_judge):
             scored_pairs, metrics = run_eval_judge(
                 results_path=results_path,
                 conn=conn,
@@ -1498,7 +1498,7 @@ class TestRunEvalJudgeBinary:
         results_path.write_text(json.dumps(results_data))
         report_path = tmp_path / "report.md"
 
-        with patch("lessons_db.eval.call_judge", return_value=None):
+        with patch("lessons_db.eval.judge.call_judge", return_value=None):
             scored_pairs, metrics = run_eval_judge(
                 results_path=results_path,
                 conn=conn,
@@ -1638,7 +1638,7 @@ class TestRunPairedTournament:
         results_path.write_text(json.dumps(results_data))
 
         # Mock: always pick A
-        with patch("lessons_db.eval.call_judge", return_value="A"):
+        with patch("lessons_db.eval.judge.call_judge", return_value="A"):
             tournament_results = run_paired_tournament(
                 results_path=results_path,
                 conn=conn,
@@ -1701,8 +1701,8 @@ class TestRunPairedTournament:
             return "A" if same_is_a else "B"
 
         with (
-            patch("lessons_db.eval.build_paired_judge_prompt", side_effect=tracking_build),
-            patch("lessons_db.eval.call_judge", side_effect=smart_judge),
+            patch("lessons_db.eval.judge.build_paired_judge_prompt", side_effect=tracking_build),
+            patch("lessons_db.eval.judge.call_judge", side_effect=smart_judge),
         ):
             results = run_paired_tournament(
                 results_path=results_path,
@@ -1752,7 +1752,7 @@ class TestRunPairedTournament:
         results_path = tmp_path / "results.json"
         results_path.write_text(json.dumps(results_data))
 
-        with patch("lessons_db.eval.call_judge", return_value="A"):
+        with patch("lessons_db.eval.judge.call_judge", return_value="A"):
             results = run_paired_tournament(
                 results_path=results_path,
                 conn=conn,
@@ -1790,7 +1790,7 @@ class TestRunPairedTournament:
         results_path = tmp_path / "results.json"
         results_path.write_text(json.dumps(results_data))
 
-        with patch("lessons_db.eval.call_judge", return_value="NEITHER"):
+        with patch("lessons_db.eval.judge.call_judge", return_value="NEITHER"):
             results = run_paired_tournament(
                 results_path=results_path,
                 conn=conn,
@@ -1835,7 +1835,7 @@ class TestRunPairedTournament:
 
         # Return garbage the parser can't handle
         with patch(
-            "lessons_db.eval.call_judge",
+            "lessons_db.eval.judge.call_judge",
             return_value="I think both are equally applicable and cannot decide",
         ):
             results = run_paired_tournament(
@@ -1890,7 +1890,7 @@ class TestRunPairedTournament:
 
         callback = MagicMock()
 
-        with patch("lessons_db.eval.call_judge", return_value="A"):
+        with patch("lessons_db.eval.judge.call_judge", return_value="A"):
             results = run_paired_tournament(
                 results_path=results_path,
                 conn=conn,
@@ -2094,7 +2094,7 @@ class TestMechanismVariant:
         config = VARIANT_CONFIGS["M"]
 
         with patch(
-            "lessons_db.eval.call_ollama",
+            "lessons_db.eval.generate.call_ollama",
             return_value="TRIGGER: Missing cleanup\nTARGET: DB connection\nFIX: Add finally block",
         ):
             result = _generate_for_lesson("M", config, lesson, "http://fake:7683", siblings, group_by="category")
@@ -2174,7 +2174,7 @@ class TestMechanismVariant:
 
         config = VARIANT_CONFIGS["M"]
 
-        with patch("lessons_db.eval.call_ollama", return_value="NONE"):
+        with patch("lessons_db.eval.generate.call_ollama", return_value="NONE"):
             result = _generate_for_lesson("M", config, lesson, "http://fake:7683", siblings, group_by="category")
 
         assert result["principle"] is None
@@ -2751,7 +2751,7 @@ class TestEvalV2EndToEnd:
         results_path.write_text(json.dumps({"meta": {"group_by": "category"}, "results": entries}))
 
         # Step 2: Tournament (mock judge → always picks A)
-        with patch("lessons_db.eval.call_judge", side_effect=lambda prompt, **kw: "A"):
+        with patch("lessons_db.eval.judge.call_judge", side_effect=lambda prompt, **kw: "A"):
             tournament_results = run_paired_tournament(
                 results_path=results_path,
                 conn=conn,
@@ -2823,7 +2823,7 @@ class TestEvalV2EndToEnd:
         results_path = tmp_path / "results.json"
         results_path.write_text(json.dumps({"meta": {"group_by": "category"}, "results": entries_a + entries_b}))
 
-        with patch("lessons_db.eval.call_judge", side_effect=lambda prompt, **kw: "A"):
+        with patch("lessons_db.eval.judge.call_judge", side_effect=lambda prompt, **kw: "A"):
             tournament_results = run_paired_tournament(
                 results_path=results_path,
                 conn=conn,

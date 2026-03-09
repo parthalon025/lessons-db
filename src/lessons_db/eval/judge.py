@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from lessons_db.config import OLLAMA_QUEUE_URL
 from lessons_db.eval.client import call_judge
 from lessons_db.eval.prompts import (
     build_binary_judge_prompt,
@@ -204,7 +205,7 @@ def run_paired_tournament(
     results_path: Path,
     conn: sqlite3.Connection,
     backend: str = "ollama",
-    ollama_url: str = "",
+    ollama_url: str = OLLAMA_QUEUE_URL,
     ollama_model: str = "",
     group_by: str = "category",
     pairs_per_principle: int = 4,
@@ -355,7 +356,7 @@ def run_eval_judge(
     conn: sqlite3.Connection,
     report_path: Path,
     backend: str = "ollama",
-    ollama_url: str = "",
+    ollama_url: str = OLLAMA_QUEUE_URL,
     ollama_model: str = "",
     openai_api_key: str = "",
     openai_model: str = "gpt-4o-mini",
