@@ -272,11 +272,13 @@ class TestRunEvalLearn:
         monkeypatch.setattr("lessons_db.eval.learn.LEARNINGS_FILE", tmp_path / "learnings.jsonl")
         monkeypatch.setattr("lessons_db.eval.learn._EVAL_DIR", tmp_path)
         metrics = {"D": {"f1": 0.47, "recall": 0.79, "precision": 0.33}}
-        insights, ablations = run_eval_learn(metrics, _VARIANT_CONFIGS)
+        insights, ablations, analysis = run_eval_learn(metrics, _VARIANT_CONFIGS)
         assert isinstance(insights, list)
         assert len(insights) == 1
         # Single variant → no ablation pairs
         assert ablations == []
+        # No scored_pairs → empty analysis
+        assert analysis == {}
 
     def test_crash_variant_still_runs(self, tmp_path, monkeypatch):
         """Zero-F1 result (crash-adjacent) still produces an insight."""
@@ -284,7 +286,7 @@ class TestRunEvalLearn:
         monkeypatch.setattr("lessons_db.eval.learn.LEARNINGS_FILE", tmp_path / "learnings.jsonl")
         monkeypatch.setattr("lessons_db.eval.learn._EVAL_DIR", tmp_path)
         metrics = {"X01": {"f1": 0.0, "recall": 0.0, "precision": 0.0}}
-        insights, _ablations = run_eval_learn(metrics, _VARIANT_CONFIGS)
+        insights, _ablations, _analysis = run_eval_learn(metrics, _VARIANT_CONFIGS)
         assert len(insights) == 1
         assert insights[0]["f1"] == 0.0
 
@@ -306,7 +308,9 @@ class TestRunEvalLearn:
         monkeypatch.setattr("lessons_db.eval.learn._EVAL_DIR", tmp_path)
         metrics = {"D": {"f1": 0.47, "recall": 0.79, "precision": 0.33}}
         # Should not raise
-        insights, _ablations = run_eval_learn(metrics, _VARIANT_CONFIGS, program_md_path=tmp_path / "nonexistent.md")
+        insights, _ablations, _analysis = run_eval_learn(
+            metrics, _VARIANT_CONFIGS, program_md_path=tmp_path / "nonexistent.md"
+        )
         assert len(insights) == 1
 
     def test_learnings_persisted_to_jsonl(self, tmp_path, monkeypatch):
@@ -331,10 +335,39 @@ class TestRunEvalLearn:
             "B": {"f1": 0.40, "recall": 0.70, "precision": 0.28},
             "F": {"f1": 0.52, "recall": 0.65, "precision": 0.42},
         }
-        insights, ablations = run_eval_learn(metrics, _VARIANT_CONFIGS)
+        insights, ablations, _analysis = run_eval_learn(metrics, _VARIANT_CONFIGS)
         assert len(insights) == 2
         assert len(ablations) > 0
         assert all("dimension" in ab for ab in ablations)
+
+    def test_analysis_included_when_scored_pairs_provided(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("lessons_db.eval.learn.BEST_JSON", tmp_path / "best.json")
+        monkeypatch.setattr("lessons_db.eval.learn.LEARNINGS_FILE", tmp_path / "learnings.jsonl")
+        monkeypatch.setattr("lessons_db.eval.learn._EVAL_DIR", tmp_path)
+        metrics = {"A": {"f1": 0.28, "recall": 0.93, "precision": 0.17}}
+        scored_pairs = [
+            {
+                "variant": "A",
+                "source_lesson_id": 1,
+                "is_same_cluster": True,
+                "scores": {"matched": True},
+                "principle": "p",
+                "target_id": 10,
+            },
+            {
+                "variant": "A",
+                "source_lesson_id": 1,
+                "is_same_cluster": False,
+                "scores": {"matched": True},
+                "principle": "p",
+                "target_id": 20,
+            },
+        ]
+        insights, ablations, analysis = run_eval_learn(metrics, _VARIANT_CONFIGS, scored_pairs=scored_pairs)
+        assert len(insights) == 1
+        assert "per_lesson" in analysis
+        assert "failure_cases" in analysis
+        assert "confidence_intervals" in analysis
 
 
 # ---------------------------------------------------------------------------

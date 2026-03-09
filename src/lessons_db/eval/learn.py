@@ -396,16 +396,32 @@ def run_eval_learn(
     variant_configs: dict[str, dict[str, Any]],
     program_md_path: Path | None = None,
     run_date: str | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Derive insights + ablation analysis, persist, and optionally update program.md.
+    scored_pairs: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Derive insights + ablation + analysis, persist, and optionally update program.md.
 
-    This is the single call site used by the CLI. Always runs — no guard on
-    whether variants improved or not. Every run teaches something.
+    When scored_pairs is provided, also computes per-lesson breakdown,
+    failure cases, and confidence intervals.
 
-    Returns (insights, ablations) for CLI display.
+    Returns (insights, ablations, analysis).
+    analysis is empty dict when scored_pairs is not provided.
     """
     insights = derive_insights(metrics_by_variant, variant_configs, run_date)
     ablations = compute_ablations(metrics_by_variant, variant_configs) if len(metrics_by_variant) > 1 else []
+
+    analysis: dict[str, Any] = {}
+    if scored_pairs:
+        from lessons_db.eval.analysis import (
+            bootstrap_f1_ci,
+            compute_per_lesson_breakdown,
+            extract_failure_cases,
+        )
+
+        analysis["per_lesson"] = compute_per_lesson_breakdown(scored_pairs)
+        analysis["failure_cases"] = extract_failure_cases(scored_pairs)
+        analysis["confidence_intervals"] = {
+            vid: bootstrap_f1_ci(scored_pairs, variant=vid, n_bootstrap=500, seed=42) for vid in metrics_by_variant
+        }
 
     try:
         save_learnings(insights, ablations or None)
@@ -418,7 +434,7 @@ def run_eval_learn(
         except Exception as exc:
             _log.warning("append_to_program_md failed (non-fatal): %s", exc)
 
-    return insights, ablations
+    return insights, ablations, analysis
 
 
 # ---------------------------------------------------------------------------

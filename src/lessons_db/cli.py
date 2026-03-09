@@ -2955,10 +2955,11 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
         from lessons_db.eval.variants import VARIANT_CONFIGS
 
         program_md = Path.cwd() / "program.md"
-        insights, ablations = run_eval_learn(
+        insights, ablations, analysis = run_eval_learn(
             metrics_by_variant=metrics,
             variant_configs=VARIANT_CONFIGS,
             program_md_path=program_md if program_md.exists() else None,
+            scored_pairs=scored_pairs,
         )
         click.echo("\nLearnings:")
         for ins in insights:
@@ -2969,6 +2970,23 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
             click.echo("\nAblations (what config dimensions matter most):")
             for line in format_ablation_summary(ablations):
                 click.echo(f"  {line}")
+        if analysis:
+            if analysis.get("confidence_intervals"):
+                click.echo("\nConfidence intervals (95%):")
+                for vid, ci in sorted(analysis["confidence_intervals"].items()):
+                    click.echo(f"  {vid}: F1 = {ci['mid']:.3f} [{ci['low']:.3f} – {ci['high']:.3f}]")
+            if analysis.get("per_lesson"):
+                worst = analysis["per_lesson"][:5]
+                if worst:
+                    click.echo(f"\nHardest lessons (lowest F1, top {len(worst)}):")
+                    for pl in worst:
+                        click.echo(
+                            f"  lesson #{pl['source_lesson_id']} [{pl['variant']}]: F1={pl['f1']:.3f} (TP={pl['tp']} FN={pl['fn']} FP={pl['fp']})"
+                        )
+            if analysis.get("failure_cases"):
+                fp_count = sum(1 for f in analysis["failure_cases"] if f["failure_type"] == "false_positive")
+                fn_count = sum(1 for f in analysis["failure_cases"] if f["failure_type"] == "false_negative")
+                click.echo(f"\nFailure cases: {fp_count} false positives, {fn_count} false negatives")
         if program_md.exists():
             click.echo(f"\n  program.md updated: {program_md}")
 
@@ -3014,7 +3032,7 @@ def meta_eval_learn(ctx, results_file, trends):
         return
 
     program_md = Path.cwd() / "program.md"
-    insights, ablations = run_eval_learn(
+    insights, ablations, _analysis = run_eval_learn(
         metrics_by_variant=metrics,
         variant_configs=VARIANT_CONFIGS,
         program_md_path=program_md if program_md.exists() else None,
@@ -3053,6 +3071,48 @@ def meta_eval_learn(ctx, results_file, trends):
                 ):
                     mean_abs = sum(abs(d) for d in deltas) / len(deltas)
                     click.echo(f"  {dim}: mean |ΔF1|={mean_abs:.3f} ({len(deltas)} observations)")
+
+
+@meta.command("eval-propose")
+@click.option("--dry-run", is_flag=True, help="Show proposal without writing to disk.")
+@click.pass_context
+def meta_eval_propose(ctx, dry_run):
+    """Propose the next variant config based on ablation trends and best-so-far."""
+    import json as json_mod
+    from pathlib import Path
+
+    from lessons_db.eval.analysis import propose_next_variant
+    from lessons_db.eval.learn import compute_dimension_impacts, load_best, load_learnings
+    from lessons_db.eval.variants import VARIANT_CONFIGS
+
+    best = load_best()
+    if not best:
+        click.echo("No best.json found. Run eval-judge first.", err=True)
+        ctx.exit(1)
+        return
+
+    entries = load_learnings()
+    dim_impacts = compute_dimension_impacts(entries)
+
+    proposal = propose_next_variant(
+        best=best,
+        ablation_impacts=dim_impacts,
+        existing_ids=list(VARIANT_CONFIGS.keys()),
+    )
+
+    if not proposal:
+        click.echo("Cannot propose: best.json has no config or ID space exhausted.")
+        return
+
+    click.echo(f"Proposed: {proposal['variant_id']}")
+    click.echo(f"  Hypothesis: {proposal['hypothesis']}")
+    click.echo(f"  Config: {proposal['config']}")
+
+    if not dry_run:
+        proposal_path = Path.home() / ".local" / "share" / "lessons-db" / "eval" / "proposed_variant.json"
+        proposal_path.parent.mkdir(parents=True, exist_ok=True)
+        proposal_path.write_text(json_mod.dumps(proposal, indent=2))
+        click.echo(f"  Written to: {proposal_path}")
 
 
 @meta.command("eval-tournament")

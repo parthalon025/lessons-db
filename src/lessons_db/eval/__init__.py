@@ -5,10 +5,22 @@ Re-exports all public symbols so ``from lessons_db.eval import X`` keeps working
 
 # --- analysis ---
 from lessons_db.eval.analysis import (
+    bootstrap_f1_ci as bootstrap_f1_ci,
+)
+from lessons_db.eval.analysis import (
     compute_per_lesson_breakdown as compute_per_lesson_breakdown,
 )
 from lessons_db.eval.analysis import (
+    compute_stability as compute_stability,
+)
+from lessons_db.eval.analysis import (
+    describe_prompt_diff as describe_prompt_diff,
+)
+from lessons_db.eval.analysis import (
     extract_failure_cases as extract_failure_cases,
+)
+from lessons_db.eval.analysis import (
+    propose_next_variant as propose_next_variant,
 )
 
 # --- variants (zero internal deps) ---
