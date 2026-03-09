@@ -365,9 +365,13 @@ class TestRunEvalLearn:
         ]
         insights, ablations, analysis = run_eval_learn(metrics, _VARIANT_CONFIGS, scored_pairs=scored_pairs)
         assert len(insights) == 1
-        assert "per_lesson" in analysis
-        assert "failure_cases" in analysis
-        assert "confidence_intervals" in analysis
+        # Verify analysis content, not just key existence
+        assert len(analysis["per_lesson"]) >= 1
+        # Scored pairs have 1 FP (diff-cluster + matched=True), 0 FN
+        assert len(analysis["failure_cases"]) == 1
+        assert analysis["failure_cases"][0]["failure_type"] == "false_positive"
+        ci = analysis["confidence_intervals"]["A"]
+        assert 0.0 <= ci["low"] <= ci["mid"] <= ci["high"] <= 1.0
 
 
 # ---------------------------------------------------------------------------

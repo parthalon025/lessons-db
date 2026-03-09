@@ -44,7 +44,7 @@ for run in $(seq 1 "$MAX_RUNS"); do
 
     # 1. Propose next variant
     echo "[1/4] Proposing next variant..."
-    if ! lessons-db meta eval-propose 2>/dev/null; then
+    if ! lessons-db meta eval-propose; then
         echo "Proposal failed — running best variant for stability data"
         VARIANT="$(python3 -c "import json; print(json.load(open('$HOME/.local/share/lessons-db/eval/best.json')).get('variant', 'A'))")"
     else

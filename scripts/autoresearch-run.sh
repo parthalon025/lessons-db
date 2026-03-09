@@ -131,10 +131,10 @@ else
     echo "DISCARD: $VARIANT did not beat best (F1=$F1 vs best=$BEST_F1_AFTER)"
     printf "%s\t%s\t%s\t%s\t%s\tdiscard\t%s\n" \
         "$COMMIT" "$VARIANT" "$F1" "$PRECISION" "$RECALL" "$GIT_MSG" >> "$RESULTS_TSV"
-    # Revert variants.py commit for experimental (X*) variants only
+    # Revert variants.py for experimental (X*) variants only — surgical restore, not reset
     if [[ "$VARIANT" == X* ]]; then
-        echo "Reverting variants.py commit for $VARIANT..."
-        git reset HEAD~1
+        echo "Reverting variants.py injection for $VARIANT..."
+        git restore src/lessons_db/eval/variants.py
     fi
     exit 1
 fi
