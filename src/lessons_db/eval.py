@@ -1260,6 +1260,58 @@ def compute_tournament_metrics(
     return metrics
 
 
+# ---------------------------------------------------------------------------
+# Mechanism extraction (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def build_mechanism_extraction_prompt(lesson_a: dict, lesson_b: dict) -> str:
+    """Extract shared failure mechanism as a triplet from two lessons."""
+
+    def _fmt(l: dict) -> str:
+        return (
+            f"Title: {l.get('title', '')}\n"
+            f"One-liner: {l.get('one_liner', '')}\n"
+            f"Description: {(l.get('description', '') or '')[:300]}"
+        )
+
+    return (
+        "You are analyzing two software engineering lessons that share a failure pattern.\n\n"
+        f"LESSON A:\n{_fmt(lesson_a)}\n\n"
+        f"LESSON B:\n{_fmt(lesson_b)}\n\n"
+        "Extract the SPECIFIC structural mechanism these two lessons share.\n\n"
+        "Format your answer as exactly three lines:\n"
+        "TRIGGER: [what condition causes the bug, 3-10 words]\n"
+        "TARGET: [what component/resource breaks, 3-10 words]\n"
+        "FIX: [what structural change prevents it, 3-10 words]\n\n"
+        "Rules:\n"
+        "- Be SPECIFIC — 'error handling' is too vague. "
+        "'Uncaught exception in cleanup path' is specific.\n"
+        "- Name the MECHANISM, not the topic. Two lessons about 'testing' may have "
+        "completely different mechanisms.\n"
+        "- If these lessons do NOT share a specific mechanism, answer: NONE"
+    )
+
+
+def parse_mechanism_triplet(response: str) -> dict[str, str] | None:
+    """Parse TRIGGER/TARGET/FIX triplet from mechanism extraction response."""
+    if not response:
+        return None
+    text = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL | _re.IGNORECASE).strip()
+    if "NONE" in text.upper() and len(text) < 50:
+        return None
+    trigger = _re.search(r"TRIGGER:\s*(.+)", text, _re.IGNORECASE)
+    target = _re.search(r"TARGET:\s*(.+)", text, _re.IGNORECASE)
+    fix = _re.search(r"FIX:\s*(.+)", text, _re.IGNORECASE)
+    if not trigger or not target or not fix:
+        return None
+    return {
+        "trigger": trigger.group(1).strip()[:100],
+        "target": target.group(1).strip()[:100],
+        "fix": fix.group(1).strip()[:100],
+    }
+
+
 def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
     """Render failure analysis for binary-judged pairs."""
     failures = [p for p in scored_pairs if p.get("is_same_cluster") and not p["scores"].get("matched")]

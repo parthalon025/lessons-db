@@ -16,6 +16,7 @@ from lessons_db.eval import (
     build_binary_judge_prompt,
     build_generation_prompt,
     build_judge_prompt,
+    build_mechanism_extraction_prompt,
     build_paired_judge_prompt,
     call_judge,
     call_ollama,
@@ -23,6 +24,7 @@ from lessons_db.eval import (
     compute_tournament_metrics,
     parse_binary_judge,
     parse_judge_scores,
+    parse_mechanism_triplet,
     parse_paired_judge,
     render_report,
     run_eval_generate,
@@ -1932,3 +1934,102 @@ class TestComputeTournamentMetrics:
         metrics = compute_tournament_metrics(results)
         assert metrics["A"]["mean_win_rate"] == 0.0
         assert metrics["A"]["total_neithers"] == 4
+
+
+# ---------------------------------------------------------------------------
+# TestBuildMechanismPrompt (Task 7)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMechanismPrompt:
+    def test_contains_both_lessons(self):
+        lesson_a = {
+            "title": "Resource cleanup",
+            "one_liner": "Close DB connections",
+            "description": "Database connections left open in error paths",
+        }
+        lesson_b = {
+            "title": "File handle leak",
+            "one_liner": "Close file handles",
+            "description": "File handles not closed when exception thrown",
+        }
+        prompt = build_mechanism_extraction_prompt(lesson_a, lesson_b)
+        assert "Resource cleanup" in prompt
+        assert "File handle leak" in prompt
+
+    def test_requests_triplet_format(self):
+        a = {"title": "A", "one_liner": "A", "description": "A"}
+        b = {"title": "B", "one_liner": "B", "description": "B"}
+        prompt = build_mechanism_extraction_prompt(a, b)
+        assert "TRIGGER" in prompt
+        assert "TARGET" in prompt
+        assert "FIX" in prompt
+
+    def test_truncates_long_descriptions(self):
+        a = {"title": "A", "one_liner": "A", "description": "x" * 500}
+        b = {"title": "B", "one_liner": "B", "description": "y" * 500}
+        prompt = build_mechanism_extraction_prompt(a, b)
+        # Description should be truncated to 300 chars
+        assert "x" * 301 not in prompt
+        assert "y" * 301 not in prompt
+
+    def test_handles_none_values(self):
+        a = {"title": None, "one_liner": None, "description": None}
+        b = {"title": "B", "one_liner": "B", "description": "B"}
+        prompt = build_mechanism_extraction_prompt(a, b)
+        assert "LESSON A" in prompt
+        assert "LESSON B" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TestParseMechanismTriplet (Task 7)
+# ---------------------------------------------------------------------------
+
+
+class TestParseMechanismTriplet:
+    def test_parses_valid_triplet(self):
+        response = (
+            "TRIGGER: Uncaught exception in cleanup path\n"
+            "TARGET: Database connection pool\n"
+            "FIX: Finally block with explicit close"
+        )
+        result = parse_mechanism_triplet(response)
+        assert result is not None
+        assert "Uncaught exception" in result["trigger"]
+        assert "Database connection" in result["target"]
+        assert "Finally block" in result["fix"]
+
+    def test_returns_none_for_empty(self):
+        assert parse_mechanism_triplet("") is None
+        assert parse_mechanism_triplet(None) is None
+
+    def test_returns_none_for_none_response(self):
+        assert parse_mechanism_triplet("NONE") is None
+        assert parse_mechanism_triplet("none") is None
+
+    def test_strips_think_tags(self):
+        response = (
+            "<think>analyzing...</think>\n"
+            "TRIGGER: Missing validation\n"
+            "TARGET: Input data\n"
+            "FIX: Add schema check"
+        )
+        result = parse_mechanism_triplet(response)
+        assert result is not None
+        assert "Missing validation" in result["trigger"]
+
+    def test_returns_none_for_incomplete(self):
+        # Missing FIX
+        assert parse_mechanism_triplet("TRIGGER: Something\nTARGET: Something") is None
+
+    def test_truncates_long_values(self):
+        response = f"TRIGGER: {'x' * 200}\nTARGET: short\nFIX: short"
+        result = parse_mechanism_triplet(response)
+        assert result is not None
+        assert len(result["trigger"]) <= 100
+
+    def test_case_insensitive(self):
+        response = "trigger: lower case trigger\ntarget: lower target\nfix: lower fix"
+        result = parse_mechanism_triplet(response)
+        assert result is not None
+        assert "lower case trigger" in result["trigger"]
