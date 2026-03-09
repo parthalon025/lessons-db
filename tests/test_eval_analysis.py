@@ -265,6 +265,16 @@ class TestBootstrapF1CI:
         r2 = bootstrap_f1_ci(scored_pairs, variant="A", seed=123)
         assert r1 == r2
 
+    def test_single_bootstrap_iteration(self):
+        """n_bootstrap=1 should not crash or produce negative indices."""
+        pairs = [
+            {"variant": "A", "is_same_cluster": True, "scores": {"matched": True}},
+            {"variant": "A", "is_same_cluster": False, "scores": {"matched": False}},
+        ]
+        result = bootstrap_f1_ci(pairs, variant="A", n_bootstrap=1, seed=0)
+        assert result["low"] <= result["mid"] <= result["high"]
+        assert all(0.0 <= v <= 1.0 for v in result.values())
+
 
 # ---------------------------------------------------------------------------
 # TestComputeStability
@@ -312,3 +322,14 @@ class TestComputeStability:
         ]
         stability = compute_stability(entries)
         assert stability["A"]["stable"] is True
+
+    def test_skips_entries_without_f1(self):
+        """Entries with missing or None f1 are silently skipped."""
+        entries = [
+            {"variant": "A", "f1": 0.50},
+            {"variant": "A"},
+            {"variant": "A", "f1": None},
+        ]
+        stability = compute_stability(entries)
+        assert stability["A"]["n_runs"] == 1
+        assert stability["A"]["stdev"] == 0.0

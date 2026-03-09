@@ -221,12 +221,12 @@ def bootstrap_f1_ci(
 
     f1s.sort()
     alpha = (1 - ci) / 2
-    low_idx = int(alpha * len(f1s))
-    high_idx = int((1 - alpha) * len(f1s)) - 1
+    low_idx = max(0, int(alpha * len(f1s)))
+    high_idx = max(0, min(int((1 - alpha) * len(f1s)) - 1, len(f1s) - 1))
     return {
-        "low": round(f1s[max(0, low_idx)], 4),
-        "mid": round(f1s[len(f1s) // 2], 4),
-        "high": round(f1s[min(high_idx, len(f1s) - 1)], 4),
+        "low": round(f1s[low_idx], 4),
+        "mid": round(statistics.median(f1s), 4),
+        "high": round(f1s[high_idx], 4),
     }
 
 
@@ -258,12 +258,13 @@ def compute_stability(
 
     result: dict[str, dict[str, Any]] = {}
     for vid, f1s in by_variant.items():
-        stdev = statistics.stdev(f1s) if len(f1s) > 1 else 0.0
+        stdev_raw = statistics.stdev(f1s) if len(f1s) > 1 else 0.0
+        stdev_rounded = round(stdev_raw, 4)
         result[vid] = {
-            "stdev": round(stdev, 4),
+            "stdev": stdev_rounded,
             "mean": round(statistics.mean(f1s), 4),
             "n_runs": len(f1s),
-            "stable": stdev < instability_threshold,
+            "stable": stdev_rounded < instability_threshold,
             "f1s": f1s,
         }
     return result
