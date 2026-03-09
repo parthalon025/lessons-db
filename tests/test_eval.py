@@ -2405,6 +2405,22 @@ class TestReferenceComparison:
         diagnosis = diagnose_vs_reference(reference_metrics, new_metrics)
         assert diagnosis["B"]["status"] == "new"
 
+    def test_removed_variant(self):
+        """Variant in reference but not in new -> 'removed'."""
+        reference_metrics = {"A": {"auc": 0.70}, "B": {"auc": 0.80}}
+        new_metrics = {"A": {"auc": 0.85}}
+        diagnosis = diagnose_vs_reference(reference_metrics, new_metrics)
+        assert diagnosis["B"]["status"] == "removed"
+        assert diagnosis["B"]["ref_value"] == 0.80
+        assert diagnosis["B"]["new_value"] is None
+
+    def test_custom_metric_key(self):
+        """Works with non-default metric key (e.g. mean_win_rate for tournament)."""
+        reference = {"A": {"mean_win_rate": 0.70}}
+        new = {"A": {"mean_win_rate": 0.85}}
+        diagnosis = diagnose_vs_reference(reference, new, metric_key="mean_win_rate")
+        assert diagnosis["A"]["status"] == "improved"
+
 
 # ---------------------------------------------------------------------------
 # Simulation prompt + parser (Task 13)

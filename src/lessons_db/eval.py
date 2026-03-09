@@ -1800,14 +1800,16 @@ def diagnose_vs_reference(
     new_metrics: dict[str, dict[str, float]],
     reference_rerun: dict[str, dict[str, float]] | None = None,
     noise_margin: float = 0.03,
+    metric_key: str = "auc",
 ) -> dict[str, dict[str, Any]]:
     """Compare new eval metrics against a frozen reference baseline.
 
     Distinguishes improvement/regression from data drift by optionally
     re-running the reference model on new data. If both degrade, it's drift.
 
-    Borrows ARIA's reference model pattern: freeze a known-good baseline,
-    compare new runs against it.
+    Args:
+        metric_key: Which metric to compare. Default "auc" for Bayesian metrics,
+            use "mean_win_rate" for tournament metrics.
     """
     diagnosis: dict[str, dict[str, Any]] = {}
 
@@ -1817,34 +1819,34 @@ def diagnose_vs_reference(
             diagnosis[variant] = {
                 "status": "new",
                 "delta": None,
-                "new_auc": new_metrics[variant]["auc"],
-                "ref_auc": None,
+                "new_value": new_metrics[variant][metric_key],
+                "ref_value": None,
             }
             continue
         if variant not in new_metrics:
             diagnosis[variant] = {
                 "status": "removed",
                 "delta": None,
-                "new_auc": None,
-                "ref_auc": reference_metrics[variant]["auc"],
+                "new_value": None,
+                "ref_value": reference_metrics[variant][metric_key],
             }
             continue
 
-        ref_auc = reference_metrics[variant]["auc"]
-        new_auc = new_metrics[variant]["auc"]
-        delta = new_auc - ref_auc
+        ref_val = reference_metrics[variant][metric_key]
+        new_val = new_metrics[variant][metric_key]
+        delta = new_val - ref_val
 
         # Check for data drift: if reference also degrades on new data
         if reference_rerun and variant in reference_rerun:
-            rerun_auc = reference_rerun[variant]["auc"]
-            rerun_delta = rerun_auc - ref_auc
+            rerun_val = reference_rerun[variant][metric_key]
+            rerun_delta = rerun_val - ref_val
             if rerun_delta < -noise_margin and delta < -noise_margin:
                 diagnosis[variant] = {
                     "status": "data_drift",
                     "delta": delta,
-                    "new_auc": new_auc,
-                    "ref_auc": ref_auc,
-                    "rerun_auc": rerun_auc,
+                    "new_value": new_val,
+                    "ref_value": ref_val,
+                    "rerun_value": rerun_val,
                 }
                 continue
 
@@ -1855,7 +1857,7 @@ def diagnose_vs_reference(
         else:
             status = "regressed"
 
-        diagnosis[variant] = {"status": status, "delta": delta, "new_auc": new_auc, "ref_auc": ref_auc}
+        diagnosis[variant] = {"status": status, "delta": delta, "new_value": new_val, "ref_value": ref_val}
 
     return diagnosis
 

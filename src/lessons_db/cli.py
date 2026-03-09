@@ -3059,7 +3059,7 @@ def meta_eval_tournament(ctx, results_file, output, judge_model, group_by, pairs
         from lessons_db.eval import diagnose_vs_reference
 
         ref_data = json.loads(Path(reference).read_text())
-        diagnosis = diagnose_vs_reference(ref_data, metrics)
+        diagnosis = diagnose_vs_reference(ref_data, metrics, metric_key="mean_win_rate")
         click.echo("\nReference Comparison:")
         for variant, diag in sorted(diagnosis.items()):
             click.echo(f"  {variant}: {diag['status']} (Δ={diag.get('delta', 'N/A')})")
@@ -3090,10 +3090,9 @@ def eval_confusion(scored_path: str, output: str | None) -> None:
 @click.option("--output", type=click.Path(), default=None, help="Output path for simulation results JSON.")
 @click.option("--trials", type=int, default=3, help="Simulation trials per principle (default: 3).")
 @click.option("--model", default=None, help="Model for simulation (default: judge model).")
-@click.option("--group-by", type=click.Choice(["cluster_seed", "category"]), default="category")
 @click.option("--priority", type=int, default=None)
 @click.pass_context
-def meta_eval_simulate(ctx, results_file, output, trials, model, group_by, priority):
+def meta_eval_simulate(ctx, results_file, output, trials, model, priority):
     """Run simulation validation -- test whether principles catch bugs."""
     import json
 
