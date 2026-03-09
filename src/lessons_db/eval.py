@@ -1219,6 +1219,47 @@ def run_paired_tournament(
     return tournament_results
 
 
+def compute_tournament_metrics(
+    tournament_results: list[dict[str, Any]],
+) -> dict[str, dict[str, float]]:
+    """Compute aggregate metrics from tournament results, grouped by variant.
+
+    Returns dict of variant_id -> metrics dict with:
+        mean_win_rate: average win rate across principles (approx AUC)
+        discriminating_frac: fraction of principles with win_rate > 0.5
+        principle_count: number of principles evaluated
+        comparison_count: total comparisons made
+        total_wins: total wins across all principles
+        total_losses: total losses
+        total_neithers: total neither responses
+    """
+    from collections import defaultdict
+
+    by_variant: dict[str, list[dict]] = defaultdict(list)
+    for r in tournament_results:
+        by_variant[r["variant"]].append(r)
+
+    metrics: dict[str, dict[str, float]] = {}
+    for variant_id, results in sorted(by_variant.items()):
+        win_rates = [r["win_rate"] for r in results]
+        total_comparisons = sum(r["comparisons"] for r in results)
+        total_wins = sum(r["wins"] for r in results)
+        total_losses = sum(r["losses"] for r in results)
+        total_neithers = sum(r["neithers"] for r in results)
+
+        metrics[variant_id] = {
+            "mean_win_rate": sum(win_rates) / len(win_rates) if win_rates else 0.0,
+            "discriminating_frac": (sum(1 for wr in win_rates if wr > 0.5) / len(win_rates) if win_rates else 0.0),
+            "principle_count": len(results),
+            "comparison_count": total_comparisons,
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "total_neithers": total_neithers,
+        }
+
+    return metrics
+
+
 def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
     """Render failure analysis for binary-judged pairs."""
     failures = [p for p in scored_pairs if p.get("is_same_cluster") and not p["scores"].get("matched")]

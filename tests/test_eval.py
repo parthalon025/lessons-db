@@ -20,6 +20,7 @@ from lessons_db.eval import (
     call_judge,
     call_ollama,
     compute_metrics,
+    compute_tournament_metrics,
     parse_binary_judge,
     parse_judge_scores,
     parse_paired_judge,
@@ -1887,3 +1888,47 @@ class TestRunPairedTournament:
         assert len(results) == 2
         assert callback.call_count == 2
         conn.close()
+
+
+class TestComputeTournamentMetrics:
+    def test_perfect_discrimination(self):
+        results = [
+            {"variant": "A", "win_rate": 1.0, "comparisons": 4, "wins": 4, "losses": 0, "neithers": 0},
+            {"variant": "A", "win_rate": 1.0, "comparisons": 4, "wins": 4, "losses": 0, "neithers": 0},
+        ]
+        metrics = compute_tournament_metrics(results)
+        assert metrics["A"]["mean_win_rate"] == 1.0
+        assert metrics["A"]["discriminating_frac"] == 1.0
+        assert metrics["A"]["principle_count"] == 2
+        assert metrics["A"]["comparison_count"] == 8
+
+    def test_random_discrimination(self):
+        results = [
+            {"variant": "A", "win_rate": 0.5, "comparisons": 4, "wins": 2, "losses": 2, "neithers": 0},
+        ]
+        metrics = compute_tournament_metrics(results)
+        assert metrics["A"]["mean_win_rate"] == 0.5
+        assert metrics["A"]["discriminating_frac"] == 0.0  # 0.5 is not > 0.5
+
+    def test_multiple_variants(self):
+        results = [
+            {"variant": "A", "win_rate": 0.8, "comparisons": 4, "wins": 3, "losses": 1, "neithers": 0},
+            {"variant": "B", "win_rate": 0.6, "comparisons": 4, "wins": 2, "losses": 1, "neithers": 1},
+        ]
+        metrics = compute_tournament_metrics(results)
+        assert "A" in metrics
+        assert "B" in metrics
+        assert metrics["A"]["mean_win_rate"] == 0.8
+        assert metrics["B"]["mean_win_rate"] == 0.6
+
+    def test_empty_results(self):
+        metrics = compute_tournament_metrics([])
+        assert metrics == {}
+
+    def test_all_neithers(self):
+        results = [
+            {"variant": "A", "win_rate": 0.0, "comparisons": 4, "wins": 0, "losses": 0, "neithers": 4},
+        ]
+        metrics = compute_tournament_metrics(results)
+        assert metrics["A"]["mean_win_rate"] == 0.0
+        assert metrics["A"]["total_neithers"] == 4
