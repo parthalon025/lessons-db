@@ -16,8 +16,14 @@ from lessons_db.eval._eval_backup import (
 from lessons_db.eval._eval_backup import (
     _generate_for_lesson as _generate_for_lesson,
 )
-from lessons_db.eval._eval_backup import (
+from lessons_db.eval.sampling import (  # noqa: F811
     _select_diverse as _select_diverse,
+)
+from lessons_db.eval.sampling import (
+    select_source_lessons as select_source_lessons,
+)
+from lessons_db.eval.sampling import (
+    select_transfer_targets as select_transfer_targets,
 )
 
 # Extracted modules (override backup imports):
