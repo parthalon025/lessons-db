@@ -33,7 +33,12 @@ def _is_positive(scores: dict[str, Any]) -> bool:
     """
     if "matched" in scores:
         return bool(scores["matched"])
-    return int(scores.get("transfer", 0)) >= 3
+    raw = scores.get("transfer", 0)
+    try:
+        return int(raw) >= 3
+    except (TypeError, ValueError):
+        _log.warning("_is_positive: unexpected transfer value %r; treating as negative", raw)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +63,11 @@ def compute_per_lesson_breakdown(
     """
     if not scored_pairs:
         return []
+
+    # Warn if mixed binary/rubric pairs — metrics will be unreliable
+    modes = {"binary" if "matched" in p["scores"] else "rubric" for p in scored_pairs}
+    if len(modes) > 1:
+        _log.warning("Mixed binary/rubric scored pairs detected — metrics will be unreliable")
 
     # Group by (variant, source_lesson_id)
     groups: dict[tuple[str, int], list[dict[str, Any]]] = {}

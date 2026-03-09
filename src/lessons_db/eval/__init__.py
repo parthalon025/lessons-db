@@ -3,6 +3,14 @@
 Re-exports all public symbols so ``from lessons_db.eval import X`` keeps working.
 """
 
+# --- analysis ---
+from lessons_db.eval.analysis import (
+    compute_per_lesson_breakdown as compute_per_lesson_breakdown,
+)
+from lessons_db.eval.analysis import (
+    extract_failure_cases as extract_failure_cases,
+)
+
 # --- variants (zero internal deps) ---
 from lessons_db.eval.client import (
     _clean_principle as _clean_principle,

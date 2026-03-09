@@ -66,16 +66,17 @@ def _rubric_pair(
 
 class TestPerLessonBreakdown:
     def test_groups_by_source_lesson(self):
-        """3 pairs across 2 lessons produce 2 breakdown entries."""
+        """Each distinct source_lesson_id produces one breakdown entry."""
         pairs = [
             _binary_pair("A", 1, "principle-1", 10, "target-10", True, True),
             _binary_pair("A", 1, "principle-1", 11, "target-11", False, False),
             _binary_pair("A", 2, "principle-2", 12, "target-12", True, True),
         ]
+        expected_lessons = {p["source_lesson_id"] for p in pairs}
         result = compute_per_lesson_breakdown(pairs)
-        assert len(result) == 2
+        assert len(result) == len(expected_lessons)
         lesson_ids = {r["source_lesson_id"] for r in result}
-        assert lesson_ids == {1, 2}
+        assert lesson_ids == expected_lessons
 
     def test_computes_per_lesson_f1(self):
         """Perfect pair: TP on same-cluster, TN on diff-cluster -> F1=1.0."""
@@ -117,6 +118,29 @@ class TestPerLessonBreakdown:
         result = compute_per_lesson_breakdown(pairs)
         assert len(result) == 1
         assert result[0]["variant"] == "F"
+
+    def test_only_diff_cluster_pairs(self):
+        """Lesson with only diff-cluster pairs: recall=0.0 (no same-cluster ground truth)."""
+        pairs = [
+            _binary_pair("A", 1, "p1", 10, "t-10", False, True),  # FP
+            _binary_pair("A", 1, "p1", 11, "t-11", False, False),  # TN
+        ]
+        result = compute_per_lesson_breakdown(pairs)
+        assert len(result) == 1
+        assert result[0]["recall"] == 0.0
+        assert result[0]["tp"] == 0
+
+    def test_only_same_cluster_pairs(self):
+        """Lesson with only same-cluster pairs: precision=0.0 guard (no FP possible)."""
+        pairs = [
+            _binary_pair("A", 1, "p1", 10, "t-10", True, True),  # TP
+            _binary_pair("A", 1, "p1", 11, "t-11", True, False),  # FN
+        ]
+        result = compute_per_lesson_breakdown(pairs)
+        assert len(result) == 1
+        # tp=1, fp=0 → precision = 1/(1+0) = 1.0 (not division by zero)
+        assert result[0]["precision"] == 1.0
+        assert result[0]["fp"] == 0
 
     def test_empty_pairs(self):
         """Empty input returns empty list."""
