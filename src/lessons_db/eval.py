@@ -1788,3 +1788,142 @@ def run_eval_judge(
     scored_path.write_text(_json.dumps(scored_pairs, indent=2))
 
     return scored_pairs, metrics
+
+
+# ---------------------------------------------------------------------------
+# Reference comparison
+# ---------------------------------------------------------------------------
+
+
+def diagnose_vs_reference(
+    reference_metrics: dict[str, dict[str, float]],
+    new_metrics: dict[str, dict[str, float]],
+    reference_rerun: dict[str, dict[str, float]] | None = None,
+    noise_margin: float = 0.03,
+) -> dict[str, dict[str, Any]]:
+    """Compare new eval metrics against a frozen reference baseline.
+
+    Distinguishes improvement/regression from data drift by optionally
+    re-running the reference model on new data. If both degrade, it's drift.
+
+    Borrows ARIA's reference model pattern: freeze a known-good baseline,
+    compare new runs against it.
+    """
+    diagnosis: dict[str, dict[str, Any]] = {}
+
+    all_variants = set(new_metrics.keys()) | set(reference_metrics.keys())
+    for variant in sorted(all_variants):
+        if variant not in reference_metrics:
+            diagnosis[variant] = {
+                "status": "new",
+                "delta": None,
+                "new_auc": new_metrics[variant]["auc"],
+                "ref_auc": None,
+            }
+            continue
+        if variant not in new_metrics:
+            diagnosis[variant] = {
+                "status": "removed",
+                "delta": None,
+                "new_auc": None,
+                "ref_auc": reference_metrics[variant]["auc"],
+            }
+            continue
+
+        ref_auc = reference_metrics[variant]["auc"]
+        new_auc = new_metrics[variant]["auc"]
+        delta = new_auc - ref_auc
+
+        # Check for data drift: if reference also degrades on new data
+        if reference_rerun and variant in reference_rerun:
+            rerun_auc = reference_rerun[variant]["auc"]
+            rerun_delta = rerun_auc - ref_auc
+            if rerun_delta < -noise_margin and delta < -noise_margin:
+                diagnosis[variant] = {
+                    "status": "data_drift",
+                    "delta": delta,
+                    "new_auc": new_auc,
+                    "ref_auc": ref_auc,
+                    "rerun_auc": rerun_auc,
+                }
+                continue
+
+        if abs(delta) <= noise_margin:
+            status = "stable"
+        elif delta > 0:
+            status = "improved"
+        else:
+            status = "regressed"
+
+        diagnosis[variant] = {"status": status, "delta": delta, "new_auc": new_auc, "ref_auc": ref_auc}
+
+    return diagnosis
+
+
+# ---------------------------------------------------------------------------
+# Simulation prompt + parser
+# ---------------------------------------------------------------------------
+
+
+def build_simulation_prompt(scenario: str, principle: str | None = None) -> str:
+    """Build a bug-catching simulation prompt.
+
+    With principle: LLM has the rule and should catch the bug.
+    Without principle (control): LLM has no rule.
+    Lift = with_catch_rate - without_catch_rate.
+    """
+    rule_section = ""
+    if principle:
+        rule_section = "\n## CODING RULE (always check for this)\n" f"{principle}\n\n"
+    return (
+        "You are reviewing code for a potential bug.\n"
+        f"{rule_section}"
+        f"## SCENARIO\n{scenario}\n\n"
+        "Does this code have a bug related to resource management, "
+        "error handling, or structural correctness?\n\n"
+        "Answer: BUG FOUND: [description] or NO BUG FOUND"
+    )
+
+
+def parse_simulation_result(response: str | None) -> bool:
+    """Parse whether the LLM found a bug in the simulation."""
+    if not response:
+        return False
+    text = response.strip().upper()
+    return "BUG FOUND" in text and "NO BUG FOUND" not in text
+
+
+# ---------------------------------------------------------------------------
+# Simulation lift metric
+# ---------------------------------------------------------------------------
+
+
+def compute_simulation_lift(
+    simulation_results: list[dict[str, Any]],
+) -> dict[str, dict[str, float]]:
+    """Compute lift metric: with_principle catch rate minus without_principle catch rate.
+
+    Lift > 0 means the principle actually helps the LLM catch bugs it would miss.
+    Lift ~ 0 means the principle adds no value. Lift < 0 means it hurts.
+    """
+    from collections import defaultdict
+
+    by_variant: dict[str, list[dict]] = defaultdict(list)
+    for r in simulation_results:
+        by_variant[r["variant"]].append(r)
+
+    lift_metrics: dict[str, dict[str, float]] = {}
+    for variant_id, results in sorted(by_variant.items()):
+        n = len(results)
+        with_catches = sum(1 for r in results if r["with_principle"])
+        without_catches = sum(1 for r in results if r["without_principle"])
+        with_rate = with_catches / n if n else 0.0
+        without_rate = without_catches / n if n else 0.0
+        lift_metrics[variant_id] = {
+            "lift": with_rate - without_rate,
+            "with_catch_rate": with_rate,
+            "without_catch_rate": without_rate,
+            "trial_count": n,
+        }
+
+    return lift_metrics

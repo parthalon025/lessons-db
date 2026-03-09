@@ -19,6 +19,7 @@ from lessons_db.eval import (
     build_judge_prompt,
     build_mechanism_extraction_prompt,
     build_paired_judge_prompt,
+    build_simulation_prompt,
     call_judge,
     call_ollama,
     compute_bayesian_metrics,
@@ -27,12 +28,15 @@ from lessons_db.eval import (
     compute_metrics,
     compute_paired_signal,
     compute_scope_signal,
+    compute_simulation_lift,
     compute_tournament_metrics,
     compute_transfer_posterior,
+    diagnose_vs_reference,
     parse_binary_judge,
     parse_judge_scores,
     parse_mechanism_triplet,
     parse_paired_judge,
+    parse_simulation_result,
     render_report,
     run_eval_generate,
     run_eval_judge,
@@ -2357,3 +2361,137 @@ class TestComputeBayesianMetrics:
         ]
         metrics = compute_bayesian_metrics(scored)
         assert metrics["A"]["auc"] == 0.5  # degenerate case
+
+
+# ---------------------------------------------------------------------------
+# Reference comparison (Task 12)
+# ---------------------------------------------------------------------------
+
+
+class TestReferenceComparison:
+    def test_diagnoses_improvement(self):
+        reference_metrics = {"A": {"auc": 0.70}}
+        new_metrics = {"A": {"auc": 0.85}}
+        diagnosis = diagnose_vs_reference(reference_metrics, new_metrics)
+        assert diagnosis["A"]["status"] == "improved"
+        assert diagnosis["A"]["delta"] > 0
+
+    def test_diagnoses_regression(self):
+        reference_metrics = {"A": {"auc": 0.80}}
+        new_metrics = {"A": {"auc": 0.60}}
+        diagnosis = diagnose_vs_reference(reference_metrics, new_metrics)
+        assert diagnosis["A"]["status"] == "regressed"
+        assert diagnosis["A"]["delta"] < 0
+
+    def test_diagnoses_stable(self):
+        """Within noise margin -> stable."""
+        reference_metrics = {"A": {"auc": 0.80}}
+        new_metrics = {"A": {"auc": 0.79}}
+        diagnosis = diagnose_vs_reference(reference_metrics, new_metrics)
+        assert diagnosis["A"]["status"] == "stable"
+
+    def test_diagnoses_drift(self):
+        """Both degrade -> data drift, not mechanism failure."""
+        reference_metrics = {"A": {"auc": 0.80}}
+        new_metrics = {"A": {"auc": 0.60}}
+        reference_rerun = {"A": {"auc": 0.62}}
+        diagnosis = diagnose_vs_reference(reference_metrics, new_metrics, reference_rerun=reference_rerun)
+        assert diagnosis["A"]["status"] == "data_drift"
+
+    def test_new_variant_no_reference(self):
+        """Variant with no reference -> 'new'."""
+        reference_metrics = {"A": {"auc": 0.70}}
+        new_metrics = {"A": {"auc": 0.85}, "B": {"auc": 0.75}}
+        diagnosis = diagnose_vs_reference(reference_metrics, new_metrics)
+        assert diagnosis["B"]["status"] == "new"
+
+
+# ---------------------------------------------------------------------------
+# Simulation prompt + parser (Task 13)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSimulationPrompt:
+    def test_with_principle_contains_rule(self):
+        scenario = "Writing a database query handler that catches exceptions"
+        principle = "Uncaught exception in cleanup path causes resource leak"
+        prompt = build_simulation_prompt(scenario, principle)
+        assert "CODING RULE" in prompt
+        assert principle in prompt
+        assert scenario in prompt
+
+    def test_without_principle_has_no_rule(self):
+        scenario = "Writing a database query handler"
+        prompt = build_simulation_prompt(scenario, principle=None)
+        assert "CODING RULE" not in prompt
+        assert scenario in prompt
+
+    def test_both_prompts_ask_about_bugs(self):
+        with_p = build_simulation_prompt("scenario", "principle")
+        without_p = build_simulation_prompt("scenario", None)
+        assert "BUG" in with_p.upper()
+        assert "BUG" in without_p.upper()
+
+
+class TestParseSimulationResult:
+    def test_bug_found(self):
+        assert parse_simulation_result("BUG FOUND: resource leak in finally") is True
+
+    def test_no_bug_found(self):
+        assert parse_simulation_result("NO BUG FOUND") is False
+
+    def test_empty_response(self):
+        assert parse_simulation_result("") is False
+        assert parse_simulation_result(None) is False
+
+    def test_case_insensitive(self):
+        assert parse_simulation_result("bug found: something") is True
+
+    def test_no_bug_takes_precedence(self):
+        """'NO BUG FOUND' should be False even though 'BUG FOUND' is a substring."""
+        assert parse_simulation_result("After review: NO BUG FOUND in this code") is False
+
+
+# ---------------------------------------------------------------------------
+# Simulation lift metric (Task 14)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeSimulationLift:
+    def test_perfect_lift(self):
+        """Principle catches all bugs, control catches none -> lift 1.0."""
+        results = [
+            {"variant": "A", "principle": "p1", "with_principle": True, "without_principle": False},
+            {"variant": "A", "principle": "p2", "with_principle": True, "without_principle": False},
+        ]
+        lift = compute_simulation_lift(results)
+        assert lift["A"]["lift"] == 1.0
+        assert lift["A"]["with_catch_rate"] == 1.0
+        assert lift["A"]["without_catch_rate"] == 0.0
+
+    def test_no_lift(self):
+        """Both catch (or both miss) -> lift 0.0."""
+        results = [
+            {"variant": "A", "principle": "p1", "with_principle": True, "without_principle": True},
+        ]
+        lift = compute_simulation_lift(results)
+        assert lift["A"]["lift"] == 0.0
+
+    def test_negative_lift(self):
+        """Control catches more than with-principle -> negative lift."""
+        results = [
+            {"variant": "A", "principle": "p1", "with_principle": False, "without_principle": True},
+        ]
+        lift = compute_simulation_lift(results)
+        assert lift["A"]["lift"] < 0
+
+    def test_multi_variant(self):
+        results = [
+            {"variant": "A", "principle": "p1", "with_principle": True, "without_principle": False},
+            {"variant": "B", "principle": "p1", "with_principle": True, "without_principle": True},
+        ]
+        lift = compute_simulation_lift(results)
+        assert lift["A"]["lift"] > lift["B"]["lift"]
+
+    def test_empty(self):
+        assert compute_simulation_lift([]) == {}

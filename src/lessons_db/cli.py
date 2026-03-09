@@ -2962,8 +2962,11 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
     help="Number of paired comparisons per principle.",
 )
 @click.option("--priority", type=int, default=None, help="Queue priority (1=highest).")
+@click.option(
+    "--reference", type=click.Path(exists=True), default=None, help="Path to reference metrics JSON for comparison."
+)
 @click.pass_context
-def meta_eval_tournament(ctx, results_file, output, judge_model, group_by, pairs_per_principle, priority):
+def meta_eval_tournament(ctx, results_file, output, judge_model, group_by, pairs_per_principle, priority, reference):
     """Run paired tournament evaluation on generated principles.
 
     Takes a results JSON from eval-generate and runs paired A/B comparisons
@@ -3049,6 +3052,18 @@ def meta_eval_tournament(ctx, results_file, output, judge_model, group_by, pairs
         winner = max(metrics.items(), key=lambda x: x[1]["mean_win_rate"])
         click.echo(f"\nWinner: {winner[0]} (win_rate={winner[1]['mean_win_rate']:.3f})")
 
+    # Reference comparison
+    if reference:
+        import json
+
+        from lessons_db.eval import diagnose_vs_reference
+
+        ref_data = json.loads(Path(reference).read_text())
+        diagnosis = diagnose_vs_reference(ref_data, metrics)
+        click.echo("\nReference Comparison:")
+        for variant, diag in sorted(diagnosis.items()):
+            click.echo(f"  {variant}: {diag['status']} (Δ={diag.get('delta', 'N/A')})")
+
 
 @meta.command("eval-confusion")
 @click.argument("scored_path", type=click.Path(exists=True))
@@ -3068,6 +3083,108 @@ def eval_confusion(scored_path: str, output: str | None) -> None:
         click.echo(f"Confusion matrix written to {output}")
     else:
         click.echo(report)
+
+
+@meta.command("eval-simulate")
+@click.argument("results_file", type=click.Path(exists=True))
+@click.option("--output", type=click.Path(), default=None, help="Output path for simulation results JSON.")
+@click.option("--trials", type=int, default=3, help="Simulation trials per principle (default: 3).")
+@click.option("--model", default=None, help="Model for simulation (default: judge model).")
+@click.option("--group-by", type=click.Choice(["cluster_seed", "category"]), default="category")
+@click.option("--priority", type=int, default=None)
+@click.pass_context
+def meta_eval_simulate(ctx, results_file, output, trials, model, group_by, priority):
+    """Run simulation validation -- test whether principles catch bugs."""
+    import json
+
+    from lessons_db.config import OLLAMA_QUEUE_URL
+    from lessons_db.eval import (
+        DEFAULT_BINARY_JUDGE_MODEL,
+        build_simulation_prompt,
+        call_judge,
+        compute_simulation_lift,
+        parse_simulation_result,
+    )
+
+    results_path = Path(results_file)
+    data = json.loads(results_path.read_text())
+    results_list = data.get("results", [])
+
+    sim_model = model or DEFAULT_BINARY_JUDGE_MODEL
+
+    click.echo(f"Simulation: {results_path.name}")
+    click.echo(f"Model: {sim_model} | Trials: {trials}")
+
+    _warm_model(OLLAMA_QUEUE_URL, sim_model)
+
+    simulation_results = []
+    for entry in results_list:
+        principle = entry.get("principle")
+        if not principle or entry.get("error"):
+            continue
+
+        # Use the source lesson's description as the scenario
+        scenario = entry.get("description", "") or entry.get("one_liner", "") or "Code review scenario"
+
+        for trial in range(trials):
+            # With principle
+            prompt_with = build_simulation_prompt(scenario, principle)
+            resp_with = call_judge(
+                prompt=prompt_with,
+                backend="ollama",
+                ollama_url=OLLAMA_QUEUE_URL,
+                ollama_model=sim_model,
+                priority=priority,
+            )
+            caught_with = parse_simulation_result(resp_with)
+
+            # Without principle (control)
+            prompt_without = build_simulation_prompt(scenario, principle=None)
+            resp_without = call_judge(
+                prompt=prompt_without,
+                backend="ollama",
+                ollama_url=OLLAMA_QUEUE_URL,
+                ollama_model=sim_model,
+                priority=priority,
+            )
+            caught_without = parse_simulation_result(resp_without)
+
+            simulation_results.append(
+                {
+                    "variant": entry["variant"],
+                    "lesson_id": entry["lesson_id"],
+                    "principle": principle[:200],
+                    "trial": trial,
+                    "with_principle": caught_with,
+                    "without_principle": caught_without,
+                }
+            )
+
+        click.echo(f"  [{entry['variant']}] lesson #{entry['lesson_id']}: {trials} trials done")
+
+    lift = compute_simulation_lift(simulation_results)
+
+    click.echo("\nSimulation Lift Results:")
+    for variant_id, m in sorted(lift.items()):
+        click.echo(
+            f"  {variant_id}: lift={m['lift']:.3f} "
+            f"(with={m['with_catch_rate']:.2f}, without={m['without_catch_rate']:.2f}, "
+            f"n={m['trial_count']})"
+        )
+
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(
+                {
+                    "simulation_results": simulation_results,
+                    "lift": lift,
+                },
+                indent=2,
+            )
+        )
+        click.echo(f"\nResults saved to {out_path}")
 
 
 def find_meta_lesson_clusters(
