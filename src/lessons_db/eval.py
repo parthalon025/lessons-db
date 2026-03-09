@@ -20,6 +20,10 @@ _RETRYABLE_CODES = {502, 503}
 _MAX_RETRIES = 2
 _RETRY_BASE_DELAY = 2.0
 
+# Valid group_by values for eval ground truth grouping.
+# Used in SQL via f-string interpolation — validated before any query.
+VALID_GROUP_BY = ("category", "cluster_seed")
+
 
 # ---------------------------------------------------------------------------
 # Variant configurations (A-E)
@@ -110,9 +114,8 @@ def select_source_lessons(conn: sqlite3.Connection, per_cluster: int = 4, group_
     Returns a flat list of lesson dicts with keys:
         id, title, one_liner, description, cluster_seed, category
     """
-    _valid_group_by = ("category", "cluster_seed")
-    if group_by not in _valid_group_by:
-        raise ValueError(f"group_by must be one of {_valid_group_by!r}, got {group_by!r}")
+    if group_by not in VALID_GROUP_BY:
+        raise ValueError(f"group_by must be one of {VALID_GROUP_BY!r}, got {group_by!r}")
 
     # Find qualifying groups (>= 3 single-loop lessons)
     cluster_rows = conn.execute(
@@ -203,9 +206,8 @@ def select_transfer_targets(
     - diff_cluster: lessons from other groups, selected randomly.
     - All single-loop only.
     """
-    _valid_group_by = ("category", "cluster_seed")
-    if group_by not in _valid_group_by:
-        raise ValueError(f"group_by must be one of {_valid_group_by!r}, got {group_by!r}")
+    if group_by not in VALID_GROUP_BY:
+        raise ValueError(f"group_by must be one of {VALID_GROUP_BY!r}, got {group_by!r}")
 
     # Get source lesson's category for preference sorting
     source_row = conn.execute("SELECT category FROM lessons WHERE id = ?", (source_id,)).fetchone()
@@ -574,9 +576,8 @@ def _load_siblings_by_cluster(
     group_by: str = "category",
 ) -> dict[str, list[dict[str, Any]]]:
     """Pre-fetch sibling lessons grouped by *group_by* column for chunked variants."""
-    _valid_group_by = ("category", "cluster_seed")
-    if group_by not in _valid_group_by:
-        raise ValueError(f"group_by must be one of {_valid_group_by!r}, got {group_by!r}")
+    if group_by not in VALID_GROUP_BY:
+        raise ValueError(f"group_by must be one of {VALID_GROUP_BY!r}, got {group_by!r}")
 
     siblings_by_group: dict[str, list[dict[str, Any]]] = {}
     for src in sources:
@@ -667,6 +668,7 @@ def _save_results(
     per_cluster: int,
     source_ids: list[int],
     results: list[dict[str, Any]],
+    group_by: str = "category",
 ) -> None:
     """Write results JSON to disk (called incrementally after each generation)."""
     output = {
@@ -674,6 +676,7 @@ def _save_results(
             "generated_at": datetime.now(UTC).isoformat(),
             "variants": variants,
             "per_cluster": per_cluster,
+            "group_by": group_by,
             "source_lessons": source_ids,
         },
         "results": results,
@@ -741,15 +744,16 @@ def run_eval_generate(
                 progress_callback(variant_id, lesson["id"], entry["principle"] is not None)
 
             # Incremental save after each generation to survive crashes
-            _save_results(output_path, variants, per_cluster, source_ids, results)
+            _save_results(output_path, variants, per_cluster, source_ids, results, group_by=group_by)
 
     # Final save with updated timestamp
-    _save_results(output_path, variants, per_cluster, source_ids, results)
+    _save_results(output_path, variants, per_cluster, source_ids, results, group_by=group_by)
     return {
         "meta": {
             "generated_at": datetime.now(UTC).isoformat(),
             "variants": variants,
             "per_cluster": per_cluster,
+            "group_by": group_by,
             "source_lessons": source_ids,
         },
         "results": results,
