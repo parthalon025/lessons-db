@@ -2649,3 +2649,212 @@ class TestRenderV2Report:
         """Signal diagnostics not rendered when no data."""
         report = render_v2_report()
         assert "## Signal Diagnostics" not in report
+
+
+# ---------------------------------------------------------------------------
+# TestEvalV2EndToEnd — helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_results_json(conn, lesson_ids, variant, tmp_path, filename="results.json"):
+    """Build a synthetic eval-generate results JSON from lesson IDs."""
+    entries = []
+    for lid in lesson_ids:
+        row = conn.execute(
+            "SELECT id, title, one_liner, description, cluster_seed, category " "FROM lessons WHERE id = ?",
+            (lid,),
+        ).fetchone()
+        entries.append(
+            {
+                "variant": variant,
+                "lesson_id": row["id"],
+                "title": row["title"],
+                "one_liner": row["one_liner"],
+                "description": row["description"],
+                "cluster_seed": row["cluster_seed"],
+                "category": row["category"],
+                "principle": f"{variant} principle for lesson {row['id']}",
+                "error": None,
+            }
+        )
+    return entries
+
+
+def _tournament_to_scored_pairs(
+    tournament_results,
+    principle_scopes=None,
+    target_scopes=None,
+):
+    """Convert tournament results into scored pairs via Bayesian signal fusion."""
+    if principle_scopes is None:
+        principle_scopes = {"python"}
+    if target_scopes is None:
+        target_scopes = {"python", "testing"}
+
+    scored_pairs = []
+    for r in tournament_results:
+        winner = "same" if r["win_rate"] > 0.5 else ("diff" if r["win_rate"] < 0.5 else "neither")
+        paired = compute_paired_signal(winner)
+        embedding = compute_embedding_signal(0.6)
+        scope = compute_scope_signal(principle_scopes, target_scopes)
+        mechanism = compute_mechanism_signal(None)
+        posterior = compute_transfer_posterior(paired, embedding, scope, mechanism)
+        scored_pairs.append(
+            {
+                "variant": r["variant"],
+                "is_same_group": r["win_rate"] > 0.5,
+                "posterior": posterior,
+                "principle": r["principle"],
+                "target_title": f"target for {r['lesson_id']}",
+                "paired_signal": paired,
+                "embedding_signal": embedding,
+                "scope_signal": scope,
+                "mechanism_signal": mechanism,
+            }
+        )
+    return scored_pairs
+
+
+def _seed_and_categorize(db_path):
+    """Init DB, seed clusters, and assign distinct categories for A and B."""
+    conn = init_db(db_path)
+    ids_by_cluster = _seed_clusters(conn)
+    for lid in ids_by_cluster["A"]:
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE id = ?", (lid,))
+    for lid in ids_by_cluster["B"]:
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE id = ?", (lid,))
+    conn.commit()
+    return conn, ids_by_cluster
+
+
+# ---------------------------------------------------------------------------
+# TestEvalV2EndToEnd
+# ---------------------------------------------------------------------------
+
+
+class TestEvalV2EndToEnd:
+    """End-to-end test: full Bayesian pipeline from seed to report."""
+
+    def test_full_bayesian_pipeline(self, db_path, tmp_path):
+        """Generate → Tournament → Bayesian fusion → Report.
+
+        Validates the complete data-flow through all 7 V2 functions using
+        mocked LLM calls.  Seeds two categories with enough lessons for the
+        tournament, then traces data from results JSON to markdown report.
+        """
+        conn, ids_by_cluster = _seed_and_categorize(db_path)
+
+        # Step 1: Build synthetic results JSON (2 lessons per category)
+        source_ids = ids_by_cluster["A"][:2] + ids_by_cluster["B"][:2]
+        entries = _build_results_json(conn, source_ids, "A", tmp_path)
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps({"meta": {"group_by": "category"}, "results": entries}))
+
+        # Step 2: Tournament (mock judge → always picks A)
+        with patch("lessons_db.eval.call_judge", side_effect=lambda prompt, **kw: "A"):
+            tournament_results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        assert len(tournament_results) > 0
+        for r in tournament_results:
+            assert 0.0 <= r["win_rate"] <= 1.0
+            assert r["comparisons"] > 0
+
+        # Step 3: Tournament metrics
+        tournament_metrics = compute_tournament_metrics(tournament_results)
+        assert tournament_metrics["A"]["principle_count"] == len(tournament_results)
+
+        # Step 4–5: Bayesian signals → fusion → metrics
+        scored_pairs = _tournament_to_scored_pairs(tournament_results)
+        for sp in scored_pairs:
+            assert 0.0 <= sp["posterior"] <= 1.0
+        bayesian_metrics = compute_bayesian_metrics(scored_pairs)
+        assert 0.0 <= bayesian_metrics["A"]["auc"] <= 1.0
+
+        # Step 6: Reference comparison
+        diagnosis = diagnose_vs_reference({"A": {"auc": 0.50}}, bayesian_metrics)
+        assert diagnosis["A"]["status"] in ("improved", "regressed", "stable", "new")
+
+        # Step 7: Render report
+        report = render_v2_report(
+            tournament_metrics=tournament_metrics,
+            bayesian_metrics=bayesian_metrics,
+            reference_diagnosis=diagnosis,
+            scored_pairs=scored_pairs,
+            signal_diagnostics=scored_pairs,
+        )
+        for section in (
+            "# Eval V2 Report",
+            "## Tournament Results",
+            "## Bayesian Fusion",
+            "## Reference Comparison",
+            "## Signal Diagnostics",
+        ):
+            assert section in report
+        assert "AUC" in report
+
+        conn.close()
+
+    def test_pipeline_with_simulation_lift(self, db_path, tmp_path):
+        """Simulation lift integrates with the rest of the pipeline."""
+        sim_results = [
+            {"variant": "A", "principle": "p1", "with_principle": True, "without_principle": False},
+            {"variant": "A", "principle": "p2", "with_principle": True, "without_principle": True},
+            {"variant": "A", "principle": "p3", "with_principle": False, "without_principle": False},
+        ]
+        lift = compute_simulation_lift(sim_results)
+        assert abs(lift["A"]["lift"] - (2 / 3 - 1 / 3)) < 0.01
+
+        report = render_v2_report(simulation_lift=lift)
+        assert "## Simulation Lift" in report
+        assert "+0.333" in report
+
+    def test_pipeline_multiple_variants(self, db_path, tmp_path):
+        """Two variants flow through the full pipeline producing separate metrics."""
+        conn, ids_by_cluster = _seed_and_categorize(db_path)
+
+        # Build results for two variants
+        entries_a = _build_results_json(conn, ids_by_cluster["A"][:2], "A", tmp_path)
+        entries_b = _build_results_json(conn, ids_by_cluster["B"][:2], "B", tmp_path)
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps({"meta": {"group_by": "category"}, "results": entries_a + entries_b}))
+
+        with patch("lessons_db.eval.call_judge", side_effect=lambda prompt, **kw: "A"):
+            tournament_results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        tournament_metrics = compute_tournament_metrics(tournament_results)
+        assert "A" in tournament_metrics
+        assert "B" in tournament_metrics
+
+        scored_pairs = _tournament_to_scored_pairs(
+            tournament_results,
+            principle_scopes={"python"},
+            target_scopes={"python"},
+        )
+        bayesian_metrics = compute_bayesian_metrics(scored_pairs)
+        assert "A" in bayesian_metrics and "B" in bayesian_metrics
+
+        # Reference with only A → B is "new"
+        diagnosis = diagnose_vs_reference({"A": {"auc": 0.50}}, bayesian_metrics)
+        assert diagnosis["B"]["status"] == "new"
+
+        report = render_v2_report(
+            tournament_metrics=tournament_metrics,
+            bayesian_metrics=bayesian_metrics,
+            reference_diagnosis=diagnosis,
+            signal_diagnostics=scored_pairs,
+        )
+        assert "# Eval V2 Report" in report
+        assert "| A |" in report
+        assert "| B |" in report
+
+        conn.close()
