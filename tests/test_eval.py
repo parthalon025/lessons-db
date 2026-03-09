@@ -12,6 +12,7 @@ from lessons_db.eval import (
     DEFAULT_JUDGE_MODEL,
     VARIANT_CONFIGS,
     _clean_principle,
+    _generate_for_lesson,
     _select_diverse,
     build_binary_judge_prompt,
     build_generation_prompt,
@@ -112,8 +113,8 @@ class TestEvalConfig:
 
 
 class TestVariantConfigs:
-    def test_has_eight_variants(self):
-        assert set(VARIANT_CONFIGS.keys()) == {"A", "B", "C", "D", "E", "F", "G", "H"}
+    def test_has_nine_variants(self):
+        assert set(VARIANT_CONFIGS.keys()) == {"A", "B", "C", "D", "E", "F", "G", "H", "M"}
 
     def test_each_variant_has_required_fields(self):
         required = {"prompt_id", "model", "temperature", "num_ctx", "chunked"}
@@ -2033,3 +2034,138 @@ class TestParseMechanismTriplet:
         result = parse_mechanism_triplet(response)
         assert result is not None
         assert "lower case trigger" in result["trigger"]
+
+
+# ---------------------------------------------------------------------------
+# TestMechanismVariant (Task 8)
+# ---------------------------------------------------------------------------
+
+
+class TestMechanismVariant:
+    def test_variant_m_in_configs(self):
+        assert "M" in VARIANT_CONFIGS
+        assert VARIANT_CONFIGS["M"]["mechanism"] is True
+
+    def test_mechanism_generation(self, db_path):
+        """Mechanism variant should produce TRIGGER|TARGET|FIX formatted principles."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        lesson = {
+            "id": ids["A"][0],
+            "title": "Test",
+            "one_liner": "Test",
+            "description": "Test",
+            "cluster_seed": "A",
+            "category": "integration",
+        }
+        siblings = {
+            "integration": [
+                {
+                    "id": ids["A"][0],
+                    "title": "T0",
+                    "one_liner": "O0",
+                    "description": "D0",
+                    "cluster_seed": "A",
+                    "category": "integration",
+                },
+                {
+                    "id": ids["A"][1],
+                    "title": "T1",
+                    "one_liner": "O1",
+                    "description": "D1",
+                    "cluster_seed": "A",
+                    "category": "integration",
+                },
+            ]
+        }
+
+        config = VARIANT_CONFIGS["M"]
+
+        with patch(
+            "lessons_db.eval.call_ollama",
+            return_value="TRIGGER: Missing cleanup\nTARGET: DB connection\nFIX: Add finally block",
+        ):
+            result = _generate_for_lesson("M", config, lesson, "http://fake:7683", siblings, group_by="category")
+
+        assert result["principle"] is not None
+        assert "TRIGGER:" in result["principle"]
+        assert "TARGET:" in result["principle"]
+        assert "FIX:" in result["principle"]
+        conn.close()
+
+    def test_mechanism_no_siblings(self, db_path):
+        """Mechanism variant should return error when no siblings available."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        lesson = {
+            "id": ids["A"][0],
+            "title": "Test",
+            "one_liner": "Test",
+            "description": "Test",
+            "cluster_seed": "A",
+            "category": "integration",
+        }
+        # Only the lesson itself — no other siblings
+        siblings = {
+            "integration": [
+                {
+                    "id": ids["A"][0],
+                    "title": "T0",
+                    "one_liner": "O0",
+                    "description": "D0",
+                    "cluster_seed": "A",
+                    "category": "integration",
+                },
+            ]
+        }
+
+        config = VARIANT_CONFIGS["M"]
+        result = _generate_for_lesson("M", config, lesson, "http://fake:7683", siblings, group_by="category")
+        assert result["principle"] is None
+        assert result["error"] == "no_siblings_for_mechanism"
+        conn.close()
+
+    def test_mechanism_extraction_failed(self, db_path):
+        """Mechanism variant should return error when extraction fails."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+
+        lesson = {
+            "id": ids["A"][0],
+            "title": "Test",
+            "one_liner": "Test",
+            "description": "Test",
+            "cluster_seed": "A",
+            "category": "integration",
+        }
+        siblings = {
+            "integration": [
+                {
+                    "id": ids["A"][0],
+                    "title": "T0",
+                    "one_liner": "O0",
+                    "description": "D0",
+                    "cluster_seed": "A",
+                    "category": "integration",
+                },
+                {
+                    "id": ids["A"][1],
+                    "title": "T1",
+                    "one_liner": "O1",
+                    "description": "D1",
+                    "cluster_seed": "A",
+                    "category": "integration",
+                },
+            ]
+        }
+
+        config = VARIANT_CONFIGS["M"]
+
+        with patch("lessons_db.eval.call_ollama", return_value="NONE"):
+            result = _generate_for_lesson("M", config, lesson, "http://fake:7683", siblings, group_by="category")
+
+        assert result["principle"] is None
+        assert result["error"] == "mechanism_extraction_failed"
+        conn.close()

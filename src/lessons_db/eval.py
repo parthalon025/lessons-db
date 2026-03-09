@@ -92,6 +92,14 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
         "contrastive": True,
         "multi_stage": True,
     },
+    "M": {
+        "prompt_id": "mechanism",
+        "model": "qwen3:8b",
+        "temperature": 0.6,
+        "num_ctx": 8192,
+        "chunked": True,
+        "mechanism": True,
+    },
 }
 
 
@@ -594,6 +602,76 @@ def _load_siblings_by_cluster(
     return siblings_by_group
 
 
+def _generate_mechanism(
+    variant_id: str,
+    config: dict[str, Any],
+    lesson: dict[str, Any],
+    queue_url: str,
+    siblings_by_cluster: dict[str, list[dict[str, Any]]],
+    group_value: str,
+    priority: int | None = None,
+) -> dict[str, Any]:
+    """Generate a principle via mechanism extraction from sibling lesson pairs."""
+    lesson_id = lesson["id"]
+    model = config["model"]
+    settings = {"temperature": config["temperature"], "num_ctx": config["num_ctx"]}
+
+    base_entry = {
+        "variant": variant_id,
+        "lesson_id": lesson_id,
+        "lesson_title": lesson.get("title", ""),
+        "cluster_seed": lesson.get("cluster_seed", ""),
+        "category": lesson.get("category", ""),
+        "model": model,
+        "prompt_id": config["prompt_id"],
+        "settings": settings,
+    }
+
+    all_sibs = siblings_by_cluster.get(group_value, [])
+    sibs = [s for s in all_sibs if s["id"] != lesson_id][:2]
+    if not sibs:
+        return {
+            **base_entry,
+            "principle": None,
+            "generation_time_s": 0.0,
+            "error": "no_siblings_for_mechanism",
+        }
+
+    t0 = time.monotonic()
+    triplets = []
+    for sib in sibs:
+        mech_prompt = build_mechanism_extraction_prompt(lesson, sib)
+        response = call_ollama(
+            queue_url,
+            model,
+            mech_prompt,
+            settings,
+            priority=priority,
+            source="eval-generate-mechanism",
+        )
+        triplet = parse_mechanism_triplet(response)
+        if triplet:
+            triplets.append(triplet)
+
+    elapsed = round(time.monotonic() - t0, 1)
+    if not triplets:
+        return {
+            **base_entry,
+            "principle": None,
+            "generation_time_s": elapsed,
+            "error": "mechanism_extraction_failed",
+        }
+
+    best = triplets[0]
+    principle = f"TRIGGER: {best['trigger']} | TARGET: {best['target']} | FIX: {best['fix']}"
+    return {
+        **base_entry,
+        "principle": principle,
+        "generation_time_s": elapsed,
+        "error": None,
+    }
+
+
 def _generate_for_lesson(
     variant_id: str,
     config: dict[str, Any],
@@ -611,6 +689,18 @@ def _generate_for_lesson(
     siblings = None
     diff_cluster_items = None
     group_value = lesson.get(group_by, "")
+
+    # Mechanism extraction: extract shared failure mechanism triplet from sibling pairs
+    if config.get("mechanism"):
+        return _generate_mechanism(
+            variant_id,
+            config,
+            lesson,
+            queue_url,
+            siblings_by_cluster,
+            group_value,
+            priority,
+        )
 
     if config["chunked"] or config.get("contrastive"):
         all_sibs = siblings_by_cluster.get(group_value, [])
