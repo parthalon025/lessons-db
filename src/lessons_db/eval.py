@@ -1113,6 +1113,112 @@ def parse_paired_judge(response: str) -> str | None:
     return None
 
 
+def run_paired_tournament(
+    results_path: Path,
+    conn: sqlite3.Connection,
+    backend: str = "ollama",
+    ollama_url: str = "",
+    ollama_model: str = "",
+    group_by: str = "category",
+    pairs_per_principle: int = 4,
+    progress_callback: Any = None,
+    priority: int | None = None,
+) -> list[dict[str, Any]]:
+    """Run paired tournament: for each principle, compare same-group vs diff-group targets.
+
+    For each generated principle:
+    1. Select same-group and diff-group transfer targets
+    2. Create paired comparisons (one same + one diff per pair)
+    3. Call judge with paired prompt, randomizing A/B position
+    4. Track win rate (did judge pick the same-group target?)
+
+    Returns list of dicts with keys:
+        variant, lesson_id, principle, win_rate, comparisons, wins, losses, neithers
+    """
+    data = _json.loads(results_path.read_text())
+    results = data.get("results", [])
+
+    tournament_results: list[dict[str, Any]] = []
+
+    for entry in results:
+        principle = entry.get("principle")
+        if not principle or entry.get("error"):
+            continue
+
+        variant = entry["variant"]
+        lesson_id = entry["lesson_id"]
+        group_value = entry.get(group_by, entry.get("cluster_seed", ""))
+
+        # Get transfer targets
+        targets = select_transfer_targets(
+            conn,
+            lesson_id,
+            group_value,
+            count_same=pairs_per_principle,
+            count_diff=pairs_per_principle,
+            group_by=group_by,
+        )
+
+        same_targets = targets["same_cluster"]
+        diff_targets = targets["diff_cluster"]
+
+        # Create paired comparisons (zip same + diff)
+        wins = 0
+        losses = 0
+        neithers = 0
+        comparisons = 0
+
+        for i in range(min(len(same_targets), len(diff_targets))):
+            same_t = same_targets[i]
+            diff_t = diff_targets[i]
+
+            prompt, same_is_a = build_paired_judge_prompt(principle, same_t, diff_t, position_seed=i)
+
+            response = call_judge(
+                prompt=prompt,
+                backend=backend,
+                ollama_url=ollama_url,
+                ollama_model=ollama_model,
+                priority=priority,
+            )
+
+            answer = parse_paired_judge(response)
+            comparisons += 1
+
+            if answer == "NEITHER":
+                neithers += 1
+            elif answer is not None:
+                # Did the judge pick the same-group target?
+                picked_same = (answer == "A" and same_is_a) or (answer == "B" and not same_is_a)
+                if picked_same:
+                    wins += 1
+                else:
+                    losses += 1
+            else:
+                # None response (parse failure) counts as neither
+                neithers += 1
+
+        win_rate = wins / comparisons if comparisons > 0 else 0.0
+
+        tournament_results.append(
+            {
+                "variant": variant,
+                "lesson_id": lesson_id,
+                "principle": principle[:200],
+                "win_rate": win_rate,
+                "comparisons": comparisons,
+                "wins": wins,
+                "losses": losses,
+                "neithers": neithers,
+            }
+        )
+
+        if progress_callback:
+            progress_callback(variant, lesson_id, win_rate, comparisons)
+
+    return tournament_results
+
+
 def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str]) -> None:
     """Render failure analysis for binary-judged pairs."""
     failures = [p for p in scored_pairs if p.get("is_same_cluster") and not p["scores"].get("matched")]

@@ -26,6 +26,7 @@ from lessons_db.eval import (
     render_report,
     run_eval_generate,
     run_eval_judge,
+    run_paired_tournament,
     select_source_lessons,
     select_transfer_targets,
 )
@@ -1586,3 +1587,303 @@ class TestParsePairedJudge:
 
     def test_parses_neither_in_sentence(self):
         assert parse_paired_judge("NEITHER target applies well here") == "NEITHER"
+
+
+# ---------------------------------------------------------------------------
+# TestRunPairedTournament
+# ---------------------------------------------------------------------------
+
+
+class TestRunPairedTournament:
+    def test_returns_win_rate(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        # Set distinct categories so group_by="category" has clear groups
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE cluster_seed = 'A'")
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE cluster_seed = 'B'")
+        conn.execute("UPDATE lessons SET category = 'spec-drift' WHERE cluster_seed = 'D'")
+        conn.execute("UPDATE lessons SET category = 'context' WHERE cluster_seed = 'E'")
+        conn.execute("UPDATE lessons SET category = 'planning' WHERE cluster_seed = 'F'")
+        conn.commit()
+
+        results_data = {
+            "meta": {"variants": ["A"], "group_by": "category"},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Always close resources in finally blocks.",
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+
+        # Mock: always pick A
+        with patch("lessons_db.eval.call_judge", return_value="A"):
+            tournament_results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        assert len(tournament_results) > 0
+        for r in tournament_results:
+            assert "win_rate" in r
+            assert "comparisons" in r
+            assert "wins" in r
+            assert "losses" in r
+            assert "neithers" in r
+            assert 0.0 <= r["win_rate"] <= 1.0
+            assert r["comparisons"] > 0
+            assert r["wins"] + r["losses"] + r["neithers"] == r["comparisons"]
+        conn.close()
+
+    def test_perfect_judge_gets_high_win_rate(self, db_path, tmp_path):
+        """If judge always picks the same-group target, win_rate should be 1.0."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE cluster_seed = 'A'")
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE cluster_seed = 'B'")
+        conn.execute("UPDATE lessons SET category = 'spec-drift' WHERE cluster_seed = 'D'")
+        conn.execute("UPDATE lessons SET category = 'context' WHERE cluster_seed = 'E'")
+        conn.execute("UPDATE lessons SET category = 'planning' WHERE cluster_seed = 'F'")
+        conn.commit()
+
+        results_data = {
+            "meta": {"variants": ["A"], "group_by": "category"},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Always close resources.",
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+
+        # Smart mock: track what build_paired_judge_prompt returns for same_is_a
+        # and always pick the same-group target
+        original_build = build_paired_judge_prompt
+        same_is_a_tracker = []
+
+        def tracking_build(principle, same_target, diff_target, position_seed=None):
+            prompt, same_is_a = original_build(principle, same_target, diff_target, position_seed)
+            same_is_a_tracker.append(same_is_a)
+            return prompt, same_is_a
+
+        def smart_judge(prompt, **kwargs):
+            # Return whichever letter corresponds to the same-group target
+            same_is_a = same_is_a_tracker[-1]  # most recent build call
+            return "A" if same_is_a else "B"
+
+        with (
+            patch("lessons_db.eval.build_paired_judge_prompt", side_effect=tracking_build),
+            patch("lessons_db.eval.call_judge", side_effect=smart_judge),
+        ):
+            results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        assert len(results) > 0
+        assert results[0]["comparisons"] > 0
+        assert results[0]["win_rate"] == 1.0
+        assert results[0]["losses"] == 0
+        assert results[0]["neithers"] == 0
+        conn.close()
+
+    def test_skips_errored_entries(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE cluster_seed = 'A'")
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE cluster_seed = 'B'")
+        conn.execute("UPDATE lessons SET category = 'spec-drift' WHERE cluster_seed = 'D'")
+        conn.execute("UPDATE lessons SET category = 'context' WHERE cluster_seed = 'E'")
+        conn.execute("UPDATE lessons SET category = 'planning' WHERE cluster_seed = 'F'")
+        conn.commit()
+
+        results_data = {
+            "meta": {"variants": ["A"], "group_by": "category"},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": None,
+                    "error": "gen_failed",
+                },
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][1],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Valid principle.",
+                    "error": None,
+                },
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+
+        with patch("lessons_db.eval.call_judge", return_value="A"):
+            results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        # Only the valid entry should produce results
+        assert len(results) == 1
+        conn.close()
+
+    def test_handles_neither_response(self, db_path, tmp_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE cluster_seed = 'A'")
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE cluster_seed = 'B'")
+        conn.execute("UPDATE lessons SET category = 'spec-drift' WHERE cluster_seed = 'D'")
+        conn.execute("UPDATE lessons SET category = 'context' WHERE cluster_seed = 'E'")
+        conn.execute("UPDATE lessons SET category = 'planning' WHERE cluster_seed = 'F'")
+        conn.commit()
+
+        results_data = {
+            "meta": {"variants": ["A"], "group_by": "category"},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Some principle.",
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+
+        with patch("lessons_db.eval.call_judge", return_value="NEITHER"):
+            results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        assert len(results) > 0
+        r = results[0]
+        assert r["wins"] == 0
+        assert r["losses"] == 0
+        assert r["neithers"] == r["comparisons"]
+        assert r["win_rate"] == 0.0
+        conn.close()
+
+    def test_handles_parse_failure(self, db_path, tmp_path):
+        """When the judge returns unparseable garbage, it counts as neither."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE cluster_seed = 'A'")
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE cluster_seed = 'B'")
+        conn.execute("UPDATE lessons SET category = 'spec-drift' WHERE cluster_seed = 'D'")
+        conn.execute("UPDATE lessons SET category = 'context' WHERE cluster_seed = 'E'")
+        conn.execute("UPDATE lessons SET category = 'planning' WHERE cluster_seed = 'F'")
+        conn.commit()
+
+        results_data = {
+            "meta": {"variants": ["A"], "group_by": "category"},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Some principle.",
+                    "error": None,
+                }
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+
+        # Return garbage the parser can't handle
+        with patch(
+            "lessons_db.eval.call_judge",
+            return_value="I think both are equally applicable and cannot decide",
+        ):
+            results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+            )
+
+        assert len(results) > 0
+        r = results[0]
+        assert r["wins"] == 0
+        assert r["losses"] == 0
+        # Parse failures count as neithers
+        assert r["neithers"] == r["comparisons"]
+        conn.close()
+
+    def test_progress_callback(self, db_path, tmp_path):
+        """Progress callback is called once per principle."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        conn.execute("UPDATE lessons SET category = 'error-handling' WHERE cluster_seed = 'A'")
+        conn.execute("UPDATE lessons SET category = 'testing' WHERE cluster_seed = 'B'")
+        conn.execute("UPDATE lessons SET category = 'spec-drift' WHERE cluster_seed = 'D'")
+        conn.execute("UPDATE lessons SET category = 'context' WHERE cluster_seed = 'E'")
+        conn.execute("UPDATE lessons SET category = 'planning' WHERE cluster_seed = 'F'")
+        conn.commit()
+
+        results_data = {
+            "meta": {"variants": ["A"], "group_by": "category"},
+            "results": [
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][0],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Principle one.",
+                    "error": None,
+                },
+                {
+                    "variant": "A",
+                    "lesson_id": ids["A"][1],
+                    "cluster_seed": "A",
+                    "category": "error-handling",
+                    "principle": "Principle two.",
+                    "error": None,
+                },
+            ],
+        }
+        results_path = tmp_path / "results.json"
+        results_path.write_text(json.dumps(results_data))
+
+        callback = MagicMock()
+
+        with patch("lessons_db.eval.call_judge", return_value="A"):
+            results = run_paired_tournament(
+                results_path=results_path,
+                conn=conn,
+                group_by="category",
+                pairs_per_principle=2,
+                progress_callback=callback,
+            )
+
+        assert len(results) == 2
+        assert callback.call_count == 2
+        conn.close()
