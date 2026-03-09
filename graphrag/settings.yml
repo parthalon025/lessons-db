@@ -1,0 +1,91 @@
+# graphrag v3 configuration for lessons-db corpus
+completion_models:
+  default_completion_model:
+    model_provider: openai
+    model: qwen3:8b
+    auth_method: api_key
+    api_key: ollama-local
+    api_base: http://localhost:7683/v1
+    call_args:
+      max_tokens: 2048
+      temperature: 0
+    retry:
+      type: exponential_backoff
+      max_retries: 3
+      backoff_multiplier: 2
+
+embedding_models:
+  default_embedding_model:
+    model_provider: openai
+    model: nomic-embed-text
+    auth_method: api_key
+    api_key: ollama-local
+    api_base: http://localhost:7683/v1
+
+concurrent_requests: 1
+async_mode: threaded
+
+input:
+  type: text
+  file_pattern: ".*\\.md$"
+  encoding: utf-8
+
+input_storage:
+  type: file
+  base_dir: "/tmp/lessons-export"
+
+output_storage:
+  type: file
+  base_dir: "${HOME}/.local/share/lessons-db/.graphrag/output"
+
+cache:
+  type: json
+  storage:
+    type: file
+    base_dir: "${HOME}/.local/share/lessons-db/.graphrag/cache"
+
+reporting:
+  type: file
+  base_dir: "${HOME}/.local/share/lessons-db/.graphrag/logs"
+
+vector_store:
+  type: lancedb
+  db_uri: "${HOME}/.local/share/lessons-db/.graphrag/output/lancedb"
+
+extract_graph:
+  completion_model_id: default_completion_model
+  entity_types: [pattern, anti_pattern, concept, technology, cluster]
+  max_gleanings: 1
+
+summarize_descriptions:
+  completion_model_id: default_completion_model
+  max_length: 300
+
+community_reports:
+  completion_model_id: default_completion_model
+  max_length: 1000
+  max_input_length: 4000
+
+cluster_graph:
+  max_cluster_size: 10
+
+extract_claims:
+  enabled: false
+
+embed_text:
+  names: []
+
+snapshots:
+  graphml: false
+  embeddings: false
+
+local_search:
+  completion_model_id: default_completion_model
+  max_context_tokens: 8000
+
+global_search:
+  completion_model_id: default_completion_model
+  max_context_tokens: 8000
+  data_max_tokens: 8000
+  map_max_length: 500
+  reduce_max_length: 1000

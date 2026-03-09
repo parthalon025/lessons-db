@@ -35,6 +35,9 @@ src/lessons_db/
   scan.py              # Trigger + parse Semgrep scans (SARIF)
   migrate.py           # Parse 122 markdown lessons → DB + generate rules
   export.py            # Generate markdown from DB records
+graphrag/              # GraphRAG config (git-tracked); artifacts at ~/.local/share/lessons-db/.graphrag/ (gitignored)
+  settings.yml         # v3 completion_models → ollama-queue proxy (localhost:7683)
+  prompts/             # entity_extraction, community_report, summarize_descriptions
 rules/                 # Community Semgrep rules (lesson-derived)
   python/
   testing/
@@ -69,6 +72,18 @@ lessons-db capture transcript <file>      # extract lessons from session transcr
 lessons-db capture transcript <file> --positive
 lessons-db capture diff                   # extract from git diff (stdin)
 lessons-db capture diff <file>
+
+# Hybrid search (BM25 + RRF)
+lessons-db hybrid-search "query"              # BM25Okapi fused via RRF (k=60), top 5
+lessons-db hybrid-search "query" --top 10    # return top 10
+lessons-db hybrid-search "query" --json      # machine-readable output
+
+# GraphRAG index
+lessons-db graph-build                        # export lessons → submit index job to ollama-queue
+lessons-db graph-build --local               # run graphrag directly (blocking)
+lessons-db graph-build --status              # show artifact count from last build
+lessons-db graph-search "query"              # global mode (community synthesis)
+lessons-db graph-search "query" --mode local # local mode (entity-focused)
 
 # Rules + scanning
 lessons-db rule generate <id>

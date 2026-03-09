@@ -2,6 +2,18 @@
 # SessionStart hook: show lessons-db status line, resolve stale outcomes, show fix queue
 set -euo pipefail
 
+# Surface CLAUDE.md quality gate results from the previous session (written by validate-on-clear.sh)
+VALIDATE_RESULTS="$HOME/.claude/.validate-results"
+if [[ -f "$VALIDATE_RESULTS" ]]; then
+    echo "CLAUDE.md QUALITY GATE (from last session):"
+    echo ""
+    cat "$VALIDATE_RESULTS"
+    echo ""
+    echo "Fix issues above or run: bash ~/Documents/scripts/claude-md-validate.sh --verbose"
+    echo "---"
+    rm -f "$VALIDATE_RESULTS"
+fi
+
 LESSONS_DB=$(command -v lessons-db 2>/dev/null || echo "")
 
 if [[ -z "$LESSONS_DB" ]]; then
@@ -237,3 +249,5 @@ if [[ -n "$CONTEXT_RESULTS" && "$CONTEXT_RESULTS" != "No results found." ]]; the
         fi
     done <<< "$CONTEXT_RESULTS"
 fi
+
+exit 0

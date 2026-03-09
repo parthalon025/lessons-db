@@ -1,0 +1,12 @@
+-Goal-
+Given a text document about software development lessons and patterns, identify entities relevant to understanding recurring mistakes and best practices.
+
+-Steps-
+1. Identify all entities of these types: {entity_types}
+2. For each entity, extract: name, type, description
+
+-Output Format-
+({entity_name}|{entity_type}|{entity_description})
+
+-Input Text-
+{input_text}

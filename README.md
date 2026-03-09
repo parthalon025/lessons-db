@@ -241,6 +241,46 @@ lessons-db search "async without await"
 lessons-db search "exception swallowed silently" --polarity negative
 ```
 
+### Hybrid Search
+
+BM25 (keyword) + Reciprocal Rank Fusion (k=60). Falls back to BM25-only when embeddings are not available. Requires the `rank-bm25` dependency (installed automatically with `pip install -e .`).
+
+```bash
+# Hybrid BM25+RRF search (returns top 5 by default)
+lessons-db hybrid-search "subscriber lifecycle cleanup"
+
+# Return top 10 results
+lessons-db hybrid-search "async without await" --top 10
+
+# Machine-readable JSON output
+lessons-db hybrid-search "exception swallowed silently" --json
+```
+
+### GraphRAG Index
+
+Exports all lessons to markdown and indexes them with Microsoft GraphRAG. Requires `graphrag` installed at `~/.local/venvs/notion-rag/bin/graphrag`. Artifacts are stored at `~/.local/share/lessons-db/.graphrag/output/` (gitignored).
+
+```bash
+# Build the index via ollama-queue (default — non-blocking, queued as priority-3 job)
+lessons-db graph-build
+
+# Build locally (blocking — runs graphrag directly)
+lessons-db graph-build --local
+
+# Show artifact count from the last build
+lessons-db graph-build --status
+```
+
+```bash
+# Query the index — global mode (community synthesis, broad patterns)
+lessons-db graph-search "what causes silent failures at integration boundaries"
+
+# Query the index — local mode (entity-focused, specific lessons)
+lessons-db graph-search "async discipline" --mode local
+```
+
+`graph-search` exits with a clear error if artifacts are missing, with a hint to run `graph-build --local` first.
+
 ### Spaced Repetition (FSRS)
 
 ```bash
@@ -393,9 +433,11 @@ Pattern-scan and embedding calls are optimized to avoid redundant Ollama round-t
 | Storage | SQLite (stdlib) — no external DB dependency |
 | Vector search | LanceDB — embedded, no server required |
 | Embeddings | `nomic-embed-text` via Ollama (768 dimensions) |
+| Keyword search | `rank-bm25` (BM25Okapi) — fused with semantic via RRF |
 | Pattern detection | Semgrep — reused, not rebuilt |
 | Spaced repetition | FSRS-6 — implemented directly (~500 lines, no external deps) |
 | Analysis / capture | Ollama (`qwen3:8b` default) via ollama-queue |
+| Graph indexing | Microsoft GraphRAG (`~/.local/venvs/notion-rag/`) — artifacts at `~/.local/share/lessons-db/.graphrag/` |
 | CLI | Click with subcommands |
 | API | FastAPI + uvicorn |
 
@@ -446,6 +488,9 @@ src/lessons_db/
   github_miner.py # GitHub mining: discover_repos, mine_repos_for_gaps
   migrate.py      # Parse legacy markdown lessons → DB + generate rules
   export.py       # Generate markdown from DB records
+graphrag/         # GraphRAG configuration (git-tracked)
+  settings.yml    # v3 completion_models schema → ollama-queue proxy at localhost:7683
+  prompts/        # entity_extraction, community_report, summarize_descriptions
 rules/            # Community Semgrep rules (lesson-derived)
   python/
   testing/
