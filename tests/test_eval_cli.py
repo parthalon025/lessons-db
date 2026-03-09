@@ -11,8 +11,12 @@ from lessons_db.db import init_db, insert_lesson
 
 
 def _seed_eval_db(conn):
-    """Create a minimal test DB with 2 clusters for eval testing."""
-    for i, cat in enumerate(["integration", "testing", "monitoring"]):
+    """Create a minimal test DB with 2 clusters for eval testing.
+
+    Categories are distributed so that at least one category ("integration")
+    has >= 3 lessons — required for group_by="category" (the default).
+    """
+    for i, cat in enumerate(["integration", "testing", "integration"]):
         insert_lesson(
             conn,
             {
@@ -23,7 +27,7 @@ def _seed_eval_db(conn):
                 "category": cat,
             },
         )
-    for i, cat in enumerate(["data-model", "deployment", "integration"]):
+    for i, cat in enumerate(["integration", "deployment", "integration"]):
         insert_lesson(
             conn,
             {
@@ -238,6 +242,7 @@ class TestEvalJudgeCommand:
                     "lesson_id": 1,
                     "lesson_title": "Cluster A lesson 0",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": "Silent fallbacks mask upstream failures.",
                     "model": "test-model",
                     "prompt_id": "baseline-fewshot",
@@ -307,6 +312,7 @@ class TestEvalJudgeCommand:
                     "lesson_id": 1,
                     "lesson_title": "Cluster A lesson 0",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": "Silent fallbacks mask upstream failures.",
                     "model": "test-model",
                     "prompt_id": "baseline-fewshot",

@@ -96,43 +96,52 @@ VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
-def select_source_lessons(conn: sqlite3.Connection, per_cluster: int = 4) -> list[dict]:
+def select_source_lessons(conn: sqlite3.Connection, per_cluster: int = 4, group_by: str = "category") -> list[dict]:
     """Select source lessons for evaluation.
 
-    Finds all clusters with >= 3 single-loop lessons, then picks up to
-    ``per_cluster`` lessons per cluster maximising category diversity.
+    Finds all groups (by *group_by* column) with >= 3 single-loop lessons,
+    then picks up to ``per_cluster`` lessons per group maximising category
+    diversity.
+
+    Args:
+        group_by: Column to group lessons by. Must be ``"category"`` (default)
+            or ``"cluster_seed"``.
 
     Returns a flat list of lesson dicts with keys:
         id, title, one_liner, description, cluster_seed, category
     """
-    # Find qualifying clusters (>= 3 single-loop lessons)
+    _valid_group_by = ("category", "cluster_seed")
+    if group_by not in _valid_group_by:
+        raise ValueError(f"group_by must be one of {_valid_group_by!r}, got {group_by!r}")
+
+    # Find qualifying groups (>= 3 single-loop lessons)
     cluster_rows = conn.execute(
-        """
-        SELECT cluster_seed, COUNT(*) AS cnt
+        f"""
+        SELECT {group_by}, COUNT(*) AS cnt
         FROM lessons
-        WHERE cluster_seed IS NOT NULL
+        WHERE {group_by} IS NOT NULL
           AND (loop_level IS NULL OR loop_level = 'single')
-        GROUP BY cluster_seed
+        GROUP BY {group_by}
         HAVING cnt >= 3
-        ORDER BY cluster_seed
+        ORDER BY {group_by}
         """
     ).fetchall()
 
     results: list[dict] = []
 
     for crow in cluster_rows:
-        seed = crow["cluster_seed"]
+        group_value = crow[group_by]
 
-        # Fetch all single-loop lessons in this cluster
+        # Fetch all single-loop lessons in this group
         rows = conn.execute(
-            """
+            f"""
             SELECT id, title, one_liner, description, cluster_seed, category
             FROM lessons
-            WHERE cluster_seed = ?
+            WHERE {group_by} = ?
               AND (loop_level IS NULL OR loop_level = 'single')
             ORDER BY id
             """,
-            (seed,),
+            (group_value,),
         ).fetchall()
 
         lessons = [dict(r) for r in rows]
@@ -175,56 +184,65 @@ def _select_diverse(lessons: list[dict], limit: int) -> list[dict]:
 def select_transfer_targets(
     conn: sqlite3.Connection,
     source_id: int,
-    cluster_seed: str,
+    group_value: str,
     count_same: int = 2,
     count_diff: int = 2,
+    group_by: str = "category",
 ) -> dict[str, list[dict]]:
     """Select transfer target lessons for a given source lesson.
+
+    Args:
+        group_value: The value of the *group_by* column for the source lesson.
+        group_by: Column to group by (``"category"`` or ``"cluster_seed"``).
 
     Returns:
         {"same_cluster": [...], "diff_cluster": [...]}
 
-    - same_cluster: other lessons from same cluster, excluding source,
+    - same_cluster: other lessons from same group, excluding source,
       preferring different categories (sort: different category first).
-    - diff_cluster: lessons from other clusters, selected randomly.
+    - diff_cluster: lessons from other groups, selected randomly.
     - All single-loop only.
     """
+    _valid_group_by = ("category", "cluster_seed")
+    if group_by not in _valid_group_by:
+        raise ValueError(f"group_by must be one of {_valid_group_by!r}, got {group_by!r}")
+
     # Get source lesson's category for preference sorting
     source_row = conn.execute("SELECT category FROM lessons WHERE id = ?", (source_id,)).fetchone()
     if source_row is None:
         _log.warning("select_transfer_targets: source_id=%d not found", source_id)
     source_category = source_row["category"] if source_row else None
 
-    # Same cluster, excluding source, single-loop only
+    # Same group, excluding source, single-loop only
     # Sort: different category first (0 before 1), then by id for stability
     same_rows = conn.execute(
-        """
+        f"""
         SELECT id, title, one_liner, description, cluster_seed, category
         FROM lessons
-        WHERE cluster_seed = ?
+        WHERE {group_by} = ?
           AND id != ?
           AND (loop_level IS NULL OR loop_level = 'single')
         ORDER BY
             CASE WHEN category = ? THEN 1 ELSE 0 END,
             id
         """,
-        (cluster_seed, source_id, source_category),
+        (group_value, source_id, source_category),
     ).fetchall()
 
     same_cluster = [dict(r) for r in same_rows[:count_same]]
 
-    # Different cluster, single-loop, random selection
+    # Different group, single-loop, random selection
     diff_rows = conn.execute(
-        """
+        f"""
         SELECT id, title, one_liner, description, cluster_seed, category
         FROM lessons
-        WHERE cluster_seed IS NOT NULL
-          AND cluster_seed != ?
+        WHERE {group_by} IS NOT NULL
+          AND {group_by} != ?
           AND (loop_level IS NULL OR loop_level = 'single')
         ORDER BY RANDOM()
         LIMIT ?
         """,
-        (cluster_seed, count_diff),
+        (group_value, count_diff),
     ).fetchall()
 
     diff_cluster = [dict(r) for r in diff_rows]
@@ -553,21 +571,26 @@ def _load_resume_state(output_path: Path) -> tuple[list[dict[str, Any]], set[tup
 def _load_siblings_by_cluster(
     conn: sqlite3.Connection,
     sources: list[dict],
+    group_by: str = "category",
 ) -> dict[str, list[dict[str, Any]]]:
-    """Pre-fetch sibling lessons grouped by cluster_seed for chunked variants."""
-    siblings_by_cluster: dict[str, list[dict[str, Any]]] = {}
+    """Pre-fetch sibling lessons grouped by *group_by* column for chunked variants."""
+    _valid_group_by = ("category", "cluster_seed")
+    if group_by not in _valid_group_by:
+        raise ValueError(f"group_by must be one of {_valid_group_by!r}, got {group_by!r}")
+
+    siblings_by_group: dict[str, list[dict[str, Any]]] = {}
     for src in sources:
-        seed = src["cluster_seed"]
-        if seed not in siblings_by_cluster:
+        group_value = src.get(group_by, "")
+        if group_value not in siblings_by_group:
             sibs = conn.execute(
                 "SELECT id, title, one_liner, description, cluster_seed, category "
                 "FROM lessons "
-                "WHERE cluster_seed = ? AND (loop_level IS NULL OR loop_level = 'single') "
+                f"WHERE {group_by} = ? AND (loop_level IS NULL OR loop_level = 'single') "
                 "ORDER BY id",
-                (seed,),
+                (group_value,),
             ).fetchall()
-            siblings_by_cluster[seed] = [dict(r) for r in sibs]
-    return siblings_by_cluster
+            siblings_by_group[group_value] = [dict(r) for r in sibs]
+    return siblings_by_group
 
 
 def _generate_for_lesson(
@@ -577,6 +600,7 @@ def _generate_for_lesson(
     queue_url: str,
     siblings_by_cluster: dict[str, list[dict[str, Any]]],
     priority: int | None = None,
+    group_by: str = "category",
 ) -> dict[str, Any]:
     """Generate a principle for a single (variant, lesson) pair."""
     lesson_id = lesson["id"]
@@ -585,16 +609,16 @@ def _generate_for_lesson(
 
     siblings = None
     diff_cluster_items = None
-    seed = lesson.get("cluster_seed", "")
+    group_value = lesson.get(group_by, "")
 
     if config["chunked"] or config.get("contrastive"):
-        all_sibs = siblings_by_cluster.get(seed, [])
+        all_sibs = siblings_by_cluster.get(group_value, [])
         siblings = [s for s in all_sibs if s["id"] != lesson_id][:3]
 
     if config.get("contrastive"):
         all_diff = []
-        for other_seed, other_items in sorted(siblings_by_cluster.items()):
-            if other_seed != seed:
+        for other_key, other_items in sorted(siblings_by_cluster.items()):
+            if other_key != group_value:
                 all_diff.extend(other_items[:2])
         diff_cluster_items = all_diff[:4]
 
@@ -627,6 +651,7 @@ def _generate_for_lesson(
         "lesson_id": lesson_id,
         "lesson_title": lesson.get("title", ""),
         "cluster_seed": lesson.get("cluster_seed", ""),
+        "category": lesson.get("category", ""),
         "principle": principle,
         "model": model,
         "prompt_id": config["prompt_id"],
@@ -666,6 +691,7 @@ def run_eval_generate(
     resume: bool,
     progress_callback: Any = None,
     priority: int | None = None,
+    group_by: str = "category",
 ) -> dict[str, Any]:
     """Run eval-generate: produce principles for all (variant, lesson) pairs.
 
@@ -679,7 +705,7 @@ def run_eval_generate(
         existing_results, completed_pairs = _load_resume_state(output_path)
 
     # Select source lessons
-    sources = select_source_lessons(conn, per_cluster=per_cluster)
+    sources = select_source_lessons(conn, per_cluster=per_cluster, group_by=group_by)
     source_ids = [s["id"] for s in sources]
 
     # Build results structure
@@ -694,13 +720,21 @@ def run_eval_generate(
         # Pre-fetch siblings for chunked and contrastive variants
         siblings_by_cluster: dict[str, list[dict[str, Any]]] = {}
         if config["chunked"] or config.get("contrastive"):
-            siblings_by_cluster = _load_siblings_by_cluster(conn, sources)
+            siblings_by_cluster = _load_siblings_by_cluster(conn, sources, group_by=group_by)
 
         for lesson in sources:
             if (variant_id, lesson["id"]) in completed_pairs:
                 continue
 
-            entry = _generate_for_lesson(variant_id, config, lesson, queue_url, siblings_by_cluster, priority=priority)
+            entry = _generate_for_lesson(
+                variant_id,
+                config,
+                lesson,
+                queue_url,
+                siblings_by_cluster,
+                priority=priority,
+                group_by=group_by,
+            )
             results.append(entry)
 
             if progress_callback:
@@ -1017,8 +1051,8 @@ def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str])
         lines.append(f"{len(failures)} same-cluster pairs judged NO (false negatives):\n")
         for f in failures[:10]:
             lines.append(
-                f"- [{f.get('variant', '?')}] Principle: \"{f.get('principle', '?')[:60]}...\" "
-                f"-> Target: \"{f.get('target_title', '?')[:40]}\""
+                f'- [{f.get("variant", "?")}] Principle: "{f.get("principle", "?")[:60]}..." '
+                f'-> Target: "{f.get("target_title", "?")[:40]}"'
             )
     else:
         lines.append("No same-cluster failures (all judged YES).")
@@ -1027,8 +1061,8 @@ def _render_failure_binary(scored_pairs: list[dict[str, Any]], lines: list[str])
         lines.append(f"\n{len(false_pos)} diff-cluster pairs judged YES (false positives):\n")
         for f in false_pos[:10]:
             lines.append(
-                f"- [{f.get('variant', '?')}] Principle: \"{f.get('principle', '?')[:60]}...\" "
-                f"-> Target: \"{f.get('target_title', '?')[:40]}\""
+                f'- [{f.get("variant", "?")}] Principle: "{f.get("principle", "?")[:60]}..." '
+                f'-> Target: "{f.get("target_title", "?")[:40]}"'
             )
 
 
@@ -1039,8 +1073,8 @@ def _render_failure_rubric(scored_pairs: list[dict[str, Any]], lines: list[str])
         lines.append(f"{len(failures)} same-cluster pairs scored below threshold:\n")
         for f in failures[:5]:
             lines.append(
-                f"- [{f.get('variant', '?')}] Principle: \"{f.get('principle', '?')[:60]}...\" "
-                f"-> Target: \"{f.get('target_title', '?')[:40]}\" (transfer={f['scores']['transfer']})"
+                f'- [{f.get("variant", "?")}] Principle: "{f.get("principle", "?")[:60]}..." '
+                f'-> Target: "{f.get("target_title", "?")[:40]}" (transfer={f["scores"]["transfer"]})'
             )
     else:
         lines.append("No same-cluster failures (all scored >= 3 on transfer).")
@@ -1107,8 +1141,7 @@ def render_report(
         for vid in sorted(metrics.keys()):
             m = metrics[vid]
             lines.append(
-                f"| {vid} | {m['recall']:.2f} | {m['precision']:.2f} "
-                f"| {m['f1']:.2f} | {m['mean_actionability']:.2f} |"
+                f"| {vid} | {m['recall']:.2f} | {m['precision']:.2f} | {m['f1']:.2f} | {m['mean_actionability']:.2f} |"
             )
 
     # Winner
@@ -1133,9 +1166,7 @@ def render_report(
         if cfg:
             lines.append(f"\nModel: `{cfg.get('model', 'N/A')}`")
             lines.append(f"Prompt: `{cfg.get('prompt_id', 'N/A')}`")
-            lines.append(
-                f"Settings: temperature={cfg.get('temperature', 'N/A')}, " f"num_ctx={cfg.get('num_ctx', 'N/A')}"
-            )
+            lines.append(f"Settings: temperature={cfg.get('temperature', 'N/A')}, num_ctx={cfg.get('num_ctx', 'N/A')}")
 
     _render_pair_sections(scored_pairs, lines)
 
@@ -1159,6 +1190,7 @@ def run_eval_judge(
     progress_callback: Any = None,
     priority: int | None = None,
     binary: bool = False,
+    group_by: str = "category",
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, float]]]:
     """Run eval-judge: score generated principles against transfer targets.
 
@@ -1182,8 +1214,14 @@ def run_eval_judge(
         variant = entry["variant"]
         lesson_id = entry["lesson_id"]
         cluster_seed = entry.get("cluster_seed", "")
+        group_value = entry.get(group_by, cluster_seed)
 
-        targets = select_transfer_targets(conn, lesson_id, cluster_seed)
+        targets = select_transfer_targets(
+            conn,
+            lesson_id,
+            group_value,
+            group_by=group_by,
+        )
 
         for is_same, target_list in [
             (True, targets["same_cluster"]),

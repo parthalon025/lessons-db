@@ -284,9 +284,7 @@ def import_semgrep(ctx, delta):
 
     conn = ctx.obj["conn"]
     result = run_delta_import(conn, delta_only=delta)
-    click.echo(
-        f"Semgrep import: {result['imported']} imported, " f"{result['skipped']} skipped, {result['errors']} errors"
-    )
+    click.echo(f"Semgrep import: {result['imported']} imported, {result['skipped']} skipped, {result['errors']} errors")
 
 
 @main.command()
@@ -588,11 +586,11 @@ def scan_run(ctx, rules_dir, target, baseline, populate_fixes):
         except Exception as exc:
             logger.warning("scan: failed to insert finding %s: %s", rule_id, exc)
 
-    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved" f" | escalated={escalated} blocking={blocked}")
+    click.echo(f"\nTotal findings: {len(findings)} found, {saved} saved | escalated={escalated} blocking={blocked}")
 
     if populate_fixes and saved > 0:
         fix_result = populate_fix_queue(conn)
-        click.echo(f"Fix queue: +{fix_result['added']} added" f" ({fix_result['skipped_duplicate']} already queued)")
+        click.echo(f"Fix queue: +{fix_result['added']} added ({fix_result['skipped_duplicate']} already queued)")
 
 
 @scan.command("security")
@@ -1291,9 +1289,7 @@ def learn_list(click_ctx, since, output_format, outcome_filter):
         click.echo("-" * 72)
         for row in rows:
             title = row["title"][:35]
-            click.echo(
-                f"{row['id']:>6}  {row['lesson_id']:>5}  {row['hook_point']:<14}  " f"{row['outcome']:<14}  {title}"
-            )
+            click.echo(f"{row['id']:>6}  {row['lesson_id']:>5}  {row['hook_point']:<14}  {row['outcome']:<14}  {title}")
 
 
 @learn.command("find-exceptions")
@@ -1463,7 +1459,7 @@ def stats_efficiency(ctx):
             label = r["one_liner"] or r["title"] or f"lesson #{r['id']}"
             heed_rate = r["heeded"] / r["surfaced"] if r["surfaced"] > 0 else 0.0
             click.echo(
-                f"  #{r['id']} {label[:50]:<50}  recurrence: {r['recurrence_count']}  " f"heed_rate: {heed_rate:.2f}"
+                f"  #{r['id']} {label[:50]:<50}  recurrence: {r['recurrence_count']}  heed_rate: {heed_rate:.2f}"
             )
     else:
         click.echo("\nEnforcement candidates: none")
@@ -1724,11 +1720,11 @@ def kpi_dashboard(click_ctx):
     click.echo("")
     click.echo("  Outcome KPIs (need outcome data to populate):")
     click.echo(f"  Recurrence Rate        :{fmt(recurrence_rate, lambda v: v < 5)}")
-    click.echo(f"  Heed Rate              :{fmt(heed_rate,        lambda v: v > 50)}")
-    click.echo(f"  False Positive Rate    :{fmt(fp_rate,          lambda v: v < 15)}")
+    click.echo(f"  Heed Rate              :{fmt(heed_rate, lambda v: v > 50)}")
+    click.echo(f"  False Positive Rate    :{fmt(fp_rate, lambda v: v < 15)}")
     click.echo("")
     click.echo("  System Health:")
-    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  " f"{'+'  if dead_pct < 10 else '-'}")
+    click.echo(f"  Dead Lessons (90d)     :  {dead_lessons} ({dead_pct}%)  {'+' if dead_pct < 10 else '-'}")
     click.echo(f"  DB Growth (7d)         :  +{growth_7d} lessons")
     click.echo("")
 
@@ -1790,7 +1786,7 @@ def kpi_dashboard(click_ctx):
     ).fetchall()
     if streak_rows:
         for row in streak_rows:
-            click.echo(f"  {row['category']}: " f"current={row['current_streak']} " f"longest={row['longest_streak']}")
+            click.echo(f"  {row['category']}: current={row['current_streak']} longest={row['longest_streak']}")
     else:
         click.echo("  (no win streak data)")
     click.echo("")
@@ -2483,7 +2479,7 @@ def meta_extract_principles(ctx, batch_size, dry_run, model):
 
     # Find lessons without a principle
     rows = conn.execute(
-        "SELECT id, title, one_liner, description FROM lessons " "WHERE principle IS NULL " "ORDER BY id " "LIMIT ?",
+        "SELECT id, title, one_liner, description FROM lessons WHERE principle IS NULL ORDER BY id LIMIT ?",
         (batch_size,),
     ).fetchall()
 
@@ -2770,7 +2766,7 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
         generated += 1
 
     click.echo(
-        f"\nDone. {'Would generate' if dry_run else 'Generated'}: {generated}  " f"Skipped: {skipped}  Errors: {errors}"
+        f"\nDone. {'Would generate' if dry_run else 'Generated'}: {generated}  Skipped: {skipped}  Errors: {errors}"
     )
 
 
@@ -2782,8 +2778,14 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
 )
 @click.option("--resume", is_flag=True, help="Skip already-completed (variant, lesson_id) pairs.")
 @click.option("--priority", type=int, default=None, help="Queue priority (1=highest). Unset uses queue default.")
+@click.option(
+    "--group-by",
+    type=click.Choice(["cluster_seed", "category"]),
+    default="category",
+    help="Grouping field for same/diff targets (default: category).",
+)
 @click.pass_context
-def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority):
+def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, group_by):
     """Generate principles across prompt variants for transfer-test evaluation.
 
     Runs each variant (prompt x model x settings) across a fixed set of source
@@ -2806,9 +2808,9 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority):
             return
 
     # Check source lessons exist
-    sources = select_source_lessons(conn, per_cluster=per_cluster)
+    sources = select_source_lessons(conn, per_cluster=per_cluster, group_by=group_by)
     if not sources:
-        click.echo("No source lessons found (need clusters with >= 3 lessons).")
+        click.echo("No source lessons found (need groups with >= 3 lessons).")
         return
 
     # Determine output path
@@ -2840,6 +2842,7 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority):
         resume=resume,
         progress_callback=_progress,
         priority=priority,
+        group_by=group_by,
     )
 
     total = len(result["results"])
@@ -2857,8 +2860,14 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority):
 @click.option(
     "--binary", is_flag=True, help="Use binary YES/NO judge instead of 1-5 rubric. Default model: gemma3:12b."
 )
+@click.option(
+    "--group-by",
+    type=click.Choice(["cluster_seed", "category"]),
+    default="category",
+    help="Grouping field for same/diff targets (default: category).",
+)
 @click.pass_context
-def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority, binary):
+def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority, binary, group_by):
     """Score generated principles against transfer test targets.
 
     Reads a results JSON from eval-generate, constructs transfer tests
@@ -2923,6 +2932,7 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
         progress_callback=_progress,
         priority=priority,
         binary=binary,
+        group_by=group_by,
     )
 
     click.echo(f"\nScored {len(scored_pairs)} pairs across {len(metrics)} variants.")

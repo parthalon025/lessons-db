@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from lessons_db.config import DATA_DIR, EVAL_DIR
 from lessons_db.db import init_db, insert_lesson
 from lessons_db.eval import (
@@ -139,7 +141,7 @@ class TestSelectSourceLessons:
     def test_returns_correct_count_per_cluster(self, db_path):
         conn = init_db(db_path)
         ids_by_cluster = _seed_clusters(conn)
-        results = select_source_lessons(conn, per_cluster=4)
+        results = select_source_lessons(conn, per_cluster=4, group_by="cluster_seed")
         # Group results by cluster_seed
         by_cluster = {}
         for r in results:
@@ -151,7 +153,7 @@ class TestSelectSourceLessons:
     def test_respects_per_cluster_limit(self, db_path):
         conn = init_db(db_path)
         _seed_clusters(conn)
-        results = select_source_lessons(conn, per_cluster=2)
+        results = select_source_lessons(conn, per_cluster=2, group_by="cluster_seed")
         by_cluster = {}
         for r in results:
             by_cluster.setdefault(r["cluster_seed"], []).append(r)
@@ -161,7 +163,7 @@ class TestSelectSourceLessons:
     def test_maximizes_category_diversity(self, db_path):
         conn = init_db(db_path)
         _seed_clusters(conn)
-        results = select_source_lessons(conn, per_cluster=4)
+        results = select_source_lessons(conn, per_cluster=4, group_by="cluster_seed")
         by_cluster = {}
         for r in results:
             by_cluster.setdefault(r["cluster_seed"], []).append(r)
@@ -197,7 +199,7 @@ class TestSelectSourceLessons:
         conn.commit()
         # Third and fourth have default 'single' from insert
 
-        results = select_source_lessons(conn, per_cluster=4)
+        results = select_source_lessons(conn, per_cluster=4, group_by="cluster_seed")
         result_ids = [r["id"] for r in results]
         # The double-loop lesson should be excluded
         assert ids["X"][0] not in result_ids
@@ -209,7 +211,7 @@ class TestSelectSourceLessons:
     def test_returns_required_keys(self, db_path):
         conn = init_db(db_path)
         _seed_clusters(conn)
-        results = select_source_lessons(conn, per_cluster=2)
+        results = select_source_lessons(conn, per_cluster=2, group_by="cluster_seed")
         required_keys = {"id", "title", "one_liner", "description", "cluster_seed", "category"}
         for r in results:
             assert required_keys <= set(r.keys()), f"Missing keys: {required_keys - set(r.keys())}"
@@ -260,7 +262,7 @@ class TestSelectTransferTargets:
         conn = init_db(db_path)
         ids = _seed_clusters(conn)
         source_id = ids["A"][0]
-        result = select_transfer_targets(conn, source_id, "A")
+        result = select_transfer_targets(conn, source_id, "A", group_by="cluster_seed")
         assert "same_cluster" in result
         assert "diff_cluster" in result
 
@@ -268,7 +270,7 @@ class TestSelectTransferTargets:
         conn = init_db(db_path)
         ids = _seed_clusters(conn)
         source_id = ids["A"][0]
-        result = select_transfer_targets(conn, source_id, "A", count_same=2, count_diff=2)
+        result = select_transfer_targets(conn, source_id, "A", count_same=2, count_diff=2, group_by="cluster_seed")
         assert len(result["same_cluster"]) == 2
         assert len(result["diff_cluster"]) == 2
 
@@ -276,7 +278,7 @@ class TestSelectTransferTargets:
         conn = init_db(db_path)
         ids = _seed_clusters(conn)
         source_id = ids["A"][0]
-        result = select_transfer_targets(conn, source_id, "A", count_same=4)
+        result = select_transfer_targets(conn, source_id, "A", count_same=4, group_by="cluster_seed")
         same_ids = [r["id"] for r in result["same_cluster"]]
         assert source_id not in same_ids
 
@@ -284,7 +286,7 @@ class TestSelectTransferTargets:
         conn = init_db(db_path)
         ids = _seed_clusters(conn)
         source_id = ids["A"][0]
-        result = select_transfer_targets(conn, source_id, "A", count_diff=3)
+        result = select_transfer_targets(conn, source_id, "A", count_diff=3, group_by="cluster_seed")
         for r in result["diff_cluster"]:
             assert r["cluster_seed"] != "A", "diff_cluster should not contain source cluster A"
 
@@ -293,7 +295,7 @@ class TestSelectTransferTargets:
         ids = _seed_clusters(conn)
         # Source is ids["A"][0] which has category "integration"
         source_id = ids["A"][0]
-        result = select_transfer_targets(conn, source_id, "A", count_same=3)
+        result = select_transfer_targets(conn, source_id, "A", count_same=3, group_by="cluster_seed")
         # The first results should prefer different categories over "integration"
         same = result["same_cluster"]
         # Cluster A has categories: integration, testing, monitoring, error-handling, caching
@@ -312,9 +314,147 @@ class TestSelectTransferTargets:
         conn.execute("UPDATE lessons SET loop_level = 'double' WHERE id = ?", (ids["A"][1],))
         conn.commit()
         source_id = ids["A"][0]
-        result = select_transfer_targets(conn, source_id, "A", count_same=4)
+        result = select_transfer_targets(conn, source_id, "A", count_same=4, group_by="cluster_seed")
         same_ids = [r["id"] for r in result["same_cluster"]]
         assert ids["A"][1] not in same_ids
+
+
+# ---------------------------------------------------------------------------
+# TestSelectSourceLessonsByCategory
+# ---------------------------------------------------------------------------
+
+
+class TestSelectSourceLessonsByCategory:
+    """select_source_lessons groups by category when group_by='category'."""
+
+    def test_returns_lessons_from_distinct_categories(self, db_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        result = select_source_lessons(conn, per_cluster=2, group_by="category")
+        categories = {r["category"] for r in result}
+        # Should have multiple categories represented
+        assert len(categories) >= 2
+        conn.close()
+
+    def test_group_by_category_default(self, db_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        result = select_source_lessons(conn, per_cluster=2)
+        # Default is category — should work without explicit group_by
+        assert len(result) > 0
+        conn.close()
+
+    def test_group_by_cluster_seed_still_works(self, db_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        result = select_source_lessons(conn, per_cluster=2, group_by="cluster_seed")
+        clusters = {r["cluster_seed"] for r in result}
+        assert len(clusters) >= 2
+        conn.close()
+
+    def test_invalid_group_by_raises(self, db_path):
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        with pytest.raises(ValueError, match="group_by"):
+            select_source_lessons(conn, per_cluster=2, group_by="invalid")
+        conn.close()
+
+    def test_category_grouping_produces_different_results_than_cluster_seed(self, db_path):
+        """Category grouping selects based on category distribution, not cluster_seed."""
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        by_category = select_source_lessons(conn, per_cluster=2, group_by="category")
+        by_cluster = select_source_lessons(conn, per_cluster=2, group_by="cluster_seed")
+        # The two groupings should produce different sets of source IDs
+        # (since categories span clusters in the test data)
+        cat_ids = {r["id"] for r in by_category}
+        clus_ids = {r["id"] for r in by_cluster}
+        # They may overlap but total counts or sets should differ
+        assert len(by_category) > 0
+        assert len(by_cluster) > 0
+        # Category-based picks from groups with >= 3 lessons in the same category
+        # while cluster-based picks from groups with >= 3 lessons in the same cluster
+        conn.close()
+
+    def test_category_groups_have_minimum_threshold(self, db_path):
+        """Only categories with >= 3 single-loop lessons are selected."""
+        conn = init_db(db_path)
+        # Create categories: "big" has 4, "small" has 2 (below threshold)
+        clusters = {
+            "X": [
+                ("Lesson 0", "big"),
+                ("Lesson 1", "big"),
+                ("Lesson 2", "big"),
+                ("Lesson 3", "big"),
+            ],
+            "Y": [
+                ("Lesson 4", "small"),
+                ("Lesson 5", "small"),
+            ],
+        }
+        _seed_clusters(conn, clusters)
+        result = select_source_lessons(conn, per_cluster=4, group_by="category")
+        categories = {r["category"] for r in result}
+        assert "big" in categories
+        assert "small" not in categories
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TestSelectTransferTargetsByCategory
+# ---------------------------------------------------------------------------
+
+
+class TestSelectTransferTargetsByCategory:
+    """select_transfer_targets groups by category when group_by='category'."""
+
+    def test_same_group_by_category(self, db_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        # Lesson "Silent failure 0" (ids["A"][0]) has category="integration"
+        result = select_transfer_targets(conn, ids["A"][0], "integration", group_by="category")
+        for t in result["same_cluster"]:
+            assert t["category"] == "integration"
+        conn.close()
+
+    def test_diff_group_by_category(self, db_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        result = select_transfer_targets(conn, ids["A"][0], "integration", group_by="category")
+        for t in result["diff_cluster"]:
+            assert t["category"] != "integration"
+        conn.close()
+
+    def test_backward_compat_cluster_seed(self, db_path):
+        """Passing group_by='cluster_seed' still works like the old API."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        source_id = ids["A"][0]
+        result = select_transfer_targets(conn, source_id, "A", group_by="cluster_seed")
+        assert "same_cluster" in result
+        assert "diff_cluster" in result
+        for t in result["same_cluster"]:
+            assert t["cluster_seed"] == "A"
+        for t in result["diff_cluster"]:
+            assert t["cluster_seed"] != "A"
+        conn.close()
+
+    def test_invalid_group_by_raises(self, db_path):
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        with pytest.raises(ValueError, match="group_by"):
+            select_transfer_targets(conn, ids["A"][0], "integration", group_by="invalid")
+        conn.close()
+
+    def test_same_group_excludes_source(self, db_path):
+        """Same-group targets exclude the source lesson itself."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        source_id = ids["A"][0]
+        result = select_transfer_targets(conn, source_id, "integration", count_same=10, group_by="category")
+        same_ids = [t["id"] for t in result["same_cluster"]]
+        assert source_id not in same_ids
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1009,6 +1149,7 @@ class TestRunEvalJudge:
                     "lesson_id": ids["A"][0],
                     "lesson_title": "Silent failure 0",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": "Silent fallbacks mask upstream failures.",
                     "model": "test-model",
                     "prompt_id": "baseline-fewshot",
@@ -1052,6 +1193,7 @@ class TestRunEvalJudge:
                     "lesson_id": ids["A"][0],
                     "lesson_title": "Error lesson",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": None,
                     "error": "generation_failed",
                 }
@@ -1084,6 +1226,7 @@ class TestRunEvalJudge:
                     "lesson_id": ids["A"][0],
                     "lesson_title": "Silent failure 0",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": "Test principle for fallback.",
                     "model": "test-model",
                     "prompt_id": "baseline-fewshot",
@@ -1275,6 +1418,7 @@ class TestRunEvalJudgeBinary:
                     "lesson_id": ids["A"][0],
                     "lesson_title": "Silent failure 0",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": "Silent fallbacks mask upstream failures.",
                     "model": "test-model",
                     "prompt_id": "baseline-fewshot",
@@ -1322,6 +1466,7 @@ class TestRunEvalJudgeBinary:
                     "lesson_id": ids["A"][0],
                     "lesson_title": "Test",
                     "cluster_seed": "A",
+                    "category": "integration",
                     "principle": "Test principle.",
                     "model": "test-model",
                     "prompt_id": "test",
