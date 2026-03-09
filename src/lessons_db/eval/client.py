@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from lessons_db.config import OLLAMA_QUEUE_URL
 from lessons_db.eval.variants import (
     _MAX_RETRIES,
     _RETRY_BASE_DELAY,
@@ -149,7 +150,7 @@ def _clean_principle(text: str) -> str:
 def call_judge(
     prompt: str,
     backend: str = "ollama",
-    ollama_url: str = "",
+    ollama_url: str = OLLAMA_QUEUE_URL,
     ollama_model: str = "",
     openai_api_key: str = "",
     openai_model: str = "gpt-4o-mini",

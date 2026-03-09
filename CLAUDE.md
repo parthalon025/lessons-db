@@ -163,6 +163,11 @@ Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub
 - **FSRS-6** implemented directly (~500 lines, no external deps) — power-law forgetting curve R=(1+F*t/S)^DECAY with 19 optimized parameters
 - **Click CLI** with subcommands matching design doc
 
+## Gotchas
+
+- **All Ollama calls go through ollama-queue** — never call `localhost:11434` directly. All eval functions (`call_judge`, `run_eval_judge`, `run_paired_tournament`) default `ollama_url` to `OLLAMA_QUEUE_URL` (`http://127.0.0.1:7683`). Override via `LESSONS_DB_OLLAMA_QUEUE_URL` env var.
+- **Patch at the usage site, not the definition** — `call_judge` is imported into `judge.py` as a local binding. Tests must patch `"lessons_db.eval.judge.call_judge"`, not `"lessons_db.eval.call_judge"`. Similarly, `call_ollama` in `generate.py` must be patched as `"lessons_db.eval.generate.call_ollama"`. Patching the `__init__` re-export does nothing.
+
 ## Learning System (8 Mechanisms)
 
 | Mechanism | Implementation | Key Component |
