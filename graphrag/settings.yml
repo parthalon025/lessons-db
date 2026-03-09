@@ -2,7 +2,7 @@
 completion_models:
   default_completion_model:
     model_provider: openai
-    model: qwen3:8b
+    model: qwen3.5:9b
     auth_method: api_key
     api_key: ollama-local
     api_base: http://localhost:7683/v1

@@ -49,6 +49,23 @@ from lessons_db.eval.judge import (
 from lessons_db.eval.judge import (
     run_paired_tournament as run_paired_tournament,
 )
+from lessons_db.eval.learn import (
+    BEST_JSON as BEST_JSON,
+)
+from lessons_db.eval.learn import (
+    LEARNINGS_FILE as LEARNINGS_FILE,
+)
+from lessons_db.eval.learn import (
+    derive_insights as derive_insights,
+)
+from lessons_db.eval.learn import (
+    load_best as load_best,
+)
+
+# --- learn (post-judge insights, always-on) ---
+from lessons_db.eval.learn import (
+    run_eval_learn as run_eval_learn,
+)
 from lessons_db.eval.prompts import (
     _build_self_critique_prompt as _build_self_critique_prompt,
 )

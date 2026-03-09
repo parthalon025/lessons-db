@@ -2946,6 +2946,27 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
             click.echo(f"  TP={wm.get('tp', 0)} FP={wm.get('fp', 0)} FN={wm.get('fn', 0)} TN={wm.get('tn', 0)}")
     click.echo(f"Report: {report_path}")
 
+    # --- Always-learn step: runs after every judge, regardless of outcome ---
+    if metrics:
+        from pathlib import Path
+
+        from lessons_db.eval.learn import run_eval_learn
+        from lessons_db.eval.variants import VARIANT_CONFIGS
+
+        program_md = Path.cwd() / "program.md"
+        insights = run_eval_learn(
+            metrics_by_variant=metrics,
+            variant_configs=VARIANT_CONFIGS,
+            program_md_path=program_md if program_md.exists() else None,
+        )
+        click.echo("\nLearnings:")
+        for ins in insights:
+            click.echo(f"  [{ins['variant']}] {ins['summary']}")
+            click.echo(f"    → {ins['diagnosis']}")
+            click.echo(f"    → next: {ins['recommendation']}")
+        if program_md.exists():
+            click.echo(f"  program.md updated: {program_md}")
+
 
 @meta.command("eval-tournament")
 @click.argument("results_file", type=click.Path(exists=True))
@@ -3618,7 +3639,7 @@ def graph_build(ctx: click.Context, status: bool, run_local: bool) -> None:
         payload = json.dumps(
             {
                 "command": cmd_str,
-                "model": "qwen3:8b",
+                "model": "qwen3.5:9b",
                 "priority": 3,
                 "source": "lessons-db-graph-build",
                 "timeout": 21600,
