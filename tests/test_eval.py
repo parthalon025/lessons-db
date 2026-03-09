@@ -2603,3 +2603,49 @@ class TestRenderV2Report:
         ]
         report = render_v2_report(scored_pairs=scored)
         assert "## Failure Analysis" in report
+
+    def test_failure_analysis_includes_mechanism_triplet(self):
+        """Failure analysis renders mechanism triplet when present."""
+        scored = [
+            {
+                "variant": "A",
+                "is_same_group": True,
+                "posterior": 0.1,
+                "principle": "p1",
+                "target_title": "t1",
+                "mechanism_trigger": "uncaught exception",
+                "mechanism_target": "cleanup path",
+                "mechanism_fix": "finally block",
+            },
+        ]
+        report = render_v2_report(scored_pairs=scored)
+        assert "uncaught exception" in report
+        assert "cleanup path" in report
+
+    def test_signal_diagnostics_section(self):
+        """Signal diagnostics renders per-signal means and disagreement."""
+        diag = [
+            {
+                "variant": "A",
+                "paired_signal": 2.5,
+                "embedding_signal": 1.5,
+                "scope_signal": 1.0,
+                "mechanism_signal": 2.0,
+            },
+            {
+                "variant": "A",
+                "paired_signal": -2.5,
+                "embedding_signal": 1.5,
+                "scope_signal": -0.5,
+                "mechanism_signal": 0.0,
+            },
+        ]
+        report = render_v2_report(signal_diagnostics=diag)
+        assert "## Signal Diagnostics" in report
+        assert "Paired" in report
+        assert "Disagree" in report
+
+    def test_signal_diagnostics_omitted_when_empty(self):
+        """Signal diagnostics not rendered when no data."""
+        report = render_v2_report()
+        assert "## Signal Diagnostics" not in report

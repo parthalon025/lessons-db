@@ -1951,12 +1951,92 @@ def _render_v2_failure_analysis(scored_pairs: list[dict[str, Any]], lines: list[
             continue
         lines.append(f"{len(pairs)} {label}:\n")
         for p in pairs[:10]:
+            mech = ""
+            if p.get("mechanism_trigger"):
+                mech = (
+                    f" | Mechanism: {p['mechanism_trigger']}"
+                    f"→{p.get('mechanism_target', '?')}"
+                    f"→{p.get('mechanism_fix', '?')}"
+                )
             lines.append(
                 f"- [{p.get('variant', '?')}] P={p.get('posterior', 0):.2f} "
                 f"Principle: \"{p.get('principle', '')[:60]}\" → "
-                f"Target: \"{p.get('target_title', '')[:40]}\""
+                f"Target: \"{p.get('target_title', '')[:40]}\"{mech}"
             )
         lines.append("")
+
+
+def _render_v2_tournament(tournament_metrics: dict[str, dict[str, float]], lines: list[str]) -> None:
+    """Render tournament results table."""
+    lines.append("## Tournament Results\n")
+    lines.append("| Variant | Win Rate | Discriminating | Principles | Comparisons | W/L/N |")
+    lines.append("|---------|----------|----------------|------------|-------------|-------|")
+    for vid in sorted(tournament_metrics.keys()):
+        m = tournament_metrics[vid]
+        lines.append(
+            f"| {vid} | {m['mean_win_rate']:.3f} | {m['discriminating_frac']:.2f} "
+            f"| {m['principle_count']} | {m['comparison_count']} "
+            f"| {m['total_wins']}/{m['total_losses']}/{m['total_neithers']} |"
+        )
+    lines.append("")
+
+
+def _render_v2_bayesian(bayesian_metrics: dict[str, dict[str, float]], lines: list[str]) -> None:
+    """Render Bayesian fusion table and winner."""
+    lines.append("## Bayesian Fusion\n")
+    lines.append("| Variant | AUC | Same Post. | Diff Post. | Separation | Cal. Error | Pairs |")
+    lines.append("|---------|-----|------------|------------|------------|------------|-------|")
+    for vid in sorted(bayesian_metrics.keys()):
+        m = bayesian_metrics[vid]
+        lines.append(
+            f"| {vid} | {m['auc']:.3f} | {m['same_mean_posterior']:.3f} "
+            f"| {m['diff_mean_posterior']:.3f} | {m['separation']:.3f} "
+            f"| {m['calibration_error']:.3f} | {m['pair_count']} |"
+        )
+    lines.append("")
+    lines.append("### Winner\n")
+    winner = max(bayesian_metrics.keys(), key=lambda v: bayesian_metrics[v]["auc"])
+    wm = bayesian_metrics[winner]
+    lines.append(
+        f"**Variant {winner}** — AUC: {wm['auc']:.3f} "
+        f"(Separation: {wm['separation']:.3f}, "
+        f"Cal. Error: {wm['calibration_error']:.3f})"
+    )
+    lines.append("")
+
+
+def _render_v2_signal_diagnostics(signal_diagnostics: list[dict[str, Any]], lines: list[str]) -> None:
+    """Render signal diagnostics section — shows per-signal contribution and disagreements."""
+    lines.append("## Signal Diagnostics\n")
+    # Aggregate signal means per variant
+    from collections import defaultdict
+
+    by_variant: dict[str, list[dict]] = defaultdict(list)
+    for entry in signal_diagnostics:
+        by_variant[entry.get("variant", "?")].append(entry)
+
+    signal_keys = ["paired_signal", "embedding_signal", "scope_signal", "mechanism_signal"]
+    lines.append("| Variant | Paired | Embedding | Scope | Mechanism | Disagree % |")
+    lines.append("|---------|--------|-----------|-------|-----------|------------|")
+    for vid in sorted(by_variant.keys()):
+        entries = by_variant[vid]
+        means = {}
+        for key in signal_keys:
+            vals = [e.get(key, 0.0) for e in entries]
+            means[key] = sum(vals) / len(vals) if vals else 0.0
+        # Disagreement: entries where signals have mixed signs
+        disagree_count = 0
+        for e in entries:
+            signs = [e.get(k, 0.0) > 0 for k in signal_keys if e.get(k, 0.0) != 0]
+            if signs and not (all(signs) or not any(signs)):
+                disagree_count += 1
+        disagree_pct = disagree_count / len(entries) * 100 if entries else 0
+        lines.append(
+            f"| {vid} | {means['paired_signal']:+.2f} | {means['embedding_signal']:+.2f} "
+            f"| {means['scope_signal']:+.2f} | {means['mechanism_signal']:+.2f} "
+            f"| {disagree_pct:.0f}% |"
+        )
+    lines.append("")
 
 
 def render_v2_report(
@@ -1965,6 +2045,7 @@ def render_v2_report(
     reference_diagnosis: dict[str, dict[str, Any]] | None = None,
     simulation_lift: dict[str, dict[str, float]] | None = None,
     scored_pairs: list[dict[str, Any]] | None = None,
+    signal_diagnostics: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render unified V2 evaluation report as markdown.
 
@@ -1974,44 +2055,10 @@ def render_v2_report(
     lines.append("# Eval V2 Report\n")
     lines.append(f"Generated: {datetime.now(UTC).isoformat()}\n")
 
-    # 1. Tournament Results
     if tournament_metrics:
-        lines.append("## Tournament Results\n")
-        lines.append("| Variant | Win Rate | Discriminating | Principles | Comparisons | W/L/N |")
-        lines.append("|---------|----------|----------------|------------|-------------|-------|")
-        for vid in sorted(tournament_metrics.keys()):
-            m = tournament_metrics[vid]
-            lines.append(
-                f"| {vid} | {m['mean_win_rate']:.3f} | {m['discriminating_frac']:.2f} "
-                f"| {m['principle_count']} | {m['comparison_count']} "
-                f"| {m['total_wins']}/{m['total_losses']}/{m['total_neithers']} |"
-            )
-        lines.append("")
-
-    # 2. Bayesian Fusion
+        _render_v2_tournament(tournament_metrics, lines)
     if bayesian_metrics:
-        lines.append("## Bayesian Fusion\n")
-        lines.append("| Variant | AUC | Same Post. | Diff Post. | Separation | Cal. Error | Pairs |")
-        lines.append("|---------|-----|------------|------------|------------|------------|-------|")
-        for vid in sorted(bayesian_metrics.keys()):
-            m = bayesian_metrics[vid]
-            lines.append(
-                f"| {vid} | {m['auc']:.3f} | {m['same_mean_posterior']:.3f} "
-                f"| {m['diff_mean_posterior']:.3f} | {m['separation']:.3f} "
-                f"| {m['calibration_error']:.3f} | {m['pair_count']} |"
-            )
-        lines.append("")
-
-        # Winner by AUC
-        lines.append("### Winner\n")
-        winner = max(bayesian_metrics.keys(), key=lambda v: bayesian_metrics[v]["auc"])
-        wm = bayesian_metrics[winner]
-        lines.append(
-            f"**Variant {winner}** — AUC: {wm['auc']:.3f} "
-            f"(Separation: {wm['separation']:.3f}, "
-            f"Cal. Error: {wm['calibration_error']:.3f})"
-        )
-        lines.append("")
+        _render_v2_bayesian(bayesian_metrics, lines)
 
     # 3. Reference Comparison
     if reference_diagnosis:
@@ -2038,5 +2085,9 @@ def render_v2_report(
     # 5. Failure Analysis
     if scored_pairs:
         _render_v2_failure_analysis(scored_pairs, lines)
+
+    # 6. Signal Diagnostics
+    if signal_diagnostics:
+        _render_v2_signal_diagnostics(signal_diagnostics, lines)
 
     return "\n".join(lines) + "\n"
