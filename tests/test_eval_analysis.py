@@ -4,7 +4,9 @@ from lessons_db.eval.analysis import (
     bootstrap_f1_ci,
     compute_per_lesson_breakdown,
     compute_stability,
+    describe_prompt_diff,
     extract_failure_cases,
+    propose_next_variant,
 )
 
 # ---------------------------------------------------------------------------
@@ -333,3 +335,126 @@ class TestComputeStability:
         stability = compute_stability(entries)
         assert stability["A"]["n_runs"] == 1
         assert stability["A"]["stdev"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# TestDescribePromptDiff
+# ---------------------------------------------------------------------------
+
+
+class TestDescribePromptDiff:
+    def test_describes_contrastive_addition(self):
+        configs = {
+            "B": {
+                "prompt_id": "zero-shot-causal",
+                "model": "deepseek-r1:8b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+            },
+            "F": {
+                "prompt_id": "contrastive",
+                "model": "deepseek-r1:8b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+                "contrastive": True,
+            },
+        }
+        diff = describe_prompt_diff("B", "F", configs)
+        assert "contrastive" in diff.lower()
+        assert "boundary" in diff.lower() or "scope" in diff.lower() or "not apply" in diff.lower()
+
+    def test_describes_model_change(self):
+        configs = {
+            "B": {
+                "prompt_id": "zero-shot-causal",
+                "model": "deepseek-r1:8b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+            },
+            "D": {
+                "prompt_id": "zero-shot-causal",
+                "model": "qwen3:14b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+            },
+        }
+        diff = describe_prompt_diff("B", "D", configs)
+        assert "model" in diff.lower()
+
+    def test_same_config_returns_identical(self):
+        configs = {"A": {"prompt_id": "x", "model": "m", "temperature": 0.7}}
+        diff = describe_prompt_diff("A", "A", configs)
+        assert "identical" in diff.lower() or "same" in diff.lower()
+
+    def test_unknown_variant_graceful(self):
+        diff = describe_prompt_diff("A", "ZZ", {})
+        assert "unknown" in diff.lower()
+
+
+# ---------------------------------------------------------------------------
+# TestProposeNextVariant
+# ---------------------------------------------------------------------------
+
+
+class TestProposeNextVariant:
+    def test_returns_valid_config(self):
+        best = {
+            "variant": "F",
+            "f1": 0.52,
+            "config": {
+                "prompt_id": "contrastive",
+                "model": "deepseek-r1:8b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+                "contrastive": True,
+            },
+        }
+        ablation_impacts = {"contrastive": [0.12, 0.08], "model": [-0.03]}
+        proposal = propose_next_variant(best, ablation_impacts, existing_ids=["A", "B", "F"])
+        assert "variant_id" in proposal
+        assert "config" in proposal
+        assert "hypothesis" in proposal
+        assert proposal["variant_id"].startswith("X")
+
+    def test_avoids_existing_ids(self):
+        best = {
+            "variant": "F",
+            "f1": 0.52,
+            "config": {
+                "prompt_id": "contrastive",
+                "model": "deepseek-r1:8b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+                "contrastive": True,
+            },
+        }
+        existing = ["A", "B", "F", "X01", "X02"]
+        proposal = propose_next_variant(best, {}, existing_ids=existing)
+        assert proposal["variant_id"] not in existing
+
+    def test_returns_none_with_no_best_config(self):
+        best = {"variant": "F", "f1": 0.52}  # no "config" key
+        proposal = propose_next_variant(best, {})
+        assert proposal is None
+
+    def test_hypothesis_mentions_change(self):
+        best = {
+            "variant": "F",
+            "f1": 0.52,
+            "config": {
+                "prompt_id": "contrastive",
+                "model": "deepseek-r1:8b",
+                "temperature": 0.6,
+                "num_ctx": 8192,
+                "chunked": False,
+                "contrastive": True,
+            },
+        }
+        proposal = propose_next_variant(best, {}, existing_ids=[])
+        assert len(proposal["hypothesis"]) > 10
