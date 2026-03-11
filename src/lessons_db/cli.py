@@ -2786,8 +2786,14 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
     default="category",
     help="Grouping field for same/diff targets (default: category).",
 )
+@click.option(
+    "--holdout",
+    type=float,
+    default=None,
+    help="Reserve this fraction as a held-out test set (e.g. 0.3 = 30%). Prevents Goodhart overfitting.",
+)
 @click.pass_context
-def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, group_by):
+def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, group_by, holdout):
     """Generate principles across prompt variants for transfer-test evaluation.
 
     Runs each variant (prompt x model x settings) across a fixed set of source
@@ -2823,7 +2829,12 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, gro
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
         output_path = EVAL_DIR / f"results-{ts}.json"
 
-    click.echo(f"Eval-generate: {len(variant_list)} variants x {len(sources)} lessons")
+    if holdout is not None:
+        holdout_count = max(1, round(len(sources) * holdout)) if len(sources) >= 2 else 0
+        dev_count = len(sources) - holdout_count
+        click.echo(f"Eval-generate: {len(variant_list)} variants x {dev_count} dev lessons ({holdout_count} held out)")
+    else:
+        click.echo(f"Eval-generate: {len(variant_list)} variants x {len(sources)} lessons")
     click.echo(f"Output: {output_path}")
 
     # Warm models (deduplicate)
@@ -2845,6 +2856,7 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, gro
         progress_callback=_progress,
         priority=priority,
         group_by=group_by,
+        holdout_fraction=holdout,
     )
 
     total = len(result["results"])

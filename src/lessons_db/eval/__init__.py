@@ -144,6 +144,9 @@ from lessons_db.eval.reports import (
 from lessons_db.eval.sampling import (
     _select_diverse as _select_diverse,
 )
+from lessons_db.eval.sampling import (
+    increment_eval_seen as increment_eval_seen,
+)
 
 # --- sampling ---
 from lessons_db.eval.sampling import (
@@ -151,6 +154,9 @@ from lessons_db.eval.sampling import (
 )
 from lessons_db.eval.sampling import (
     select_transfer_targets as select_transfer_targets,
+)
+from lessons_db.eval.sampling import (
+    split_holdout as split_holdout,
 )
 from lessons_db.eval.signals import (
     _PRIOR_LOG_ODDS as _PRIOR_LOG_ODDS,

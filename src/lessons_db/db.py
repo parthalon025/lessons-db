@@ -484,6 +484,14 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912, 
             if "duplicate column name" not in str(e):
                 raise
 
+    # eval rotation counter — tracks how many eval runs have sampled each lesson
+    try:
+        conn.execute("ALTER TABLE lessons ADD COLUMN seen_in_eval INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
 
 def _seed_scan_state(conn: sqlite3.Connection) -> None:
     """Seed scan_state defaults (idempotent via INSERT OR IGNORE)."""

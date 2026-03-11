@@ -14,7 +14,7 @@ from lessons_db.eval.prompts import (
     build_generation_prompt,
     build_mechanism_extraction_prompt,
 )
-from lessons_db.eval.sampling import select_source_lessons
+from lessons_db.eval.sampling import increment_eval_seen, select_source_lessons, split_holdout
 from lessons_db.eval.signals import parse_mechanism_triplet
 from lessons_db.eval.variants import VALID_GROUP_BY, VARIANT_CONFIGS
 
@@ -213,18 +213,19 @@ def _save_results(
     source_ids: list[int],
     results: list[dict[str, Any]],
     group_by: str = "category",
+    holdout_ids: list[int] | None = None,
 ) -> None:
     """Write results JSON to disk (called incrementally after each generation)."""
-    output = {
-        "meta": {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "variants": variants,
-            "per_cluster": per_cluster,
-            "group_by": group_by,
-            "source_lessons": source_ids,
-        },
-        "results": results,
+    meta: dict[str, Any] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "variants": variants,
+        "per_cluster": per_cluster,
+        "group_by": group_by,
+        "source_lessons": source_ids,
     }
+    if holdout_ids:
+        meta["holdout_lessons"] = holdout_ids
+    output = {"meta": meta, "results": results}
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(_json.dumps(output, indent=2))
 
@@ -239,11 +240,14 @@ def run_eval_generate(
     progress_callback: Any = None,
     priority: int | None = None,
     group_by: str = "category",
+    holdout_fraction: float | None = None,
 ) -> dict[str, Any]:
     """Run eval-generate: produce principles for all (variant, lesson) pairs.
 
     Saves results incrementally to output_path as JSON.
     When priority is set, passes it to ollama-queue for job prioritization.
+    When holdout_fraction is set, reserves that fraction as a held-out test set
+    (not used for generation) to prevent Goodhart overfitting.
     """
     # Load existing results if resuming
     existing_results: list[dict[str, Any]] = []
@@ -252,7 +256,17 @@ def run_eval_generate(
         existing_results, completed_pairs = _load_resume_state(output_path)
 
     # Select source lessons
-    sources = select_source_lessons(conn, per_cluster=per_cluster, group_by=group_by)
+    all_sources = select_source_lessons(conn, per_cluster=per_cluster, group_by=group_by)
+
+    # Optionally split into dev (used for generation) and held-out test set
+    holdout_ids: list[int] = []
+    if holdout_fraction is not None:
+        sources, holdout = split_holdout(all_sources, holdout_fraction=holdout_fraction)
+        holdout_ids = [s["id"] for s in holdout]
+        _log.info("Holdout split: %d dev, %d test", len(sources), len(holdout))
+    else:
+        sources = all_sources
+
     source_ids = [s["id"] for s in sources]
 
     # Build results structure
@@ -288,17 +302,23 @@ def run_eval_generate(
                 progress_callback(variant_id, lesson["id"], entry["principle"] is not None)
 
             # Incremental save after each generation to survive crashes
-            _save_results(output_path, variants, per_cluster, source_ids, results, group_by=group_by)
+            _save_results(
+                output_path, variants, per_cluster, source_ids, results, group_by=group_by, holdout_ids=holdout_ids
+            )
 
     # Final save with updated timestamp
-    _save_results(output_path, variants, per_cluster, source_ids, results, group_by=group_by)
-    return {
-        "meta": {
-            "generated_at": datetime.now(UTC).isoformat(),
-            "variants": variants,
-            "per_cluster": per_cluster,
-            "group_by": group_by,
-            "source_lessons": source_ids,
-        },
-        "results": results,
+    _save_results(output_path, variants, per_cluster, source_ids, results, group_by=group_by, holdout_ids=holdout_ids)
+
+    # Increment rotation counter so future runs deprioritise these lessons
+    increment_eval_seen(conn, source_ids)
+
+    meta: dict[str, Any] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "variants": variants,
+        "per_cluster": per_cluster,
+        "group_by": group_by,
+        "source_lessons": source_ids,
     }
+    if holdout_ids:
+        meta["holdout_lessons"] = holdout_ids
+    return {"meta": meta, "results": results}

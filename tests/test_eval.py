@@ -32,6 +32,7 @@ from lessons_db.eval import (
     compute_tournament_metrics,
     compute_transfer_posterior,
     diagnose_vs_reference,
+    increment_eval_seen,
     parse_binary_judge,
     parse_judge_scores,
     parse_mechanism_triplet,
@@ -44,6 +45,7 @@ from lessons_db.eval import (
     run_paired_tournament,
     select_source_lessons,
     select_transfer_targets,
+    split_holdout,
 )
 
 # ---------------------------------------------------------------------------
@@ -734,6 +736,66 @@ class TestRunEvalGenerate:
         a_results = [r for r in data["results"] if r["variant"] == "A" and r["lesson_id"] == ids["A"][0]]
         assert len(a_results) == 1
         assert a_results[0]["principle"] == "Already done"
+        conn.close()
+
+    def test_increments_seen_in_eval_after_run(self, db_path, tmp_path):
+        """run_eval_generate increments seen_in_eval on all source lessons after completion."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "Principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        # Every source lesson used in the run must have seen_in_eval = 1
+        data = json.loads(output_path.read_text())
+        source_ids = data["meta"]["source_lessons"]
+        assert len(source_ids) > 0
+        for sid in source_ids:
+            row = conn.execute("SELECT seen_in_eval FROM lessons WHERE id = ?", (sid,)).fetchone()
+            assert row["seen_in_eval"] == 1, f"Lesson {sid} not incremented: {row['seen_in_eval']}"
+        conn.close()
+
+    def test_holdout_excluded_from_source_lessons(self, db_path, tmp_path):
+        """With --holdout, held-out lessons appear in meta but not in source_lessons."""
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "Principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A"],
+                per_cluster=4,
+                output_path=output_path,
+                resume=False,
+                holdout_fraction=0.3,
+            )
+
+        data = json.loads(output_path.read_text())
+        source_ids = set(data["meta"]["source_lessons"])
+        holdout_ids = set(data["meta"].get("holdout_lessons", []))
+
+        assert len(holdout_ids) > 0, "Expected at least one holdout lesson"
+        assert source_ids.isdisjoint(holdout_ids), "Source and holdout sets must not overlap"
         conn.close()
 
     def test_records_errors(self, db_path, tmp_path):
@@ -2857,4 +2919,169 @@ class TestEvalV2EndToEnd:
         assert "| A |" in report
         assert "| B |" in report
 
-        conn.close()
+
+# ---------------------------------------------------------------------------
+# TestEvalSetRotation
+# ---------------------------------------------------------------------------
+
+
+class TestEvalSetRotation:
+    """seen_in_eval counter: column exists, selection deprioritizes overused, increment works."""
+
+    def test_seen_in_eval_column_exists(self, db_path):
+        """init_db must create the seen_in_eval column on the lessons table."""
+        conn = init_db(db_path)
+        row = conn.execute("PRAGMA table_info(lessons)").fetchall()
+        col_names = [r["name"] for r in row]
+        assert "seen_in_eval" in col_names, f"seen_in_eval column missing; found: {col_names}"
+
+    def test_select_prefers_unseen_lessons(self, db_path):
+        """When fresh lessons are available, overused ones (seen_in_eval >= 4) are excluded."""
+        conn = init_db(db_path)
+        # One cluster with 6 lessons: 3 fresh, 3 overused
+        cluster = {
+            "Z": [
+                ("Fresh 0", "integration"),
+                ("Fresh 1", "testing"),
+                ("Fresh 2", "monitoring"),
+                ("Overused 0", "data-model"),
+                ("Overused 1", "error-handling"),
+                ("Overused 2", "caching"),
+            ]
+        }
+        ids = _seed_clusters(conn, cluster)
+        overused_ids = ids["Z"][3:]
+        for oid in overused_ids:
+            conn.execute("UPDATE lessons SET seen_in_eval = 4 WHERE id = ?", (oid,))
+        conn.commit()
+
+        results = select_source_lessons(conn, per_cluster=3, group_by="cluster_seed")
+        result_ids = {r["id"] for r in results}
+        for oid in overused_ids:
+            assert oid not in result_ids, f"Overused lesson {oid} should not be selected when fresh ones exist"
+
+    def test_select_falls_back_to_overused_when_needed(self, db_path):
+        """When fresh lessons are insufficient, overused ones fill remaining slots."""
+        conn = init_db(db_path)
+        # Cluster with 4 lessons total: only 1 fresh, 3 overused — quota is 3
+        cluster = {
+            "Z": [
+                ("Fresh 0", "integration"),
+                ("Overused 0", "testing"),
+                ("Overused 1", "monitoring"),
+                ("Overused 2", "data-model"),
+            ]
+        }
+        ids = _seed_clusters(conn, cluster)
+        overused_ids = ids["Z"][1:]
+        for oid in overused_ids:
+            conn.execute("UPDATE lessons SET seen_in_eval = 4 WHERE id = ?", (oid,))
+        conn.commit()
+
+        results = select_source_lessons(conn, per_cluster=3, group_by="cluster_seed")
+        # Should return 3 lessons (1 fresh + 2 overused to fill quota)
+        assert len(results) == 3
+        result_ids = {r["id"] for r in results}
+        # Fresh lesson must be included
+        assert ids["Z"][0] in result_ids
+
+    def test_increment_eval_seen_from_zero(self, db_path):
+        """increment_eval_seen increments counter from 0 to 1 for given IDs."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        target_ids = ids["A"][:2]
+
+        increment_eval_seen(conn, target_ids)
+
+        for tid in target_ids:
+            row = conn.execute("SELECT seen_in_eval FROM lessons WHERE id = ?", (tid,)).fetchone()
+            assert row["seen_in_eval"] == 1, f"Expected 1, got {row['seen_in_eval']} for id {tid}"
+
+    def test_increment_eval_seen_accumulates(self, db_path):
+        """Multiple increment_eval_seen calls accumulate correctly."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        target_id = ids["A"][0]
+
+        increment_eval_seen(conn, [target_id])
+        increment_eval_seen(conn, [target_id])
+        increment_eval_seen(conn, [target_id])
+
+        row = conn.execute("SELECT seen_in_eval FROM lessons WHERE id = ?", (target_id,)).fetchone()
+        assert row["seen_in_eval"] == 3
+
+    def test_increment_eval_seen_empty_list_is_noop(self, db_path):
+        """increment_eval_seen with empty list does not raise."""
+        conn = init_db(db_path)
+        increment_eval_seen(conn, [])  # must not raise
+
+    def test_increment_does_not_affect_other_lessons(self, db_path):
+        """increment_eval_seen only modifies the specified IDs."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        target_id = ids["A"][0]
+        other_id = ids["A"][1]
+
+        increment_eval_seen(conn, [target_id])
+
+        other = conn.execute("SELECT seen_in_eval FROM lessons WHERE id = ?", (other_id,)).fetchone()
+        assert other["seen_in_eval"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TestHoldoutSplit
+# ---------------------------------------------------------------------------
+
+
+class TestHoldoutSplit:
+    """split_holdout: 70/30 dev/test split, no overlap, deterministic with seed."""
+
+    def _make_sources(self, n: int) -> list[dict]:
+        return [{"id": i, "title": f"Lesson {i}", "cluster_seed": "A"} for i in range(n)]
+
+    def test_split_ratio_approx_70_30(self):
+        """20 lessons → ~6 in test (30%), 14 in dev (70%)."""
+        sources = self._make_sources(20)
+        dev, test = split_holdout(sources, holdout_fraction=0.3, seed=42)
+        assert len(test) == 6
+        assert len(dev) == 14
+
+    def test_dev_plus_test_equals_total(self):
+        """dev + test must account for all source lessons."""
+        sources = self._make_sources(10)
+        dev, test = split_holdout(sources, holdout_fraction=0.3, seed=42)
+        assert len(dev) + len(test) == 10
+
+    def test_no_overlap_between_dev_and_test(self):
+        """No lesson ID appears in both dev and test."""
+        sources = self._make_sources(15)
+        dev, test = split_holdout(sources, holdout_fraction=0.3, seed=42)
+        dev_ids = {s["id"] for s in dev}
+        test_ids = {s["id"] for s in test}
+        assert dev_ids.isdisjoint(test_ids), f"Overlap: {dev_ids & test_ids}"
+
+    def test_minimum_one_test_lesson(self):
+        """With 2+ lessons and any holdout_fraction, at least 1 goes to test."""
+        sources = self._make_sources(3)
+        dev, test = split_holdout(sources, holdout_fraction=0.3, seed=42)
+        assert len(test) >= 1
+
+    def test_single_lesson_goes_to_test(self):
+        """With only 1 lesson, it goes to test and dev is empty (can't split meaningfully)."""
+        sources = self._make_sources(1)
+        dev, test = split_holdout(sources, holdout_fraction=0.3, seed=42)
+        assert len(test) == 1
+        assert len(dev) == 0
+
+    def test_empty_sources_returns_empty_both(self):
+        """Empty input returns two empty lists."""
+        dev, test = split_holdout([], holdout_fraction=0.3, seed=42)
+        assert dev == []
+        assert test == []
+
+    def test_deterministic_with_same_seed(self):
+        """Same seed produces identical splits."""
+        sources = self._make_sources(20)
+        dev1, test1 = split_holdout(sources, holdout_fraction=0.3, seed=99)
+        dev2, test2 = split_holdout(sources, holdout_fraction=0.3, seed=99)
+        assert [s["id"] for s in test1] == [s["id"] for s in test2]
