@@ -141,6 +141,12 @@ from lessons_db.eval.reports import (
 from lessons_db.eval.reports import (
     render_v2_report as render_v2_report,
 )
+from lessons_db.eval.runs import (
+    get_eval_history as get_eval_history,
+)
+from lessons_db.eval.runs import (
+    record_eval_run as record_eval_run,
+)
 from lessons_db.eval.sampling import (
     _select_diverse as _select_diverse,
 )

@@ -32,12 +32,14 @@ from lessons_db.eval import (
     compute_tournament_metrics,
     compute_transfer_posterior,
     diagnose_vs_reference,
+    get_eval_history,
     increment_eval_seen,
     parse_binary_judge,
     parse_judge_scores,
     parse_mechanism_triplet,
     parse_paired_judge,
     parse_simulation_result,
+    record_eval_run,
     render_report,
     render_v2_report,
     run_eval_generate,
@@ -3085,3 +3087,170 @@ class TestHoldoutSplit:
         dev1, test1 = split_holdout(sources, holdout_fraction=0.3, seed=99)
         dev2, test2 = split_holdout(sources, holdout_fraction=0.3, seed=99)
         assert [s["id"] for s in test1] == [s["id"] for s in test2]
+
+
+# ---------------------------------------------------------------------------
+# TestEvalRunHistory
+# ---------------------------------------------------------------------------
+
+
+class TestEvalRunHistory:
+    """eval_runs table: schema, record, query, trend computation."""
+
+    def test_eval_runs_table_exists(self, db_path):
+        """init_db must create the eval_runs table."""
+        conn = init_db(db_path)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "eval_runs" in tables, f"eval_runs table missing; found: {tables}"
+
+    def test_record_eval_run_inserts_row(self, db_path):
+        """record_eval_run returns an id and a matching row is retrievable."""
+        conn = init_db(db_path)
+        run_id = record_eval_run(
+            conn,
+            variant="B",
+            f1=0.45,
+            recall=0.80,
+            precision=0.31,
+        )
+        assert isinstance(run_id, int)
+        row = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
+        assert row is not None
+        assert row["variant"] == "B"
+        assert abs(row["f1"] - 0.45) < 1e-6
+        assert abs(row["recall"] - 0.80) < 1e-6
+        assert abs(row["precision"] - 0.31) < 1e-6
+
+    def test_record_eval_run_optional_fields(self, db_path):
+        """Optional fields (auc, model, judge_model, prompt_id, results_file, notes) default to None."""
+        conn = init_db(db_path)
+        run_id = record_eval_run(conn, variant="A", f1=0.10, recall=0.90, precision=0.06)
+        row = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
+        assert row["auc"] is None
+        assert row["model"] is None
+        assert row["judge_model"] is None
+        assert row["prompt_id"] is None
+        assert row["results_file"] is None
+        assert row["notes"] is None
+
+    def test_record_eval_run_with_all_fields(self, db_path):
+        """All optional fields are stored and retrievable."""
+        conn = init_db(db_path)
+        run_id = record_eval_run(
+            conn,
+            variant="G",
+            f1=0.55,
+            recall=0.75,
+            precision=0.44,
+            auc=0.72,
+            model="qwen3:14b",
+            judge_model="deepseek-r1:8b",
+            prompt_id="contrastive",
+            results_file="/var/results.json",  # noqa: S108
+            notes="first contrastive run",
+        )
+        row = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
+        assert abs(row["auc"] - 0.72) < 1e-6
+        assert row["model"] == "qwen3:14b"
+        assert row["judge_model"] == "deepseek-r1:8b"
+        assert row["prompt_id"] == "contrastive"
+        assert row["results_file"] == "/var/results.json"
+        assert row["notes"] == "first contrastive run"
+
+    def test_get_eval_history_returns_all_variants(self, db_path):
+        """get_eval_history with no filter returns rows for all variants."""
+        conn = init_db(db_path)
+        record_eval_run(conn, variant="A", f1=0.10, recall=0.90, precision=0.06)
+        record_eval_run(conn, variant="B", f1=0.32, recall=0.85, precision=0.20)
+        record_eval_run(conn, variant="G", f1=0.14, recall=0.98, precision=0.07)
+
+        history = get_eval_history(conn)
+        variants = {r["variant"] for r in history}
+        assert "A" in variants
+        assert "B" in variants
+        assert "G" in variants
+
+    def test_get_eval_history_filters_by_variant(self, db_path):
+        """get_eval_history with variant='B' returns only B rows."""
+        conn = init_db(db_path)
+        record_eval_run(conn, variant="A", f1=0.10, recall=0.90, precision=0.06)
+        record_eval_run(conn, variant="B", f1=0.32, recall=0.85, precision=0.20)
+        record_eval_run(conn, variant="B", f1=0.35, recall=0.82, precision=0.23)
+
+        history = get_eval_history(conn, variant="B")
+        assert all(r["variant"] == "B" for r in history)
+        assert len(history) == 2
+
+    def test_get_eval_history_sorted_newest_first(self, db_path):
+        """get_eval_history returns rows sorted by run_date descending."""
+        conn = init_db(db_path)
+        record_eval_run(conn, variant="A", f1=0.10, recall=0.90, precision=0.06)
+        record_eval_run(conn, variant="A", f1=0.20, recall=0.85, precision=0.12)
+        record_eval_run(conn, variant="A", f1=0.30, recall=0.80, precision=0.21)
+
+        history = get_eval_history(conn, variant="A")
+        f1_values = [r["f1"] for r in history]
+        # Newest first = highest f1 first (since we recorded in ascending order)
+        assert f1_values == sorted(f1_values, reverse=True)
+
+    def test_get_eval_history_respects_limit(self, db_path):
+        """get_eval_history limit parameter caps the result count."""
+        conn = init_db(db_path)
+        for i in range(10):
+            record_eval_run(conn, variant="A", f1=i * 0.05, recall=0.9, precision=0.1)
+
+        history = get_eval_history(conn, variant="A", limit=3)
+        assert len(history) == 3
+
+    def test_get_eval_history_empty_db(self, db_path):
+        """get_eval_history on empty DB returns empty list."""
+        conn = init_db(db_path)
+        assert get_eval_history(conn) == []
+
+    def test_run_eval_judge_records_history(self, db_path, tmp_path):
+        """run_eval_judge automatically records one eval_run row per variant."""
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+
+        # Build a minimal results JSON with variant A
+        results_path = tmp_path / "results.json"
+        sources = select_source_lessons(conn, per_cluster=1, group_by="cluster_seed")
+        source = sources[0]
+        results_path.write_text(
+            __import__("json").dumps(
+                {
+                    "meta": {"variants": ["A"], "per_cluster": 1},
+                    "results": [
+                        {
+                            "variant": "A",
+                            "lesson_id": source["id"],
+                            "cluster_seed": source.get("cluster_seed", ""),
+                            "principle": "When X fails silently, downstream state is corrupted.",
+                            "error": None,
+                        }
+                    ],
+                }
+            )
+        )
+        report_path = tmp_path / "report.md"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = (
+            __import__("json")
+            .dumps({"response": '{"transfer": 4, "precision": 3, "actionability": 3}'})
+            .encode("utf-8")
+        )
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            run_eval_judge(
+                results_path=results_path,
+                conn=conn,
+                report_path=report_path,
+            )
+
+        history = get_eval_history(conn, variant="A")
+        assert len(history) >= 1, "Expected at least one eval_run row for variant A"
+        assert history[0]["variant"] == "A"
+        assert history[0]["f1"] is not None

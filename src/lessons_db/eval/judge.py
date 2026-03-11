@@ -14,6 +14,7 @@ from lessons_db.eval.prompts import (
     build_judge_prompt,
     build_paired_judge_prompt,
 )
+from lessons_db.eval.runs import record_eval_run
 from lessons_db.eval.sampling import select_transfer_targets
 from lessons_db.eval.variants import VARIANT_CONFIGS
 
@@ -452,5 +453,20 @@ def run_eval_judge(
     # Save scored pairs for diagnostic tools (confusion matrix, etc.)
     scored_path = report_path.with_suffix(".scored.json")
     scored_path.write_text(_json.dumps(scored_pairs, indent=2))
+
+    # Persist aggregate metrics for regression tracking and APO history
+    for variant_id, m in metrics.items():
+        variant_cfg = VARIANT_CONFIGS.get(variant_id, {})
+        record_eval_run(
+            conn,
+            variant=variant_id,
+            f1=m.get("f1", 0.0),
+            recall=m.get("recall", 0.0),
+            precision=m.get("precision", 0.0),
+            model=variant_cfg.get("model"),
+            judge_model=ollama_model or openai_model,
+            prompt_id=variant_cfg.get("prompt_id"),
+            results_file=str(results_path),
+        )
 
     return scored_pairs, metrics

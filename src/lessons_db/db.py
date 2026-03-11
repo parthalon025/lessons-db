@@ -440,6 +440,22 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912, 
             num_ctx INTEGER NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS eval_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            f1 REAL,
+            recall REAL,
+            precision REAL,
+            auc REAL,
+            model TEXT,
+            judge_model TEXT,
+            prompt_id TEXT,
+            results_file TEXT,
+            notes TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_eval_runs_variant_date
+            ON eval_runs(variant, run_date DESC);
     """)
 
     # v9 principle column — domain-independent principle extracted by LLM

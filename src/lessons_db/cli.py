@@ -3003,6 +3003,60 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
             click.echo(f"\n  program.md updated: {program_md}")
 
 
+@meta.command("eval-history")
+@click.option("--variant", default=None, help="Filter to a specific variant (e.g. B, G).")
+@click.option("--limit", default=20, type=int, help="Maximum rows to show per variant (default: 20).")
+@click.pass_context
+def meta_eval_history(ctx, variant, limit):
+    """Show eval run history with F1 trend across judge runs.
+
+    Each row corresponds to one eval-judge invocation. Use this to track
+    whether prompt changes are improving or regressing F1 over time.
+    """
+    from lessons_db.eval import get_eval_history
+
+    conn = ctx.obj["conn"]
+    history = get_eval_history(conn, variant=variant, limit=limit)
+
+    if not history:
+        click.echo("No eval runs recorded yet. Run eval-judge to populate history.")
+        return
+
+    # Group by variant for trend computation
+    by_variant: dict[str, list[dict]] = {}
+    for row in history:
+        by_variant.setdefault(row["variant"], []).append(row)
+
+    click.echo(f"\n{'Variant':<8} {'Date':<26} {'F1':>6} {'Recall':>7} {'Precision':>10} {'Trend':<5} {'Model'}")
+    click.echo("-" * 90)
+
+    for row in history:
+        v = row["variant"]
+        variant_rows = by_variant[v]
+        # Trend: compare this row's f1 to the next older row for same variant
+        idx = variant_rows.index(row)
+        if idx + 1 < len(variant_rows):
+            older_f1 = variant_rows[idx + 1]["f1"] or 0.0
+            current_f1 = row["f1"] or 0.0
+            if current_f1 > older_f1 + 0.01:
+                trend = "↑"
+            elif current_f1 < older_f1 - 0.01:
+                trend = "↓"
+            else:
+                trend = "="
+        else:
+            trend = "—"
+
+        f1 = f"{row['f1']:.3f}" if row["f1"] is not None else "  —  "
+        recall = f"{row['recall']:.3f}" if row["recall"] is not None else "  —  "
+        precision = f"{row['precision']:.3f}" if row["precision"] is not None else "  —  "
+        model = row["model"] or ""
+        date = row["run_date"][:19].replace("T", " ")
+        click.echo(f"{v:<8} {date:<26} {f1:>6} {recall:>7} {precision:>10} {trend:<5} {model}")
+
+    click.echo(f"\nTotal: {len(history)} run(s).")
+
+
 @meta.command("eval-learn")
 @click.argument("results_file", type=click.Path(exists=True))
 @click.option("--trends", is_flag=True, help="Show variant trends across all historical runs.")
