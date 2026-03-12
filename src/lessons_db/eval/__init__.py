@@ -101,6 +101,26 @@ from lessons_db.eval.learn import (
 from lessons_db.eval.learn import (
     run_eval_learn as run_eval_learn,
 )
+
+# --- optimize (APO) ---
+from lessons_db.eval.optimize import (
+    build_feedback_prompt as build_feedback_prompt,
+)
+from lessons_db.eval.optimize import (
+    build_opro_prompt as build_opro_prompt,
+)
+from lessons_db.eval.optimize import (
+    load_all_variant_configs as load_all_variant_configs,
+)
+from lessons_db.eval.optimize import (
+    next_x_id as next_x_id,
+)
+from lessons_db.eval.optimize import (
+    parse_optimizer_candidates as parse_optimizer_candidates,
+)
+from lessons_db.eval.optimize import (
+    register_apo_variant as register_apo_variant,
+)
 from lessons_db.eval.prompts import (
     _build_self_critique_prompt as _build_self_critique_prompt,
 )
