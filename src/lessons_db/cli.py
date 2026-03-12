@@ -3473,6 +3473,7 @@ def meta_eval_optimize(
     opro-api   Same as opro but uses an API model. Most reliable (~$0.01/iter).
                Requires --openai flag.
     """
+    import json as json_mod
     from datetime import UTC, datetime
 
     from lessons_db.config import DATA_DIR, OLLAMA_QUEUE_URL
@@ -3492,6 +3493,17 @@ def meta_eval_optimize(
     eval_dir = DATA_DIR / "eval"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve_instruction(variant_id: str) -> str:
+        """Look up instruction text: hand-authored first, then DB, then fallback."""
+        try:
+            return get_instruction_text(variant_id)
+        except KeyError:
+            row = conn.execute(
+                "SELECT instruction_text FROM prompt_variants WHERE variant_id = ?",
+                (variant_id,),
+            ).fetchone()
+            return row["instruction_text"] if row else ""
+
     # Determine parent variant (best F1 from eval_runs, or fallback)
     if parent is None:
         history = get_eval_history(conn, limit=50)
@@ -3507,30 +3519,20 @@ def meta_eval_optimize(
         hist = get_eval_history(conn, variant=parent, limit=1)
         best_f1 = hist[0]["f1"] if hist else 0.0
 
-    # Get parent instruction text
-    try:
-        parent_instruction = get_instruction_text(parent)
-    except KeyError:
-        # APO variant — load from DB
-        row = conn.execute(
-            "SELECT instruction_text FROM prompt_variants WHERE variant_id = ?",
-            (parent,),
-        ).fetchone()
-        parent_instruction = row["instruction_text"] if row else "Extract the principle."
+    parent_instruction = _resolve_instruction(parent) or "Extract the principle."
 
     click.echo(f"Strategy: {strategy} | Candidates: {candidates} | Max iterations: {max_iterations}")
+
+    optimizer_model = "qwen3:14b"
 
     for iteration in range(1, max_iterations + 1):
         click.echo(f"\n--- Iteration {iteration}/{max_iterations} ---")
 
         # Build optimizer prompt based on strategy
         if strategy == "feedback":
-            # Load most recent scored pairs for false positives
             scored_files = sorted(eval_dir.glob("*.scored.json"), reverse=True)
-            false_positives = []
+            false_positives: list[dict] = []
             if scored_files:
-                import json as json_mod
-
                 scored_data = json_mod.loads(scored_files[0].read_text())
                 false_positives = [
                     p for p in scored_data if not p.get("is_same_cluster") and p.get("scores", {}).get("matched")
@@ -3542,29 +3544,20 @@ def meta_eval_optimize(
                 n_candidates=candidates,
             )
         else:
-            # OPRO or OPRO-API — build history
-            hist = get_eval_history(conn, limit=10)
-            opro_history = []
-            for h in hist:
-                vid = h["variant"]
-                try:
-                    instr = get_instruction_text(vid)
-                except KeyError:
-                    row = conn.execute(
-                        "SELECT instruction_text FROM prompt_variants WHERE variant_id = ?",
-                        (vid,),
-                    ).fetchone()
-                    instr = row["instruction_text"] if row else ""
-                if instr:
-                    opro_history.append({"instruction_text": instr, "f1": h.get("f1", 0.0)})
-            # Deduplicate by instruction text, keep best F1
-            seen = {}
-            for entry in opro_history:
-                key = entry["instruction_text"][:100]
-                if key not in seen or entry["f1"] > seen[key]["f1"]:
-                    seen[key] = entry
-            opro_history = list(seen.values())[:5]
-            optimizer_prompt = build_opro_prompt(history=opro_history, n_candidates=candidates)
+            # OPRO or OPRO-API — build deduplicated history (best F1 per instruction)
+            seen: dict[str, dict] = {}
+            for h in get_eval_history(conn, limit=10):
+                instr = _resolve_instruction(h["variant"])
+                if not instr:
+                    continue
+                key = instr[:100]
+                f1 = h.get("f1", 0.0)
+                if key not in seen or f1 > seen[key]["f1"]:
+                    seen[key] = {"instruction_text": instr, "f1": f1}
+            optimizer_prompt = build_opro_prompt(
+                history=list(seen.values())[:5],
+                n_candidates=candidates,
+            )
 
         if dry_run:
             click.echo("--- Optimizer prompt ---")
@@ -3574,7 +3567,6 @@ def meta_eval_optimize(
 
         # Call optimizer LLM
         click.echo("Calling optimizer LLM...")
-        optimizer_model = "qwen3:14b"  # default for feedback
         optimizer_response = call_ollama(
             queue_url=OLLAMA_QUEUE_URL,
             model=optimizer_model,
@@ -3588,7 +3580,6 @@ def meta_eval_optimize(
             click.echo("Optimizer returned no response. Skipping iteration.", err=True)
             continue
 
-        # Parse candidates
         parsed = parse_optimizer_candidates(optimizer_response)
         if not parsed:
             click.echo("Failed to parse optimizer candidates. Skipping iteration.", err=True)
@@ -3635,22 +3626,21 @@ def meta_eval_optimize(
             priority=priority,
         )
 
-        # Report results
+        # Report results and promote best
         for vid, m in metrics.items():
             f1 = m.get("f1", 0.0)
             delta = f1 - best_f1
-            symbol = "+" if delta > 0 else "-" if delta < 0 else "="
+            if delta > 0:
+                symbol = "+"
+            elif delta < 0:
+                symbol = "-"
+            else:
+                symbol = "="
             click.echo(f"  {vid}: F1={f1:.3f} ({symbol}{abs(delta):.3f} vs parent)")
             if f1 > best_f1:
                 best_f1 = f1
                 parent = vid
-                # Load the new best instruction for next iteration
-                row = conn.execute(
-                    "SELECT instruction_text FROM prompt_variants WHERE variant_id = ?",
-                    (vid,),
-                ).fetchone()
-                if row:
-                    parent_instruction = row["instruction_text"]
+                parent_instruction = _resolve_instruction(vid) or parent_instruction
                 click.echo(f"  New best: {vid} (F1={f1:.3f})")
 
     click.echo(f"\nDone. Best variant: {parent} (F1={best_f1:.3f})")
