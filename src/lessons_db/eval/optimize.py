@@ -12,6 +12,7 @@ import json as _json
 import logging
 import re as _re
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from lessons_db.eval.variants import VARIANT_CONFIGS
@@ -142,3 +143,64 @@ def build_opro_prompt(
         "Return JSON array:\n"
         '[{"instruction": "...", "hypothesis": "why this should score higher"}]'
     )
+
+
+def next_x_id(conn: sqlite3.Connection) -> str:
+    """Generate the next available X-ID (X01, X02, ...) checking both code and DB."""
+    existing_db = {r[0] for r in conn.execute("SELECT variant_id FROM prompt_variants").fetchall()}
+    existing = existing_db | set(VARIANT_CONFIGS.keys())
+    for i in range(1, 100):
+        candidate = f"X{i:02d}"
+        if candidate not in existing:
+            return candidate
+    raise RuntimeError("X-ID space exhausted (X01-X99 all taken)")
+
+
+def register_apo_variant(
+    conn: sqlite3.Connection,
+    instruction_text: str,
+    parent_variant: str,
+    strategy: str,
+    optimizer_model: str | None = None,
+    hypothesis: str | None = None,
+    config_overrides: dict[str, Any] | None = None,
+) -> str:
+    """Register an APO-generated variant in the DB. Returns the new variant_id.
+
+    Config is inherited from parent_variant (must be in VARIANT_CONFIGS or DB),
+    with prompt_id set to 'apo-generated'. config_overrides can override
+    specific fields (e.g. temperature).
+    """
+    # Build config from parent
+    if parent_variant in VARIANT_CONFIGS:
+        config = dict(VARIANT_CONFIGS[parent_variant])
+    else:
+        row = conn.execute(
+            "SELECT config_json FROM prompt_variants WHERE variant_id = ?",
+            (parent_variant,),
+        ).fetchone()
+        config = _json.loads(row["config_json"]) if row else dict(VARIANT_CONFIGS.get("D", {}))
+
+    config["prompt_id"] = "apo-generated"
+    if config_overrides:
+        config.update(config_overrides)
+
+    variant_id = next_x_id(conn)
+    conn.execute(
+        """INSERT INTO prompt_variants
+           (variant_id, instruction_text, config_json, parent_variant,
+            strategy, optimizer_model, hypothesis, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            variant_id,
+            instruction_text,
+            _json.dumps(config),
+            parent_variant,
+            strategy,
+            optimizer_model,
+            hypothesis,
+            datetime.now(UTC).isoformat(),
+        ),
+    )
+    conn.commit()
+    return variant_id

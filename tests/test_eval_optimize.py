@@ -10,7 +10,9 @@ from lessons_db.eval.optimize import (
     build_feedback_prompt,
     build_opro_prompt,
     load_all_variant_configs,
+    next_x_id,
     parse_optimizer_candidates,
+    register_apo_variant,
 )
 
 
@@ -272,3 +274,69 @@ class TestOproStrategy:
             n_candidates=3,
         )
         assert "JSON" in prompt
+
+
+class TestVariantRegistration:
+    """Register APO-generated variants in the DB."""
+
+    def test_next_x_id_starts_at_x01(self, db_path):
+        """First X-ID is X01."""
+        conn = init_db(db_path)
+        assert next_x_id(conn) == "X01"
+
+    def test_next_x_id_increments(self, db_path):
+        """After X01 exists, next is X02."""
+        conn = init_db(db_path)
+        conn.execute(
+            """INSERT INTO prompt_variants
+               (variant_id, instruction_text, config_json, strategy, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("X01", "t", "{}", "feedback", "2026-01-01"),
+        )
+        conn.commit()
+        assert next_x_id(conn) == "X02"
+
+    def test_next_x_id_skips_gaps(self, db_path):
+        """If X01 and X03 exist, next is X02 (fills gaps)."""
+        conn = init_db(db_path)
+        for xid in ["X01", "X03"]:
+            conn.execute(
+                """INSERT INTO prompt_variants
+                   (variant_id, instruction_text, config_json, strategy, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (xid, "t", "{}", "feedback", "2026-01-01"),
+            )
+        conn.commit()
+        assert next_x_id(conn) == "X02"
+
+    def test_register_writes_to_db(self, db_path):
+        """register_apo_variant writes a row and returns the variant_id."""
+        conn = init_db(db_path)
+        vid = register_apo_variant(
+            conn,
+            instruction_text="New instruction",
+            parent_variant="D",
+            strategy="feedback",
+            optimizer_model="qwen3:14b",
+            hypothesis="reduce false positives",
+            config_overrides={"model": "qwen3:14b"},
+        )
+        assert vid.startswith("X")
+        row = conn.execute("SELECT * FROM prompt_variants WHERE variant_id = ?", (vid,)).fetchone()
+        assert row is not None
+        assert row["instruction_text"] == "New instruction"
+        assert row["parent_variant"] == "D"
+
+    def test_register_uses_parent_config(self, db_path):
+        """config_json inherits from parent variant config."""
+        conn = init_db(db_path)
+        vid = register_apo_variant(
+            conn,
+            instruction_text="Instr",
+            parent_variant="D",
+            strategy="feedback",
+        )
+        row = conn.execute("SELECT config_json FROM prompt_variants WHERE variant_id = ?", (vid,)).fetchone()
+        config = json.loads(row["config_json"])
+        assert config["model"] == "qwen3:14b"  # inherited from D
+        assert config["prompt_id"] == "apo-generated"
