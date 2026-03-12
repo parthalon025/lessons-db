@@ -101,6 +101,26 @@ from lessons_db.eval.learn import (
 from lessons_db.eval.learn import (
     run_eval_learn as run_eval_learn,
 )
+
+# --- optimize (APO) ---
+from lessons_db.eval.optimize import (
+    build_feedback_prompt as build_feedback_prompt,
+)
+from lessons_db.eval.optimize import (
+    build_opro_prompt as build_opro_prompt,
+)
+from lessons_db.eval.optimize import (
+    load_all_variant_configs as load_all_variant_configs,
+)
+from lessons_db.eval.optimize import (
+    next_x_id as next_x_id,
+)
+from lessons_db.eval.optimize import (
+    parse_optimizer_candidates as parse_optimizer_candidates,
+)
+from lessons_db.eval.optimize import (
+    register_apo_variant as register_apo_variant,
+)
 from lessons_db.eval.prompts import (
     _build_self_critique_prompt as _build_self_critique_prompt,
 )
@@ -124,6 +144,9 @@ from lessons_db.eval.prompts import (
 from lessons_db.eval.prompts import (
     build_simulation_prompt as build_simulation_prompt,
 )
+from lessons_db.eval.prompts import (
+    get_instruction_text as get_instruction_text,
+)
 
 # --- reports ---
 from lessons_db.eval.reports import (
@@ -141,8 +164,17 @@ from lessons_db.eval.reports import (
 from lessons_db.eval.reports import (
     render_v2_report as render_v2_report,
 )
+from lessons_db.eval.runs import (
+    get_eval_history as get_eval_history,
+)
+from lessons_db.eval.runs import (
+    record_eval_run as record_eval_run,
+)
 from lessons_db.eval.sampling import (
     _select_diverse as _select_diverse,
+)
+from lessons_db.eval.sampling import (
+    increment_eval_seen as increment_eval_seen,
 )
 
 # --- sampling ---
@@ -151,6 +183,9 @@ from lessons_db.eval.sampling import (
 )
 from lessons_db.eval.sampling import (
     select_transfer_targets as select_transfer_targets,
+)
+from lessons_db.eval.sampling import (
+    split_holdout as split_holdout,
 )
 from lessons_db.eval.signals import (
     _PRIOR_LOG_ODDS as _PRIOR_LOG_ODDS,

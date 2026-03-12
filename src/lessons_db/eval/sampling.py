@@ -1,11 +1,17 @@
 """Test set selection: source lessons and transfer targets."""
 
 import logging
+import random
 import sqlite3
+from typing import Any
 
 from lessons_db.eval.variants import VALID_GROUP_BY
 
 _log = logging.getLogger(__name__)
+
+# Lessons seen in this many or more eval runs are considered "overused" and
+# deprioritised during selection (fresh lessons are preferred first).
+SEEN_IN_EVAL_THRESHOLD = 4
 
 
 def select_source_lessons(conn: sqlite3.Connection, per_cluster: int = 4, group_by: str = "category") -> list[dict]:
@@ -15,12 +21,16 @@ def select_source_lessons(conn: sqlite3.Connection, per_cluster: int = 4, group_
     then picks up to ``per_cluster`` lessons per group maximising category
     diversity.
 
+    Lessons with ``seen_in_eval >= SEEN_IN_EVAL_THRESHOLD`` are deprioritised:
+    fresh lessons fill slots first; overused ones are only drawn when the
+    group has fewer fresh candidates than ``per_cluster``.
+
     Args:
         group_by: Column to group lessons by. Must be ``"category"`` (default)
             or ``"cluster_seed"``.
 
     Returns a flat list of lesson dicts with keys:
-        id, title, one_liner, description, cluster_seed, category
+        id, title, one_liner, description, cluster_seed, category, seen_in_eval
     """
     if group_by not in VALID_GROUP_BY:
         raise ValueError(f"group_by must be one of {VALID_GROUP_BY!r}, got {group_by!r}")
@@ -43,22 +53,31 @@ def select_source_lessons(conn: sqlite3.Connection, per_cluster: int = 4, group_
     for crow in cluster_rows:
         group_value = crow[group_by]
 
-        # Fetch all single-loop lessons in this group
+        # Fetch all single-loop lessons in this group, fresh ones first
         rows = conn.execute(
             f"""
-            SELECT id, title, one_liner, description, cluster_seed, category
+            SELECT id, title, one_liner, description, cluster_seed, category, seen_in_eval
             FROM lessons
             WHERE {group_by} = ?
               AND (loop_level IS NULL OR loop_level = 'single')
-            ORDER BY id
+            ORDER BY seen_in_eval ASC, id ASC
             """,
             (group_value,),
         ).fetchall()
 
         lessons = [dict(r) for r in rows]
 
-        # Greedy category-diversity selection
-        selected = _select_diverse(lessons, per_cluster)
+        # Two-pass: prefer fresh lessons; fall back to overused only if needed
+        fresh = [l for l in lessons if l["seen_in_eval"] < SEEN_IN_EVAL_THRESHOLD]
+        overused = [l for l in lessons if l["seen_in_eval"] >= SEEN_IN_EVAL_THRESHOLD]
+
+        selected = _select_diverse(fresh, per_cluster)
+        if len(selected) < per_cluster:
+            remaining = per_cluster - len(selected)
+            selected_ids = {l["id"] for l in selected}
+            filler = [l for l in overused if l["id"] not in selected_ids]
+            selected.extend(_select_diverse(filler, remaining))
+
         results.extend(selected)
 
     return results
@@ -161,3 +180,54 @@ def select_transfer_targets(
         "same_cluster": same_cluster,
         "diff_cluster": diff_cluster,
     }
+
+
+def increment_eval_seen(conn: sqlite3.Connection, lesson_ids: list[int]) -> None:
+    """Increment the seen_in_eval counter for each lesson in lesson_ids.
+
+    Call this after a successful eval-generate run so that the selection
+    function can deprioritise frequently sampled lessons on subsequent runs.
+    Empty list is a no-op.
+    """
+    if not lesson_ids:
+        return
+    placeholders = ",".join("?" * len(lesson_ids))
+    conn.execute(
+        f"UPDATE lessons SET seen_in_eval = seen_in_eval + 1 WHERE id IN ({placeholders})",
+        lesson_ids,
+    )
+    conn.commit()
+
+
+def split_holdout(
+    sources: list[dict[str, Any]],
+    holdout_fraction: float = 0.3,
+    seed: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split source lessons into a dev set and a held-out test set.
+
+    The test set is used for final validation only — never for optimising
+    variant prompts — to prevent Goodhart overfitting to the eval sample.
+
+    Args:
+        sources: Flat list of lesson dicts (as returned by select_source_lessons).
+        holdout_fraction: Fraction to reserve for the test set (default 0.3).
+        seed: Optional random seed for reproducibility.
+
+    Returns:
+        (dev_set, test_set) — disjoint lists, dev + test == sources.
+    """
+    if not sources:
+        return [], []
+
+    rng = random.Random(seed)  # noqa: S311 — not cryptographic, sampling only
+    shuffled = list(sources)
+    rng.shuffle(shuffled)
+
+    if len(shuffled) == 1:
+        return [], [shuffled[0]]
+
+    test_size = max(1, round(len(shuffled) * holdout_fraction))
+    test_set = shuffled[:test_size]
+    dev_set = shuffled[test_size:]
+    return dev_set, test_set

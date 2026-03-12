@@ -440,6 +440,36 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912, 
             num_ctx INTEGER NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS eval_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            f1 REAL,
+            recall REAL,
+            precision REAL,
+            auc REAL,
+            model TEXT,
+            judge_model TEXT,
+            prompt_id TEXT,
+            results_file TEXT,
+            notes TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_eval_runs_variant_date
+            ON eval_runs(variant, run_date DESC);
+
+        CREATE TABLE IF NOT EXISTS prompt_variants (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            variant_id      TEXT NOT NULL UNIQUE,
+            instruction_text TEXT NOT NULL,
+            config_json     TEXT NOT NULL,
+            parent_variant  TEXT,
+            strategy        TEXT NOT NULL,
+            optimizer_model TEXT,
+            hypothesis      TEXT,
+            created_at      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prompt_variants_variant
+            ON prompt_variants(variant_id);
     """)
 
     # v9 principle column — domain-independent principle extracted by LLM
@@ -483,6 +513,14 @@ def _add_extension_columns(conn: sqlite3.Connection) -> None:  # noqa: PLR0912, 
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e):
                 raise
+
+    # eval rotation counter — tracks how many eval runs have sampled each lesson
+    try:
+        conn.execute("ALTER TABLE lessons ADD COLUMN seen_in_eval INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
 
 
 def _seed_scan_state(conn: sqlite3.Connection) -> None:

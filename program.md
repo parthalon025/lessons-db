@@ -75,6 +75,11 @@ Priority order (most likely to improve precision):
 6. **Larger context** — try 16384 or 32768 if the model supports it
 7. **group-by cluster_seed** — alternative grouping; add `--group-by cluster_seed` flag
 8. **Contrastive + chunked + larger model** — no variant covers this combination yet
+9. **APO: `eval-optimize`** — automatic prompt optimization. Three strategies:
+   - `feedback` (default): shows false positives to optimizer, asks for instruction fixes
+   - `opro`: OPRO meta-prompt with score-sorted history (requires 32B+ model)
+   - `opro-api`: same as opro via API (Claude/GPT-4o-mini)
+   Usage: `lessons-db meta eval-optimize --strategy feedback --candidates 3`
 
 ## Running one experiment
 
@@ -129,8 +134,8 @@ next hypothesis. This is how the research org improves:
 These notes inform every subsequent hypothesis. Never skip this step.
 
 ## Learned so far
-- 2026-03-09: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
-- 2026-03-09: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
+- 2026-03-12: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
+- 2026-03-11: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
 - 2026-03-09: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
 
 *(This section is written by the agent — one line per completed experiment)*

@@ -14,6 +14,7 @@ from lessons_db.eval.prompts import (
     build_judge_prompt,
     build_paired_judge_prompt,
 )
+from lessons_db.eval.runs import record_eval_run
 from lessons_db.eval.sampling import select_transfer_targets
 from lessons_db.eval.variants import VARIANT_CONFIGS
 
@@ -444,6 +445,9 @@ def run_eval_judge(
                     progress_callback(variant, target["id"], label, scores)
 
     metrics = compute_metrics(scored_pairs)
+    # Rank metrics use transfer scores (1-5 rubric); skip for binary mode
+    _is_binary = any("matched" in p.get("scores", {}) for p in scored_pairs)
+    rank_metrics = {} if _is_binary else compute_rank_metrics(scored_pairs)
 
     report = render_report(metrics, scored_pairs, VARIANT_CONFIGS)
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -452,5 +456,22 @@ def run_eval_judge(
     # Save scored pairs for diagnostic tools (confusion matrix, etc.)
     scored_path = report_path.with_suffix(".scored.json")
     scored_path.write_text(_json.dumps(scored_pairs, indent=2))
+
+    # Persist aggregate metrics for regression tracking and APO history
+    for variant_id, m in metrics.items():
+        variant_cfg = VARIANT_CONFIGS.get(variant_id, {})
+        rank_m = rank_metrics.get(variant_id, {})
+        record_eval_run(
+            conn,
+            variant=variant_id,
+            f1=m.get("f1", 0.0),
+            recall=m.get("recall", 0.0),
+            precision=m.get("precision", 0.0),
+            auc=rank_m.get("mean_auc"),
+            model=variant_cfg.get("model"),
+            judge_model=ollama_model or openai_model,
+            prompt_id=variant_cfg.get("prompt_id"),
+            results_file=str(results_path),
+        )
 
     return scored_pairs, metrics

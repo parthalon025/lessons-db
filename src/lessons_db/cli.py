@@ -2786,8 +2786,14 @@ def meta_generate_meta_lessons(ctx, min_cluster_size, dry_run, model):
     default="category",
     help="Grouping field for same/diff targets (default: category).",
 )
+@click.option(
+    "--holdout",
+    type=float,
+    default=None,
+    help="Reserve this fraction as a held-out test set (e.g. 0.3 = 30%). Prevents Goodhart overfitting.",
+)
 @click.pass_context
-def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, group_by):
+def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, group_by, holdout):
     """Generate principles across prompt variants for transfer-test evaluation.
 
     Runs each variant (prompt x model x settings) across a fixed set of source
@@ -2823,7 +2829,12 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, gro
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
         output_path = EVAL_DIR / f"results-{ts}.json"
 
-    click.echo(f"Eval-generate: {len(variant_list)} variants x {len(sources)} lessons")
+    if holdout is not None:
+        holdout_count = max(1, round(len(sources) * holdout)) if len(sources) >= 2 else 0
+        dev_count = len(sources) - holdout_count
+        click.echo(f"Eval-generate: {len(variant_list)} variants x {dev_count} dev lessons ({holdout_count} held out)")
+    else:
+        click.echo(f"Eval-generate: {len(variant_list)} variants x {len(sources)} lessons")
     click.echo(f"Output: {output_path}")
 
     # Warm models (deduplicate)
@@ -2845,6 +2856,7 @@ def meta_eval_generate(ctx, variants, per_cluster, output, resume, priority, gro
         progress_callback=_progress,
         priority=priority,
         group_by=group_by,
+        holdout_fraction=holdout,
     )
 
     total = len(result["results"])
@@ -2989,6 +3001,60 @@ def meta_eval_judge(ctx, results_file, output, use_openai, judge_model, priority
                 click.echo(f"\nFailure cases: {fp_count} false positives, {fn_count} false negatives")
         if program_md.exists():
             click.echo(f"\n  program.md updated: {program_md}")
+
+
+@meta.command("eval-history")
+@click.option("--variant", default=None, help="Filter to a specific variant (e.g. B, G).")
+@click.option("--limit", default=20, type=int, help="Maximum rows to show per variant (default: 20).")
+@click.pass_context
+def meta_eval_history(ctx, variant, limit):
+    """Show eval run history with F1 trend across judge runs.
+
+    Each row corresponds to one eval-judge invocation. Use this to track
+    whether prompt changes are improving or regressing F1 over time.
+    """
+    from lessons_db.eval import get_eval_history
+
+    conn = ctx.obj["conn"]
+    history = get_eval_history(conn, variant=variant, limit=limit)
+
+    if not history:
+        click.echo("No eval runs recorded yet. Run eval-judge to populate history.")
+        return
+
+    # Group by variant for trend computation
+    by_variant: dict[str, list[dict]] = {}
+    for row in history:
+        by_variant.setdefault(row["variant"], []).append(row)
+
+    click.echo(f"\n{'Variant':<8} {'Date':<26} {'F1':>6} {'Recall':>7} {'Precision':>10} {'Trend':<5} {'Model'}")
+    click.echo("-" * 90)
+
+    for row in history:
+        v = row["variant"]
+        variant_rows = by_variant[v]
+        # Trend: compare this row's f1 to the next older row for same variant
+        idx = variant_rows.index(row)
+        if idx + 1 < len(variant_rows):
+            older_f1 = variant_rows[idx + 1]["f1"] or 0.0
+            current_f1 = row["f1"] or 0.0
+            if current_f1 > older_f1 + 0.01:
+                trend = "↑"
+            elif current_f1 < older_f1 - 0.01:
+                trend = "↓"
+            else:
+                trend = "="
+        else:
+            trend = "—"
+
+        f1 = f"{row['f1']:.3f}" if row["f1"] is not None else "  —  "
+        recall = f"{row['recall']:.3f}" if row["recall"] is not None else "  —  "
+        precision = f"{row['precision']:.3f}" if row["precision"] is not None else "  —  "
+        model = row["model"] or ""
+        date = row["run_date"][:19].replace("T", " ")
+        click.echo(f"{v:<8} {date:<26} {f1:>6} {recall:>7} {precision:>10} {trend:<5} {model}")
+
+    click.echo(f"\nTotal: {len(history)} run(s).")
 
 
 @meta.command("eval-learn")
@@ -3374,6 +3440,220 @@ def meta_eval_simulate(ctx, results_file, output, trials, model, priority):
             )
         )
         click.echo(f"\nResults saved to {out_path}")
+
+
+@meta.command("eval-optimize")
+@click.option(
+    "--strategy",
+    type=click.Choice(["feedback", "opro"]),
+    default="feedback",
+    help="Optimization strategy: feedback (default, 14B+), opro (best with 32B+).",
+)
+@click.option("--candidates", type=int, default=3, help="Number of prompt candidates per iteration (default: 3).")
+@click.option("--max-iterations", type=int, default=3, help="Maximum optimization iterations (default: 3).")
+@click.option("--holdout", type=float, default=0.3, help="Holdout fraction for Goodhart prevention (default: 0.3).")
+@click.option("--per-cluster", type=int, default=4, help="Lessons per cluster for eval (default: 4).")
+@click.option("--parent", type=str, default=None, help="Variant to optimize from (default: auto-detect best).")
+@click.option("--dry-run", is_flag=True, help="Show what would be generated without running eval.")
+@click.option("--priority", type=int, default=None, help="Queue priority for eval jobs.")
+@click.pass_context
+def meta_eval_optimize(ctx, strategy, candidates, max_iterations, holdout, per_cluster, parent, dry_run, priority):
+    """Automatic Prompt Optimization — generate improved instruction texts.
+
+    Two strategies:
+
+    \b
+    feedback   (default) Analyze false positives and ask the optimizer to fix
+               instruction flaws. Works with local 14B+ models.
+    opro       OPRO pattern (DeepMind ICLR 2024): show top-3 prompts + F1
+               scores, ask for better ones. Best with 32B+ local model.
+    """
+    import json as json_mod
+    from datetime import UTC, datetime
+
+    from lessons_db.config import DATA_DIR, OLLAMA_QUEUE_URL
+    from lessons_db.eval.client import call_ollama
+    from lessons_db.eval.generate import run_eval_generate
+    from lessons_db.eval.judge import run_eval_judge
+    from lessons_db.eval.optimize import (
+        build_feedback_prompt,
+        build_opro_prompt,
+        parse_optimizer_candidates,
+        register_apo_variant,
+    )
+    from lessons_db.eval.prompts import get_instruction_text
+    from lessons_db.eval.runs import get_eval_history
+
+    conn = ctx.obj["conn"]
+    eval_dir = DATA_DIR / "eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_instruction(variant_id: str) -> str:
+        """Look up instruction text: hand-authored first, then DB.
+
+        Raises click.ClickException if variant has no instruction text.
+        """
+        try:
+            return get_instruction_text(variant_id)
+        except KeyError:
+            row = conn.execute(
+                "SELECT instruction_text FROM prompt_variants WHERE variant_id = ?",
+                (variant_id,),
+            ).fetchone()
+            if row is None:
+                raise click.ClickException(
+                    f"Variant {variant_id!r} has no instruction text in " f"VARIANT_CONFIGS or prompt_variants table."
+                )
+            return row["instruction_text"]
+
+    # Determine parent variant (best F1 from eval_runs, or fallback)
+    if parent is None:
+        history = get_eval_history(conn, limit=50)
+        if history:
+            best = max(history, key=lambda r: r.get("f1") or 0.0)
+            parent = best["variant"]
+            best_f1 = best.get("f1") or 0.0
+        else:
+            parent = "D"
+            best_f1 = 0.0
+        click.echo(f"Auto-selected parent variant: {parent} (F1={best_f1:.3f})")
+    else:
+        hist = get_eval_history(conn, variant=parent, limit=1)
+        best_f1 = (hist[0].get("f1") or 0.0) if hist else 0.0
+        if not hist:
+            click.echo(
+                f"Warning: Parent variant {parent!r} has no eval history. "
+                f"Using F1=0.0 as baseline — all candidates will appear to improve.",
+                err=True,
+            )
+
+    parent_instruction = _resolve_instruction(parent)
+
+    click.echo(f"Strategy: {strategy} | Candidates: {candidates} | Max iterations: {max_iterations}")
+
+    optimizer_model = "qwen3:14b"
+
+    for iteration in range(1, max_iterations + 1):
+        click.echo(f"\n--- Iteration {iteration}/{max_iterations} ---")
+
+        # Build optimizer prompt based on strategy
+        if strategy == "feedback":
+            scored_files = sorted(eval_dir.glob("*.scored.json"), reverse=True)
+            false_positives: list[dict] = []
+            if scored_files:
+                scored_data = json_mod.loads(scored_files[0].read_text())
+                false_positives = [
+                    p for p in scored_data if not p.get("is_same_cluster") and p.get("scores", {}).get("matched")
+                ][:5]
+            optimizer_prompt = build_feedback_prompt(
+                instruction_text=parent_instruction,
+                f1=best_f1,
+                false_positives=false_positives,
+                n_candidates=candidates,
+            )
+        else:
+            # OPRO or OPRO-API — build deduplicated history (best F1 per instruction)
+            seen: dict[str, dict] = {}
+            for h in get_eval_history(conn, limit=10):
+                try:
+                    instr = _resolve_instruction(h["variant"])
+                except click.ClickException:
+                    # Variant was deleted or has no instruction text — skip from history
+                    continue
+                key = instr[:100]
+                f1 = h.get("f1", 0.0)
+                if key not in seen or f1 > seen[key]["f1"]:
+                    seen[key] = {"instruction_text": instr, "f1": f1}
+            optimizer_prompt = build_opro_prompt(
+                history=list(seen.values())[:5],
+                n_candidates=candidates,
+            )
+
+        if dry_run:
+            click.echo("--- Optimizer prompt ---")
+            click.echo(optimizer_prompt[:500] + "..." if len(optimizer_prompt) > 500 else optimizer_prompt)
+            click.echo("--- (dry run — not calling LLM) ---")
+            return
+
+        # Call optimizer LLM
+        click.echo("Calling optimizer LLM...")
+        optimizer_response = call_ollama(
+            queue_url=OLLAMA_QUEUE_URL,
+            model=optimizer_model,
+            prompt=optimizer_prompt,
+            settings={"temperature": 0.8, "num_ctx": 8192},
+            priority=priority,
+            source="eval-optimize",
+        )
+
+        if not optimizer_response:
+            click.echo("Optimizer returned no response. Skipping iteration.", err=True)
+            continue
+
+        parsed = parse_optimizer_candidates(optimizer_response)
+        if not parsed:
+            click.echo("Failed to parse optimizer candidates. Skipping iteration.", err=True)
+            continue
+
+        click.echo(f"Parsed {len(parsed)} candidates")
+
+        # Register variants
+        new_variant_ids = []
+        for candidate in parsed[:candidates]:
+            vid = register_apo_variant(
+                conn,
+                instruction_text=candidate["instruction"],
+                parent_variant=parent,
+                strategy=strategy,
+                optimizer_model=optimizer_model,
+                hypothesis=candidate.get("hypothesis"),
+            )
+            new_variant_ids.append(vid)
+            click.echo(f"  Registered {vid}: {candidate.get('hypothesis', '')[:60]}")
+
+        # Run eval cycle
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+        output_path = eval_dir / f"apo-{ts}.json"
+        report_path = eval_dir / f"apo-{ts}-report.md"
+
+        click.echo(f"Running eval-generate for {new_variant_ids}...")
+        run_eval_generate(
+            conn=conn,
+            queue_url=OLLAMA_QUEUE_URL,
+            variants=new_variant_ids,
+            per_cluster=per_cluster,
+            output_path=output_path,
+            resume=False,
+            priority=priority,
+            holdout_fraction=holdout,
+        )
+
+        click.echo("Running eval-judge...")
+        _scored, metrics = run_eval_judge(
+            results_path=output_path,
+            conn=conn,
+            report_path=report_path,
+            priority=priority,
+        )
+
+        # Report results and promote best
+        for vid, m in metrics.items():
+            f1 = m.get("f1", 0.0)
+            delta = f1 - best_f1
+            if delta > 0:
+                symbol = "+"
+            elif delta < 0:
+                symbol = "-"
+            else:
+                symbol = "="
+            click.echo(f"  {vid}: F1={f1:.3f} ({symbol}{abs(delta):.3f} vs parent)")
+            if f1 > best_f1:
+                best_f1 = f1
+                parent = vid
+                parent_instruction = _resolve_instruction(vid)
+                click.echo(f"  New best: {vid} (F1={f1:.3f})")
+
+    click.echo(f"\nDone. Best variant: {parent} (F1={best_f1:.3f})")
 
 
 def find_meta_lesson_clusters(
