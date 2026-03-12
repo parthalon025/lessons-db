@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from lessons_db.db import init_db
-from lessons_db.eval.optimize import load_all_variant_configs
+from lessons_db.eval.optimize import load_all_variant_configs, parse_optimizer_candidates
 
 
 @pytest.fixture
@@ -116,3 +116,62 @@ class TestLoadAllVariantConfigs:
         # Hand-authored "A" should be preserved, DB row ignored
         assert merged["A"]["model"] == "deepseek-r1:8b"
         assert "_apo_generated" not in merged["A"]
+
+
+class TestParseCandidates:
+    """Parse optimizer LLM response into instruction candidates."""
+
+    def test_valid_json_array(self):
+        """Standard JSON array of candidates."""
+        response = '[{"instruction": "Do X", "hypothesis": "because Y"}]'
+        result = parse_optimizer_candidates(response)
+        assert len(result) == 1
+        assert result[0]["instruction"] == "Do X"
+        assert result[0]["hypothesis"] == "because Y"
+
+    def test_multiple_candidates(self):
+        """Multiple candidates parsed correctly."""
+        response = json.dumps(
+            [
+                {"instruction": "First", "hypothesis": "H1"},
+                {"instruction": "Second", "hypothesis": "H2"},
+                {"instruction": "Third", "hypothesis": "H3"},
+            ]
+        )
+        result = parse_optimizer_candidates(response)
+        assert len(result) == 3
+
+    def test_json_embedded_in_text(self):
+        """JSON array embedded in surrounding text/reasoning."""
+        response = 'Here are my suggestions:\n[{"instruction": "X", "hypothesis": "Y"}]\nDone.'
+        result = parse_optimizer_candidates(response)
+        assert len(result) == 1
+        assert result[0]["instruction"] == "X"
+
+    def test_invalid_json_returns_empty(self):
+        """Unparseable response returns empty list."""
+        result = parse_optimizer_candidates("This is not JSON at all")
+        assert result == []
+
+    def test_missing_instruction_key_skipped(self):
+        """Candidates without 'instruction' key are filtered out."""
+        response = json.dumps(
+            [
+                {"instruction": "Valid", "hypothesis": "H"},
+                {"text": "Missing instruction key", "hypothesis": "H2"},
+            ]
+        )
+        result = parse_optimizer_candidates(response)
+        assert len(result) == 1
+        assert result[0]["instruction"] == "Valid"
+
+    def test_think_tags_stripped(self):
+        """<think> blocks stripped before parsing."""
+        response = '<think>reasoning</think>[{"instruction": "X", "hypothesis": "Y"}]'
+        result = parse_optimizer_candidates(response)
+        assert len(result) == 1
+
+    def test_empty_response_returns_empty(self):
+        """None or empty string returns empty list."""
+        assert parse_optimizer_candidates("") == []
+        assert parse_optimizer_candidates(None) == []

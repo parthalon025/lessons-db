@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import re as _re
 import sqlite3
 from typing import Any
 
@@ -36,3 +37,35 @@ def load_all_variant_configs(conn: sqlite3.Connection) -> dict[str, dict[str, An
         config["_apo_generated"] = True
         merged[vid] = config
     return merged
+
+
+def parse_optimizer_candidates(response: str | None) -> list[dict[str, str]]:
+    """Parse optimizer LLM response into instruction candidates.
+
+    Expects a JSON array of objects with 'instruction' and 'hypothesis' keys.
+    Strips <think> blocks, extracts first JSON array from surrounding text.
+    Returns empty list on parse failure.
+    """
+    if not response:
+        return []
+
+    # Strip think blocks
+    text = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL | _re.IGNORECASE).strip()
+
+    # Find JSON array in response
+    match = _re.search(r"\[.*\]", text, flags=_re.DOTALL)
+    if not match:
+        _log.warning("No JSON array found in optimizer response")
+        return []
+
+    try:
+        data = _json.loads(match.group())
+    except _json.JSONDecodeError:
+        _log.warning("Failed to parse optimizer response as JSON")
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    # Filter to valid candidates
+    return [c for c in data if isinstance(c, dict) and "instruction" in c]
