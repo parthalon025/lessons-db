@@ -482,3 +482,86 @@ class TestGenerateWithApoVariants:
         # Verify results were written
         data = json.loads(output_path.read_text())
         assert any(r["variant"] == vid for r in data["results"])
+
+
+class TestEvalOptimizeEndToEnd:
+    """Full loop: load history -> optimize -> register -> eval -> record."""
+
+    def test_feedback_loop_registers_and_evaluates(self, db_path, tmp_path):
+        """Feedback strategy: produces candidates, registers them, runs eval."""
+        from click.testing import CliRunner
+
+        from lessons_db.cli import main
+        from tests.test_eval import _seed_clusters
+
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+
+        # Mock LLM responses at urllib level.
+        # call_ollama wraps urllib.request.urlopen and parses {"response": "..."}.
+        # Call order: 1=optimizer, then N=generator calls, then M=judge calls.
+        optimizer_candidates = json.dumps(
+            [
+                {"instruction": "Improved instruction 1", "hypothesis": "H1"},
+            ]
+        )
+        # Optimizer response — call_ollama expects {"response": "<text>"}
+        optimizer_body = json.dumps({"response": optimizer_candidates})
+        # Generator response
+        generator_body = json.dumps({"response": "Generated principle."})
+        # Judge response — parse_judge_scores expects {"transfer": N, ...} inside text
+        judge_body = json.dumps({"response": '{"transfer": 3, "precision": 3, "actionability": 3}'})
+
+        call_count = {"n": 0}
+
+        def mock_urlopen(req, *args, **kwargs):
+            call_count["n"] += 1
+            resp = MagicMock()
+            if call_count["n"] == 1:
+                # First call is the optimizer
+                resp.read.return_value = optimizer_body.encode("utf-8")
+            elif "judge" not in (req.data.decode("utf-8") if hasattr(req, "data") and req.data else ""):
+                # Generator calls — check source field to distinguish
+                data = json.loads(req.data.decode("utf-8")) if req.data else {}
+                if data.get("_source") == "eval-judge":
+                    resp.read.return_value = judge_body.encode("utf-8")
+                else:
+                    resp.read.return_value = generator_body.encode("utf-8")
+            else:
+                resp.read.return_value = judge_body.encode("utf-8")
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "--db",
+                    str(db_path),
+                    "meta",
+                    "eval-optimize",
+                    "--strategy",
+                    "feedback",
+                    "--candidates",
+                    "1",
+                    "--max-iterations",
+                    "1",
+                    "--per-cluster",
+                    "1",
+                ],
+            )
+
+        # Debug output on failure
+        if result.exit_code != 0:
+            raise AssertionError(
+                f"CLI exited with code {result.exit_code}\n"
+                f"Output: {result.output}\n"
+                f"Exception: {result.exception}"
+            ) from result.exception
+
+        # Should have registered at least one X-variant
+        rows = conn.execute("SELECT variant_id FROM prompt_variants").fetchall()
+        assert len(rows) >= 1
+        assert rows[0]["variant_id"].startswith("X")
