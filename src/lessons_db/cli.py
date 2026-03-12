@@ -3445,9 +3445,9 @@ def meta_eval_simulate(ctx, results_file, output, trials, model, priority):
 @meta.command("eval-optimize")
 @click.option(
     "--strategy",
-    type=click.Choice(["feedback", "opro", "opro-api"]),
+    type=click.Choice(["feedback", "opro"]),
     default="feedback",
-    help="Optimization strategy: feedback (default, 14B+), opro (32B+), opro-api (API).",
+    help="Optimization strategy: feedback (default, 14B+), opro (best with 32B+).",
 )
 @click.option("--candidates", type=int, default=3, help="Number of prompt candidates per iteration (default: 3).")
 @click.option("--max-iterations", type=int, default=3, help="Maximum optimization iterations (default: 3).")
@@ -3455,23 +3455,18 @@ def meta_eval_simulate(ctx, results_file, output, trials, model, priority):
 @click.option("--per-cluster", type=int, default=4, help="Lessons per cluster for eval (default: 4).")
 @click.option("--parent", type=str, default=None, help="Variant to optimize from (default: auto-detect best).")
 @click.option("--dry-run", is_flag=True, help="Show what would be generated without running eval.")
-@click.option("--openai", is_flag=True, help="Use OpenAI API for optimizer (opro-api strategy).")
 @click.option("--priority", type=int, default=None, help="Queue priority for eval jobs.")
 @click.pass_context
-def meta_eval_optimize(
-    ctx, strategy, candidates, max_iterations, holdout, per_cluster, parent, dry_run, openai, priority
-):
+def meta_eval_optimize(ctx, strategy, candidates, max_iterations, holdout, per_cluster, parent, dry_run, priority):
     """Automatic Prompt Optimization — generate improved instruction texts.
 
-    Three strategies:
+    Two strategies:
 
     \b
     feedback   (default) Analyze false positives and ask the optimizer to fix
                instruction flaws. Works with local 14B+ models.
     opro       OPRO pattern (DeepMind ICLR 2024): show top-3 prompts + F1
-               scores, ask for better ones. Requires 32B+ local model.
-    opro-api   Same as opro but uses an API model. Most reliable (~$0.01/iter).
-               Requires --openai flag.
+               scores, ask for better ones. Best with 32B+ local model.
     """
     import json as json_mod
     from datetime import UTC, datetime
@@ -3494,7 +3489,10 @@ def meta_eval_optimize(
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     def _resolve_instruction(variant_id: str) -> str:
-        """Look up instruction text: hand-authored first, then DB, then fallback."""
+        """Look up instruction text: hand-authored first, then DB.
+
+        Raises click.ClickException if variant has no instruction text.
+        """
         try:
             return get_instruction_text(variant_id)
         except KeyError:
@@ -3502,7 +3500,11 @@ def meta_eval_optimize(
                 "SELECT instruction_text FROM prompt_variants WHERE variant_id = ?",
                 (variant_id,),
             ).fetchone()
-            return row["instruction_text"] if row else ""
+            if row is None:
+                raise click.ClickException(
+                    f"Variant {variant_id!r} has no instruction text in " f"VARIANT_CONFIGS or prompt_variants table."
+                )
+            return row["instruction_text"]
 
     # Determine parent variant (best F1 from eval_runs, or fallback)
     if parent is None:
@@ -3510,16 +3512,22 @@ def meta_eval_optimize(
         if history:
             best = max(history, key=lambda r: r.get("f1") or 0.0)
             parent = best["variant"]
-            best_f1 = best["f1"]
+            best_f1 = best.get("f1") or 0.0
         else:
             parent = "D"
             best_f1 = 0.0
         click.echo(f"Auto-selected parent variant: {parent} (F1={best_f1:.3f})")
     else:
         hist = get_eval_history(conn, variant=parent, limit=1)
-        best_f1 = hist[0]["f1"] if hist else 0.0
+        best_f1 = (hist[0].get("f1") or 0.0) if hist else 0.0
+        if not hist:
+            click.echo(
+                f"Warning: Parent variant {parent!r} has no eval history. "
+                f"Using F1=0.0 as baseline — all candidates will appear to improve.",
+                err=True,
+            )
 
-    parent_instruction = _resolve_instruction(parent) or "Extract the principle."
+    parent_instruction = _resolve_instruction(parent)
 
     click.echo(f"Strategy: {strategy} | Candidates: {candidates} | Max iterations: {max_iterations}")
 
@@ -3547,8 +3555,10 @@ def meta_eval_optimize(
             # OPRO or OPRO-API — build deduplicated history (best F1 per instruction)
             seen: dict[str, dict] = {}
             for h in get_eval_history(conn, limit=10):
-                instr = _resolve_instruction(h["variant"])
-                if not instr:
+                try:
+                    instr = _resolve_instruction(h["variant"])
+                except click.ClickException:
+                    # Variant was deleted or has no instruction text — skip from history
                     continue
                 key = instr[:100]
                 f1 = h.get("f1", 0.0)
@@ -3640,7 +3650,7 @@ def meta_eval_optimize(
             if f1 > best_f1:
                 best_f1 = f1
                 parent = vid
-                parent_instruction = _resolve_instruction(vid) or parent_instruction
+                parent_instruction = _resolve_instruction(vid)
                 click.echo(f"  New best: {vid} (F1={f1:.3f})")
 
     click.echo(f"\nDone. Best variant: {parent} (F1={best_f1:.3f})")

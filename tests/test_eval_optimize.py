@@ -111,6 +111,21 @@ class TestLoadAllVariantConfigs:
         assert merged["X01"]["_apo_generated"] is True
         assert merged["X01"]["model"] == "qwen3:14b"
 
+    def test_corrupt_config_json_skipped(self, db_path):
+        """DB variant with corrupt JSON is skipped, not crash the whole load."""
+        conn = init_db(db_path)
+        conn.execute(
+            """INSERT INTO prompt_variants
+               (variant_id, instruction_text, config_json, strategy, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("X01", "Good instruction", "NOT VALID JSON{{{", "feedback", "2026-03-11"),
+        )
+        conn.commit()
+        merged = load_all_variant_configs(conn)
+        # Corrupt row should be skipped, hand-authored variants still present
+        assert "X01" not in merged
+        assert "A" in merged
+
     def test_db_does_not_override_hand_authored(self, db_path):
         """DB variant with same ID as hand-authored does NOT replace it."""
         conn = init_db(db_path)
@@ -438,6 +453,41 @@ class TestVariantRegistration:
         config = json.loads(row["config_json"])
         assert config["model"] == "qwen3:14b"  # inherited from D
         assert config["prompt_id"] == "apo-generated"
+
+    def test_register_chain_inherits_from_db_parent(self, db_path):
+        """X02 as child of X01 inherits X01's DB config, not variant D's."""
+        conn = init_db(db_path)
+        # Register X01 as child of D with a custom override
+        x01 = register_apo_variant(
+            conn,
+            instruction_text="First gen instruction",
+            parent_variant="D",
+            strategy="feedback",
+            config_overrides={"temperature": 0.2},
+        )
+        # Register X02 as child of X01 (DB-stored parent)
+        x02 = register_apo_variant(
+            conn,
+            instruction_text="Second gen instruction",
+            parent_variant=x01,
+            strategy="feedback",
+        )
+        row = conn.execute("SELECT config_json FROM prompt_variants WHERE variant_id = ?", (x02,)).fetchone()
+        config = json.loads(row["config_json"])
+        # Should inherit X01's temperature override, not D's default
+        assert config["temperature"] == 0.2
+        assert config["prompt_id"] == "apo-generated"
+
+    def test_register_unknown_parent_raises(self, db_path):
+        """Unknown parent variant raises ValueError, not silent fallback."""
+        conn = init_db(db_path)
+        with pytest.raises(ValueError, match="not found"):
+            register_apo_variant(
+                conn,
+                instruction_text="Should fail",
+                parent_variant="NONEXISTENT",
+                strategy="feedback",
+            )
 
 
 class TestGenerateWithApoVariants:

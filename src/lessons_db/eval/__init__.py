@@ -144,6 +144,9 @@ from lessons_db.eval.prompts import (
 from lessons_db.eval.prompts import (
     build_simulation_prompt as build_simulation_prompt,
 )
+from lessons_db.eval.prompts import (
+    get_instruction_text as get_instruction_text,
+)
 
 # --- reports ---
 from lessons_db.eval.reports import (

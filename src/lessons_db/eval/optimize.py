@@ -1,9 +1,8 @@
 """Automatic Prompt Optimization (APO) for the eval pipeline.
 
-Three strategies:
-  feedback   — analyze false positives, ask optimizer to fix instruction flaws
-  opro       — OPRO meta-prompt (DeepMind ICLR 2024), requires 32B+ local model
-  opro-api   — OPRO via API (Claude/GPT-4o-mini), most reliable
+Two strategies:
+  feedback   — analyze false positives, ask optimizer to fix instruction flaws (14B+)
+  opro       — OPRO meta-prompt (DeepMind ICLR 2024), best with 32B+ local model
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ def load_all_variant_configs(conn: sqlite3.Connection) -> dict[str, dict[str, An
     """Merge hand-authored VARIANT_CONFIGS with DB-stored APO variants.
 
     Hand-authored variants (A-H, M) always take precedence — a DB row
-    with variant_id='A' is silently skipped to prevent config corruption.
+    with variant_id='A' is skipped with a warning log to prevent config corruption.
     """
     merged: dict[str, dict[str, Any]] = dict(VARIANT_CONFIGS)
     rows = conn.execute("SELECT variant_id, config_json, instruction_text FROM prompt_variants").fetchall()
@@ -33,7 +32,11 @@ def load_all_variant_configs(conn: sqlite3.Connection) -> dict[str, dict[str, An
         if vid in VARIANT_CONFIGS:
             _log.warning("Skipping DB variant %s — hand-authored variant exists", vid)
             continue
-        config = _json.loads(row["config_json"])
+        try:
+            config = _json.loads(row["config_json"])
+        except _json.JSONDecodeError:
+            _log.error("Corrupt config_json for DB variant %s — skipping", vid)
+            continue
         config["_instruction_text"] = row["instruction_text"]
         config["_apo_generated"] = True
         merged[vid] = config
@@ -50,7 +53,7 @@ def parse_optimizer_candidates(response: str | None) -> list[dict[str, str]]:
     if not response:
         return []
 
-    # Strip think blocks
+    # Reasoning models (deepseek-r1, qwen3) wrap CoT in <think> tags
     text = _re.sub(r"<think>.*?</think>", "", response, flags=_re.DOTALL | _re.IGNORECASE).strip()
 
     # Find JSON array in response
@@ -68,7 +71,7 @@ def parse_optimizer_candidates(response: str | None) -> list[dict[str, str]]:
     if not isinstance(data, list):
         return []
 
-    # Filter to valid candidates
+    # LLM sometimes returns objects without the required 'instruction' key
     return [c for c in data if isinstance(c, dict) and "instruction" in c]
 
 
@@ -134,8 +137,8 @@ def build_opro_prompt(
         "You are optimizing a prompt instruction for a principle-extraction system.\n"
         "Below are past instructions sorted by F1 score (higher = better).\n\n"
         f"{history_block}\n\n"
-        "The main failure mode: high recall (>0.9) but low precision (0.07-0.17).\n"
-        "Principles match too broadly across unrelated bug categories.\n\n"
+        "The main failure mode: principles match too broadly across unrelated bug\n"
+        "categories, causing low precision. Focus on making principles more specific.\n\n"
         f"Generate {n_candidates} new instructions that should score higher. Each must:\n"
         "- Be a complete instruction (not a diff/edit)\n"
         "- Target precision improvement specifically\n"
@@ -167,8 +170,9 @@ def register_apo_variant(
 ) -> str:
     """Register an APO-generated variant in the DB. Returns the new variant_id.
 
-    Config is inherited from parent_variant (must be in VARIANT_CONFIGS or DB),
-    with prompt_id set to 'apo-generated'. config_overrides can override
+    Config is inherited from parent_variant (must be in VARIANT_CONFIGS or DB).
+    Raises ValueError if parent_variant is not found.
+    prompt_id is set to 'apo-generated'. config_overrides can override
     specific fields (e.g. temperature).
     """
     # Build config from parent
@@ -179,28 +183,33 @@ def register_apo_variant(
             "SELECT config_json FROM prompt_variants WHERE variant_id = ?",
             (parent_variant,),
         ).fetchone()
-        config = _json.loads(row["config_json"]) if row else dict(VARIANT_CONFIGS.get("D", {}))
+        if row is None:
+            raise ValueError(
+                f"Parent variant {parent_variant!r} not found in VARIANT_CONFIGS or prompt_variants. "
+                f"Available hand-authored: {sorted(VARIANT_CONFIGS.keys())}"
+            )
+        config = _json.loads(row["config_json"])
 
     config["prompt_id"] = "apo-generated"
     if config_overrides:
         config.update(config_overrides)
 
     variant_id = next_x_id(conn)
-    conn.execute(
-        """INSERT INTO prompt_variants
-           (variant_id, instruction_text, config_json, parent_variant,
-            strategy, optimizer_model, hypothesis, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            variant_id,
-            instruction_text,
-            _json.dumps(config),
-            parent_variant,
-            strategy,
-            optimizer_model,
-            hypothesis,
-            datetime.now(UTC).isoformat(),
-        ),
-    )
-    conn.commit()
+    with conn:
+        conn.execute(
+            """INSERT INTO prompt_variants
+               (variant_id, instruction_text, config_json, parent_variant,
+                strategy, optimizer_model, hypothesis, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                variant_id,
+                instruction_text,
+                _json.dumps(config),
+                parent_variant,
+                strategy,
+                optimizer_model,
+                hypothesis,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
     return variant_id
