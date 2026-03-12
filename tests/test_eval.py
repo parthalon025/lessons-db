@@ -828,6 +828,37 @@ class TestRunEvalGenerate:
         assert len(error_results) > 0
         conn.close()
 
+    def test_does_not_increment_seen_for_error_lessons(self, db_path, tmp_path):
+        """When all generations fail, seen_in_eval must not be incremented."""
+        conn = init_db(db_path)
+        ids = _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        import urllib.error
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.HTTPError("http://localhost", 502, "Bad Gateway", {}, None),
+            ),
+            patch("time.sleep"),
+        ):
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=["A"],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        # All generations errored — no lesson should have its counter incremented
+        all_ids = [lid for cluster in ids.values() for lid in cluster]
+        for lid in all_ids:
+            row = conn.execute("SELECT seen_in_eval FROM lessons WHERE id = ?", (lid,)).fetchone()
+            assert row["seen_in_eval"] == 0, f"Lesson {lid} was incorrectly incremented despite error"
+        conn.close()
+
     def test_includes_metadata(self, db_path, tmp_path):
         conn = init_db(db_path)
         _seed_clusters(conn)
@@ -3254,3 +3285,4 @@ class TestEvalRunHistory:
         assert len(history) >= 1, "Expected at least one eval_run row for variant A"
         assert history[0]["variant"] == "A"
         assert history[0]["f1"] is not None
+        assert history[0]["auc"] is not None, "auc must be populated (rank metrics from compute_rank_metrics)"

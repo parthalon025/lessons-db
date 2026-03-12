@@ -309,8 +309,9 @@ def run_eval_generate(
     # Final save with updated timestamp
     _save_results(output_path, variants, per_cluster, source_ids, results, group_by=group_by, holdout_ids=holdout_ids)
 
-    # Increment rotation counter so future runs deprioritise these lessons
-    increment_eval_seen(conn, source_ids)
+    # Increment rotation counter only for lessons with at least one successful principle
+    successful_ids = list({r["lesson_id"] for r in results if r.get("principle") is not None})
+    increment_eval_seen(conn, successful_ids)
 
     meta: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
