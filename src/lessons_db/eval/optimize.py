@@ -69,3 +69,76 @@ def parse_optimizer_candidates(response: str | None) -> list[dict[str, str]]:
 
     # Filter to valid candidates
     return [c for c in data if isinstance(c, dict) and "instruction" in c]
+
+
+def build_feedback_prompt(
+    instruction_text: str,
+    f1: float,
+    false_positives: list[dict[str, str]],
+    n_candidates: int = 3,
+) -> str:
+    """Build optimizer prompt for feedback strategy.
+
+    Shows the current instruction + its worst false positives and asks
+    the optimizer to fix the instruction to prevent them.
+    """
+    fp_lines = []
+    for i, fp in enumerate(false_positives[:5], 1):
+        fp_lines.append(
+            f"  {i}. Principle: \"{fp.get('principle', '')}\"\n"
+            f"     Wrongly matched: \"{fp.get('target_title', '')}\" "
+            f"(cluster: {fp.get('target_cluster_seed', '?')})\n"
+            f"     Source cluster: {fp.get('cluster_seed', '?')}"
+        )
+    fp_block = "\n".join(fp_lines) if fp_lines else "  (no false positives available)"
+
+    return (
+        "You are improving a principle-extraction prompt for a lessons-learned system.\n\n"
+        f"Current instruction (F1={f1:.3f}):\n"
+        "---\n"
+        f"{instruction_text}\n"
+        "---\n\n"
+        "This instruction produces principles that are too broad. Here are the worst\n"
+        "false positives — cases where a principle wrongly matched an unrelated lesson:\n\n"
+        f"{fp_block}\n\n"
+        "Analyze what about the current instruction causes these false matches.\n"
+        f"Then generate {n_candidates} improved instructions that would prevent them.\n\n"
+        "Each instruction must:\n"
+        "- Be a complete replacement (not a diff/edit)\n"
+        "- Be 50-200 words\n"
+        "- Target precision improvement specifically\n\n"
+        "Return JSON array:\n"
+        '[{"instruction": "...", "hypothesis": "why this should reduce false positives"}]'
+    )
+
+
+def build_opro_prompt(
+    history: list[dict[str, Any]],
+    n_candidates: int = 3,
+) -> str:
+    """Build OPRO-style meta-prompt with past prompts sorted by score.
+
+    Follows DeepMind OPRO (ICLR 2024): solution-score pairs sorted
+    ascending so the best prompt appears last (recency bias favors it).
+    """
+    sorted_history = sorted(history, key=lambda h: h.get("f1", 0.0))
+    prompt_lines = []
+    for entry in sorted_history:
+        f1 = entry.get("f1", 0.0)
+        text = entry.get("instruction_text", "")
+        prompt_lines.append(f'[Score: {f1:.3f}] "{text}"')
+    history_block = "\n\n".join(prompt_lines)
+
+    return (
+        "You are optimizing a prompt instruction for a principle-extraction system.\n"
+        "Below are past instructions sorted by F1 score (higher = better).\n\n"
+        f"{history_block}\n\n"
+        "The main failure mode: high recall (>0.9) but low precision (0.07-0.17).\n"
+        "Principles match too broadly across unrelated bug categories.\n\n"
+        f"Generate {n_candidates} new instructions that should score higher. Each must:\n"
+        "- Be a complete instruction (not a diff/edit)\n"
+        "- Target precision improvement specifically\n"
+        "- Be 50-200 words\n\n"
+        "Return JSON array:\n"
+        '[{"instruction": "...", "hypothesis": "why this should score higher"}]'
+    )

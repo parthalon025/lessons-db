@@ -6,7 +6,12 @@ import sqlite3
 import pytest
 
 from lessons_db.db import init_db
-from lessons_db.eval.optimize import load_all_variant_configs, parse_optimizer_candidates
+from lessons_db.eval.optimize import (
+    build_feedback_prompt,
+    build_opro_prompt,
+    load_all_variant_configs,
+    parse_optimizer_candidates,
+)
 
 
 @pytest.fixture
@@ -175,3 +180,95 @@ class TestParseCandidates:
         """None or empty string returns empty list."""
         assert parse_optimizer_candidates("") == []
         assert parse_optimizer_candidates(None) == []
+
+
+class TestFeedbackStrategy:
+    """Feedback strategy: shows false positives to optimizer."""
+
+    def test_includes_current_instruction(self):
+        """Prompt contains the current best instruction text."""
+        prompt = build_feedback_prompt(
+            instruction_text="Current instruction here",
+            f1=0.47,
+            false_positives=[
+                {
+                    "principle": "P1",
+                    "target_title": "T1",
+                    "target_cluster_seed": "X",
+                    "cluster_seed": "Y",
+                },
+            ],
+            n_candidates=3,
+        )
+        assert "Current instruction here" in prompt
+        assert "0.47" in prompt
+
+    def test_includes_false_positives(self):
+        """Prompt lists false positive examples."""
+        fps = [
+            {
+                "principle": "Too broad principle",
+                "target_title": "Unrelated lesson",
+                "target_cluster_seed": "cluster_B",
+                "cluster_seed": "cluster_A",
+            },
+        ]
+        prompt = build_feedback_prompt(
+            instruction_text="Instr",
+            f1=0.3,
+            false_positives=fps,
+            n_candidates=3,
+        )
+        assert "Too broad principle" in prompt
+        assert "Unrelated lesson" in prompt
+
+    def test_requests_n_candidates(self):
+        """Prompt asks for the specified number of candidates."""
+        prompt = build_feedback_prompt(
+            instruction_text="I",
+            f1=0.3,
+            false_positives=[],
+            n_candidates=5,
+        )
+        assert "5" in prompt
+
+    def test_requests_json_format(self):
+        """Prompt asks for JSON array output."""
+        prompt = build_feedback_prompt(
+            instruction_text="I",
+            f1=0.3,
+            false_positives=[],
+            n_candidates=3,
+        )
+        assert "JSON" in prompt
+
+
+class TestOproStrategy:
+    """OPRO strategy: shows sorted prompt-score pairs."""
+
+    def test_includes_prompts_sorted_ascending(self):
+        """Past prompts appear sorted by F1 ascending (worst first)."""
+        history = [
+            {"instruction_text": "Best prompt", "f1": 0.47},
+            {"instruction_text": "Worst prompt", "f1": 0.10},
+            {"instruction_text": "Middle prompt", "f1": 0.28},
+        ]
+        prompt = build_opro_prompt(history=history, n_candidates=3)
+        # Worst should appear before best in the prompt
+        worst_pos = prompt.index("Worst prompt")
+        best_pos = prompt.index("Best prompt")
+        assert worst_pos < best_pos
+
+    def test_includes_f1_scores(self):
+        """Each prompt is labeled with its F1 score."""
+        history = [{"instruction_text": "P1", "f1": 0.47}]
+        prompt = build_opro_prompt(history=history, n_candidates=3)
+        assert "0.47" in prompt
+
+    def test_requests_json_format(self):
+        """Prompt asks for JSON array output."""
+        prompt = build_opro_prompt(
+            history=[{"instruction_text": "P", "f1": 0.5}],
+            n_candidates=3,
+        )
+        assert "JSON" in prompt
