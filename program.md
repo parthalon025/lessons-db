@@ -129,6 +129,9 @@ next hypothesis. This is how the research org improves:
 These notes inform every subsequent hypothesis. Never skip this step.
 
 ## Learned so far
+- 2026-03-11: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
+- 2026-03-11: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
+- 2026-03-11: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
 - 2026-03-09: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
 - 2026-03-09: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
 - 2026-03-09: [A] below best F1=0.000 (-0.470 vs best 0.470). principle too broad — high recall, low precision (false positives across clusters). Next: add contrastive scope constraints; try contrastive=True or lower temperature.
