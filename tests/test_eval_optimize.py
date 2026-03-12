@@ -161,3 +161,54 @@ class TestGetInstructionText:
             text = get_instruction_text(vid)
             assert isinstance(text, str)
             assert len(text) > 20, f"Variant {vid} instruction too short"
+
+
+class TestBuildApoPrompt:
+    """APO-generated prompts use stored instruction text."""
+
+    def test_override_replaces_default_prompt(self):
+        """When prompt_overrides has the variant, uses stored instruction."""
+        from lessons_db.eval.prompts import build_generation_prompt
+
+        lesson = {"title": "Test Lesson", "one_liner": "Fix the bug", "description": "Description here"}
+        overrides = {"X01": "Custom instruction for extracting principles."}
+        result = build_generation_prompt("X01", lesson, prompt_overrides=overrides)
+        assert "Custom instruction for extracting principles." in result
+        assert "Test Lesson" in result
+        assert "Return ONLY" in result
+
+    def test_no_override_falls_through(self):
+        """Without override, variant A uses the existing fewshot prompt."""
+        from lessons_db.eval.prompts import build_generation_prompt
+
+        lesson = {"title": "Test", "one_liner": "Bug", "description": "Desc"}
+        result = build_generation_prompt("A", lesson, prompt_overrides={})
+        assert "transferable principle" in result
+
+    def test_override_dict_none_falls_through(self):
+        """prompt_overrides=None uses existing dispatch."""
+        from lessons_db.eval.prompts import build_generation_prompt
+
+        lesson = {"title": "Test", "one_liner": "Bug", "description": "Desc"}
+        result = build_generation_prompt("A", lesson, prompt_overrides=None)
+        assert "transferable principle" in result
+
+    def test_apo_prompt_contains_lesson_context(self):
+        """APO prompt injects title, one_liner, description."""
+        from lessons_db.eval.prompts import build_generation_prompt
+
+        lesson = {"title": "My Title", "one_liner": "My liner", "description": "My desc"}
+        overrides = {"X01": "Instruction preamble here."}
+        result = build_generation_prompt("X01", lesson, prompt_overrides=overrides)
+        assert "My Title" in result
+        assert "My liner" in result
+        assert "My desc" in result
+
+    def test_apo_prompt_has_fixed_suffix(self):
+        """APO prompt always ends with 'Return ONLY the principle statement.'"""
+        from lessons_db.eval.prompts import build_generation_prompt
+
+        lesson = {"title": "T", "one_liner": "O", "description": "D"}
+        overrides = {"X01": "Any instruction."}
+        result = build_generation_prompt("X01", lesson, prompt_overrides=overrides)
+        assert "Return ONLY the principle statement" in result

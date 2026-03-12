@@ -22,18 +22,47 @@ def _clean_principle_for_prompt(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _build_apo_prompt(instruction_text: str, lesson: dict[str, Any]) -> str:
+    """Build prompt from APO-generated instruction text + lesson context."""
+    context_parts = []
+    title = lesson.get("title") or ""
+    one_liner = lesson.get("one_liner") or ""
+    description = (lesson.get("description") or "")[:500]
+    if title:
+        context_parts.append(f"Title: {title}")
+    if one_liner:
+        context_parts.append(f"One-liner: {one_liner}")
+    if description:
+        context_parts.append(f"Description: {description}")
+    lesson_context = "\n".join(context_parts)
+
+    return (
+        f"{instruction_text}\n\n"
+        f"Lesson:\n{lesson_context}\n\n"
+        "Return ONLY the principle statement. One sentence. No quotes, no explanation."
+    )
+
+
 def build_generation_prompt(
     variant_id: str,
     lesson: dict[str, Any],
     siblings: list[dict[str, Any]] | None = None,
     diff_cluster_items: list[dict[str, Any]] | None = None,
+    prompt_overrides: dict[str, str] | None = None,
 ) -> str:
     """Build the principle-extraction prompt for a given variant.
 
     Variants A use few-shot examples. B/D use zero-shot causal framing.
     C/E use chunked (multiple sibling lessons from same cluster).
     F/G use contrastive (same-cluster + diff-cluster for specificity).
+
+    If prompt_overrides is provided and contains variant_id, uses the
+    APO-generated instruction text instead of the hand-authored prompt.
     """
+    # APO-generated variants: use stored instruction text
+    if prompt_overrides and variant_id in prompt_overrides:
+        return _build_apo_prompt(prompt_overrides[variant_id], lesson)
+
     title = lesson.get("title") or ""
     one_liner = lesson.get("one_liner") or ""
     description = (lesson.get("description") or "")[:500]
