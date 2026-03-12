@@ -1,10 +1,12 @@
 """Tests for APO eval-optimize: prompt_variants table, optimizer strategies, variant registration."""
 
+import json
 import sqlite3
 
 import pytest
 
 from lessons_db.db import init_db
+from lessons_db.eval.optimize import load_all_variant_configs
 
 
 @pytest.fixture
@@ -64,3 +66,53 @@ class TestPromptVariantsTable:
         assert row["instruction_text"] == "Extract principle"
         assert row["parent_variant"] == "D"
         assert row["strategy"] == "feedback"
+
+
+class TestLoadAllVariantConfigs:
+    """Merges VARIANT_CONFIGS (code) with prompt_variants (DB)."""
+
+    def test_returns_hand_authored_variants(self, db_path):
+        """With empty DB, returns only VARIANT_CONFIGS."""
+        conn = init_db(db_path)
+        merged = load_all_variant_configs(conn)
+        assert "A" in merged
+        assert "D" in merged
+        assert "_apo_generated" not in merged["A"]
+
+    def test_includes_db_variants(self, db_path):
+        """DB-stored variants appear in merged result."""
+        conn = init_db(db_path)
+        config = {
+            "model": "qwen3:14b",
+            "temperature": 0.6,
+            "num_ctx": 8192,
+            "chunked": False,
+            "prompt_id": "apo-generated",
+        }
+        conn.execute(
+            """INSERT INTO prompt_variants
+               (variant_id, instruction_text, config_json, strategy, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("X01", "Test instruction", json.dumps(config), "feedback", "2026-03-11"),
+        )
+        conn.commit()
+        merged = load_all_variant_configs(conn)
+        assert "X01" in merged
+        assert merged["X01"]["_instruction_text"] == "Test instruction"
+        assert merged["X01"]["_apo_generated"] is True
+        assert merged["X01"]["model"] == "qwen3:14b"
+
+    def test_db_does_not_override_hand_authored(self, db_path):
+        """DB variant with same ID as hand-authored does NOT replace it."""
+        conn = init_db(db_path)
+        conn.execute(
+            """INSERT INTO prompt_variants
+               (variant_id, instruction_text, config_json, strategy, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("A", "Override attempt", '{"model":"fake"}', "feedback", "2026-03-11"),
+        )
+        conn.commit()
+        merged = load_all_variant_configs(conn)
+        # Hand-authored "A" should be preserved, DB row ignored
+        assert merged["A"]["model"] == "deepseek-r1:8b"
+        assert "_apo_generated" not in merged["A"]
