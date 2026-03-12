@@ -190,6 +190,87 @@ def _build_self_critique_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Instruction text extraction (for APO seed history)
+# ---------------------------------------------------------------------------
+
+
+def get_instruction_text(variant_id: str) -> str:
+    """Return the instruction preamble for a hand-authored variant.
+
+    This is the portion BEFORE the lesson content injection -- the part
+    that APO can modify. Used by eval-optimize to seed optimizer history.
+
+    Raises KeyError if variant_id is not a hand-authored variant.
+    """
+    _INSTRUCTION_TEXTS = {
+        "A": (
+            "You are extracting a transferable principle from a specific coding lesson.\n\n"
+            "A GOOD principle:\n"
+            "- Names the structural pattern, not the technology\n"
+            "- Is falsifiable — someone could violate it\n"
+            "- Applies to at least 3 different domains\n"
+            "- Is one sentence, 10-25 words\n\n"
+            "Examples of good principles:\n"
+            "- 'Resources acquired in callbacks must be released in a symmetric teardown path.'\n"
+            "- 'When two representations of the same data exist, one must be designated authoritative.'\n"
+            "- 'Silent fallbacks that return default values mask upstream failures indefinitely.'\n"
+            "- 'Integration boundaries require end-to-end value tracing, not per-layer unit tests.'"
+        ),
+        "B": (
+            "Extract the structural principle from this coding lesson as a causal statement.\n\n"
+            "Format: '<pattern> causes <consequence> when <condition>'\n\n"
+            "Requirements:\n"
+            "- One sentence, 10-25 words\n"
+            "- No technology names, no fixes, no tool references\n"
+            "- Name the structural pattern, not the specific bug"
+        ),
+        "C": (
+            "These lessons all share the same structural failure pattern "
+            "across different technologies.\n\n"
+            "What is the ONE structural principle that explains ALL of these?\n\n"
+            "Causal form: '<pattern> causes <consequence> when <condition>'\n"
+            "One sentence, 10-25 words. No technology names."
+        ),
+        "F": (
+            "Extract ONE structural principle that:\n"
+            "- Is TRUE for ALL lessons in the SAME PATTERN group\n"
+            "- Is FALSE or IRRELEVANT for the DIFFERENT PATTERNS group\n"
+            "- Names the structural pattern, not the technology\n\n"
+            "The principle must be specific enough to DISTINGUISH this failure type "
+            "from the others listed above.\n\n"
+            "Causal form: '<pattern> causes <consequence> when <condition>'\n"
+            "One sentence, 10-25 words. No technology names."
+        ),
+        "H": (
+            "Extract the abstract failure pattern from this lesson. "
+            "Then distill it into a single transferable principle.\n\n"
+            "Two-pass process:\n"
+            "1. What is the abstract pattern? (not the specific bug)\n"
+            "2. State the principle in causal form.\n\n"
+            "Causal form: '<pattern> causes <consequence> when <condition>'\n"
+            "One sentence, 10-25 words. No technology names."
+        ),
+        "M": (
+            "Extract the SPECIFIC structural mechanism from this lesson.\n\n"
+            "Format:\n"
+            "TRIGGER: [what condition causes the bug, 3-10 words]\n"
+            "TARGET: [what component/resource breaks, 3-10 words]\n"
+            "FIX: [what structural change prevents it, 3-10 words]\n\n"
+            "Be SPECIFIC — 'error handling' is too vague. "
+            "'Uncaught exception in cleanup path' is specific."
+        ),
+    }
+    # D shares B's instruction, E shares C's, G shares F's
+    _INSTRUCTION_TEXTS["D"] = _INSTRUCTION_TEXTS["B"]
+    _INSTRUCTION_TEXTS["E"] = _INSTRUCTION_TEXTS["C"]
+    _INSTRUCTION_TEXTS["G"] = _INSTRUCTION_TEXTS["F"]
+
+    if variant_id not in _INSTRUCTION_TEXTS:
+        raise KeyError(f"No instruction text for variant {variant_id!r}")
+    return _INSTRUCTION_TEXTS[variant_id]
+
+
+# ---------------------------------------------------------------------------
 # Judge prompts
 # ---------------------------------------------------------------------------
 

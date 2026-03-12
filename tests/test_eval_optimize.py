@@ -116,3 +116,48 @@ class TestLoadAllVariantConfigs:
         # Hand-authored "A" should be preserved, DB row ignored
         assert merged["A"]["model"] == "deepseek-r1:8b"
         assert "_apo_generated" not in merged["A"]
+
+
+class TestGetInstructionText:
+    """Extract instruction preamble from hand-authored prompt builders."""
+
+    def test_variant_a_returns_fewshot_preamble(self):
+        """Variant A instruction contains the few-shot examples."""
+        from lessons_db.eval.prompts import get_instruction_text
+
+        text = get_instruction_text("A")
+        assert "transferable principle" in text
+        assert "Resources acquired in callbacks" in text
+        assert "Lesson:" not in text  # must NOT contain lesson placeholder
+
+    def test_variant_b_returns_causal_preamble(self):
+        """Variant B instruction contains causal framing."""
+        from lessons_db.eval.prompts import get_instruction_text
+
+        text = get_instruction_text("B")
+        assert "causal statement" in text.lower() or "structural principle" in text.lower()
+        assert "Lesson:" not in text
+
+    def test_variant_f_returns_contrastive_preamble(self):
+        """Variant F instruction references contrastive discrimination."""
+        from lessons_db.eval.prompts import get_instruction_text
+
+        text = get_instruction_text("F")
+        assert "SAME PATTERN" in text or "DISTINGUISH" in text or "contrastive" in text.lower()
+
+    def test_unknown_variant_raises(self):
+        """Unknown variant ID raises KeyError."""
+        from lessons_db.eval.prompts import get_instruction_text
+
+        with pytest.raises(KeyError):
+            get_instruction_text("UNKNOWN")
+
+    def test_all_hand_authored_variants_covered(self):
+        """Every variant in VARIANT_CONFIGS has an instruction text."""
+        from lessons_db.eval.prompts import get_instruction_text
+        from lessons_db.eval.variants import VARIANT_CONFIGS as VC
+
+        for vid in VC:
+            text = get_instruction_text(vid)
+            assert isinstance(text, str)
+            assert len(text) > 20, f"Variant {vid} instruction too short"
