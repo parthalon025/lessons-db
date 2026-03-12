@@ -2,10 +2,12 @@
 
 import json
 import sqlite3
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lessons_db.db import init_db
+from lessons_db.eval.generate import run_eval_generate
 from lessons_db.eval.optimize import (
     build_feedback_prompt,
     build_opro_prompt,
@@ -436,3 +438,47 @@ class TestVariantRegistration:
         config = json.loads(row["config_json"])
         assert config["model"] == "qwen3:14b"  # inherited from D
         assert config["prompt_id"] == "apo-generated"
+
+
+class TestGenerateWithApoVariants:
+    """run_eval_generate uses prompt_overrides for APO variants."""
+
+    def test_apo_variant_generates_with_stored_instruction(self, db_path, tmp_path):
+        """APO variant X01 uses instruction from prompt_variants, not VARIANT_CONFIGS."""
+        from tests.test_eval import _seed_clusters
+
+        conn = init_db(db_path)
+        _seed_clusters(conn)
+        output_path = tmp_path / "results.json"
+
+        # Register an APO variant
+        vid = register_apo_variant(
+            conn,
+            instruction_text="CUSTOM APO INSTRUCTION for testing.",
+            parent_variant="D",
+            strategy="feedback",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"response": "APO Principle."}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_url:
+            run_eval_generate(
+                conn=conn,
+                queue_url="http://localhost:7683",
+                variants=[vid],
+                per_cluster=1,
+                output_path=output_path,
+                resume=False,
+            )
+
+        # Verify the request body contained our custom instruction
+        call_args = mock_url.call_args
+        request_body = json.loads(call_args[0][0].data.decode("utf-8"))
+        assert "CUSTOM APO INSTRUCTION" in request_body["prompt"]
+
+        # Verify results were written
+        data = json.loads(output_path.read_text())
+        assert any(r["variant"] == vid for r in data["results"])
