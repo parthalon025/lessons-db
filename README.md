@@ -1,14 +1,14 @@
 # lessons-db
 
 [![Python](https://img.shields.io/badge/python-3.12+-blue)](https://www.python.org)
-[![Tests](https://img.shields.io/badge/tests-753%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-1148%20passing-brightgreen)](#tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Security](https://github.com/parthalon025/lessons-db/actions/workflows/security.yml/badge.svg)](https://github.com/parthalon025/lessons-db/actions/workflows/security.yml)
 [![CodeQL](https://github.com/parthalon025/lessons-db/actions/workflows/codeql.yml/badge.svg)](https://github.com/parthalon025/lessons-db/actions/workflows/codeql.yml)
 
-**A lessons-learned system with spaced repetition and eval pipeline for AI-assisted development.**
+**A lessons-learned system with spaced repetition, eval pipeline, and Automatic Prompt Optimization for AI-assisted development.**
 
-lessons-db captures bugs, near-misses, and positive patterns from your development sessions, then surfaces them at the right moment using FSRS-6 spaced repetition — the same algorithm powering Anki. As you internalize a lesson, its presentation fades automatically: full text first, then a one-liner, then a silent Semgrep rule running in CI, then nothing. The eval pipeline tests prompt variants against real lesson quality using LLM judges and F1-gated auto-promotion, so the system improves itself over time.
+lessons-db captures bugs, near-misses, and positive patterns from your development sessions, then surfaces them at the right moment using FSRS-6 spaced repetition — the same algorithm powering Anki. As you internalize a lesson, its presentation fades automatically: full text first, then a one-liner, then a silent Semgrep rule running in CI, then nothing. The eval pipeline tests prompt variants against real lesson quality using LLM judges and F1-gated auto-promotion. The APO loop (`eval-optimize`) closes the loop further: it reads false positives from prior judge runs and uses an optimizer LLM to propose improved instruction texts, then evaluates and auto-promotes the best candidate — the system rewrites its own prompts.
 
 Built to integrate with [Claude Code](https://claude.ai/claude-code) via session hooks, but usable standalone.
 
@@ -74,8 +74,10 @@ The second problem: when systems try to prevent this, they spam you with reminde
        ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  Eval Pipeline                                                  │
-│  eval-generate (ABCDE variants × source lessons)                │
-│  eval-judge (transfer test · F1 scoring · auto-promote)         │
+│  eval-generate (A-M variants × source lessons, holdout split)   │
+│  eval-judge (transfer test · F1 scoring · always-learn)         │
+│  eval-optimize (APO: feedback/OPRO → new variants → promote)    │
+│  autoresearch-loop.sh (autonomous: propose → generate → learn)  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -145,30 +147,39 @@ The eval pipeline answers: *which prompt × model × settings combination produc
 
 ### How It Works
 
-**Stage 1 — eval-generate:** Runs N variants (A/B/C/D/E, differing in prompt style, model, temperature, and context window) across a fixed set of source lessons. Each variant generates a principle from a lesson. Results are saved to a timestamped JSON file.
+**Stage 1 — eval-generate:** Runs N variants (A–M plus APO-generated variants) across a source lesson set drawn with holdout splitting (70% dev / 30% held-out, Goodhart prevention). Each variant generates a principle from a lesson. Results are saved to a timestamped JSON file. A `seen_in_eval` counter deprioritizes overused lessons so fresh lessons fill slots first.
 
 **Stage 2 — eval-judge:** For each generated principle, constructs transfer test cases using the lesson DB as ground truth:
-- 2 same-cluster targets (different category) → true positives — the principle should match
-- 2 different-cluster targets → true negatives — the principle should NOT match
+- Same-cluster targets → true positives — the principle should match
+- Different-cluster targets → true negatives — the principle should NOT match
 
-The judge scores each (principle, target) pair on a 3-criterion rubric using a local LLM (`deepseek-r1:8b` by default) or GPT-4o-mini via `--openai`. Outputs a full F1 report.
+The judge scores each (principle, target) pair using a binary YES/NO rubric (recommended; `--binary` flag, `gemma3:12b` default) or a 3-criterion rubric. Outputs a full F1 report. After every judge run, the **always-learn** step automatically derives insights from the precision/recall signature and appends them to `program.md` and `learnings.jsonl` — no extra command required. Suppress with `--no-learn`.
 
-**Auto-promotion:** Three-gate logic runs after every eval run:
-1. F1 ≥ threshold
-2. F1 > current production + minimum improvement margin
-3. Error budget not exceeded
+**Stage 3 — eval-optimize (APO):** Reads false positives from prior judge runs and asks an optimizer LLM (`qwen3:14b` default) to propose improved instruction texts. Two strategies:
+- `feedback` (default) — analyze false positives, ask the model to fix instruction flaws
+- `opro` — DeepMind OPRO pattern: show top-3 prompts + F1 scores, ask for better ones
 
-If all three pass, the winning variant is promoted to production automatically. Manual promotion available via `meta eval-promote`.
+Candidates are registered as new variants, evaluated via `eval-generate` + `eval-judge`, and the best is carried forward as the new parent for the next iteration.
 
-### Variant Design (ABCDE)
+**Autoresearch loop:** `scripts/autoresearch-loop.sh` runs the full propose → generate → judge → learn cycle autonomously overnight. Stops after max runs reached, 3 consecutive non-improvements, or proposal strategies exhausted.
 
-| ID | Prompt Style | Model | Rationale |
-|----|-------------|-------|-----------|
-| A | Few-shot (4 examples) | deepseek-r1:8b | Baseline — current production prompt |
+**Eval history:** `meta eval-history` shows a tabular F1 trend (↑/↓/=) across all judge runs, filterable by variant. Every judge run is recorded to the `eval_runs` table automatically.
+
+### Variant Matrix (A–M)
+
+| ID | Prompt Style | Model | Key idea |
+|----|-------------|-------|---------|
+| A | Few-shot (4 examples) | deepseek-r1:8b | Baseline control |
 | B | Zero-shot, causal framing | deepseek-r1:8b | R1 performs better zero-shot |
-| C | Zero-shot + chunked siblings | deepseek-r1:8b | Context batching improves recall |
+| C | Zero-shot + chunked | deepseek-r1:8b | Context batching improves recall |
 | D | Zero-shot, causal framing | qwen3:14b | Larger non-reasoning model |
-| E | Zero-shot + chunked | qwen3:14b | Best of C and D |
+| E | Zero-shot + chunked | qwen3:14b | Combines C and D |
+| F | Contrastive (boundary conditions) | deepseek-r1:8b | Scope limits reduce false positives |
+| G | Contrastive | qwen3:14b | F with larger model |
+| H | Two-pass (observe → distill) | deepseek-r1:8b | Most deliberate; 2× LLM calls |
+| M | Mechanism triplets | qwen3.5:9b | Root-cause chain: trigger → failure → consequence |
+
+APO-generated variants are assigned IDs dynamically and tracked in the `prompt_variants` DB table.
 
 ---
 
