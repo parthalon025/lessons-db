@@ -44,6 +44,9 @@ rules/                 # Community Semgrep rules (lesson-derived)
   patterns/
 hooks/                 # Hook scripts (also deployed to ~/.claude/hooks/)
 scripts/               # batch-capture-transcripts.sh, run-batch-pipeline.sh
+spa/                   # SPA dashboard (Preact + esbuild + superhot-ui) — see Web UI section
+  src/                 # Source: pages/, components/, stores/, hooks/, api.js, polling.js
+  dist/                # Build output (gitignored — must npm run build)
 tests/
 ```
 
@@ -127,17 +130,61 @@ scripts/batch-capture-transcripts.sh [--dry-run] [--since DATE] [--positive]
 scripts/run-batch-pipeline.sh [--since DATE]
 ```
 
+## Web UI Dashboard
+
+SPA served by FastAPI at `http://localhost:7685/ui/`. Source at `spa/`.
+
+**Tech stack:** Preact 10 + `@preact/signals` + esbuild + `superhot-ui` (file: dep from `../../superhot-ui`)
+**Routing:** Signal-based via `currentRoute` signal in `AppLayout.jsx` — no router library
+**Pages:** Dashboard, Lessons, Triage, Eval, Admin
+**API client:** `spa/src/api.js` — all calls relative to `/api/` (same origin)
+**State:** Signal stores in `spa/src/stores/` (stats, health, lessons, pipelines, prevention, triage)
+**Polling:** `spa/src/polling.js` — shared interval orchestrator
+
+**Build:**
+```bash
+cd ~/Documents/projects/lessons-db/spa && npm run build   # produces dist/
+npm run dev                                                 # watch mode
+```
+
+**Gotchas:**
+- `spa/dist/` is gitignored — must `npm run build` after cloning
+- `superhot-ui` is a `file:` dep — if `../../superhot-ui` path is missing the build fails
+- FastAPI only mounts `/ui/` if `spa/dist/` exists at startup — build before starting the server
+
 ## API Endpoints
 
 Exposed via FastAPI at `localhost:7685` (proxied by project-hub Express at `/hub/api/lessons/*`):
 
-- **GET /api/calibration/history** — paginated `calibration_runs` (default: last 20, max 100). Response: `[{id, run_date, dataset, bugs_sampled, pass_rate, gate14_pass, notes, ...}]`
-- **POST /api/calibration/run** — queues `calibrate_pipeline()` as background task. Query params: `sample_n` (default 50), `skip_extraction` (default false). Response: `{status: "queued"}`.
-- **GET /api/mining/history** — paginated `mining_runs`. Response: `[{id, run_date, repos_searched, commits_analyzed, candidates_extracted, diff_size_rejected, gate0_rejected, gate1_rejected, gate2_rejected, gate3_rejected, gate4_rejected, auto_approved, drafted, conflicts_flagged, error_count, duration_seconds}]`
+- **GET /api/lessons** — paginated lesson list. Query params: `q`, `category`, `tier`, `polarity`
+- **GET /api/lessons/stats** — counts by category, polarity, tier
+- **GET /api/lessons/categories** — distinct category values
+- **GET /api/lessons/{id}** — single lesson record
+- **GET /api/gaps** — identified gap records
+- **GET /api/calibration/history** — paginated `calibration_runs` (default: last 20, max 100)
+- **POST /api/calibration/run** — queues `calibrate_pipeline()`. Query params: `sample_n` (default 50), `skip_extraction` (default false). Response: `{status: "queued"}`
+- **GET /api/mining/history** — paginated `mining_runs` with per-gate rejection counts
+- **GET /api/mining/repos** — mined repo list
 - **POST /api/mining/run** — queues GitHub mining task
 - **GET /api/security/findings** — open scan findings
 - **POST /api/security/scan** — trigger Semgrep security scan
-- **GET /api/scan/summary** — decision-context dashboard: promotion rate, drafts captured last run, sessions processed, scan age, embed failure rate, FSRS review backlog
+- **GET /api/scan/summary** — decision-context dashboard: promotion rate, drafts captured, sessions processed, scan age, embed failure rate, FSRS review backlog
+- **GET /api/capture-drafts** — lessons pending promotion
+- **GET /api/fix-queue** — fix queue items
+- **GET /api/fix-queue/next** — next actionable fix
+- **POST /api/fix-queue/populate** — populate from scan findings
+- **POST /api/fix-queue/issues** — create GH issues for fix-queue items
+- **GET /api/prevention/report** — velocity + recurrence summary
+- **GET /api/prevention/recurrence** — recurrence tracking records
+- **POST /api/prevention/resolve-outcomes** — mark outcomes resolved
+- **POST /api/prevention/bulk-generate** — bulk-generate Semgrep rules
+- **POST /api/prevention/check-content** — check content against lessons
+- **GET /eval/health** — eval service health
+- **POST /eval/prime** — seed eval queue
+- **GET /eval/items** — items awaiting eval (requires cluster assignment)
+- **GET /eval/clusters** — cluster list with lesson counts
+- **POST /eval/results** — submit eval results
+- **POST /eval/production-variant** — set production variant
 
 ## Deployment
 
