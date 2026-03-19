@@ -17,3 +17,4 @@ client_secret*.json
 coverage/
 megalinter-reports/
 results.tsv
+node_modules/

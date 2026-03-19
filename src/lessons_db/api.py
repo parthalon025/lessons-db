@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from lessons_db.config import LANCE_DIR, SQLITE_PATH
@@ -1067,6 +1068,26 @@ def create_app(  # noqa: C901, PLR0915
             return {"accepted": True}
         finally:
             conn.close()
+
+    # --- Static files for SPA dashboard ---
+    spa_dir = Path(__file__).resolve().parent.parent.parent / "spa" / "dist"
+    if spa_dir.exists():
+        _no_store = {"Cache-Control": "no-store"}
+
+        @app.get("/ui/{path:path}")
+        async def spa_static(path: str):
+            """Serve SPA — static files or fallback to index.html for client-side routing."""
+            if path and "\x00" in path:
+                return HTMLResponse("Not found", status_code=404)
+            real = (spa_dir / path).resolve() if path else None
+            if real and real.is_file() and real.is_relative_to(spa_dir.resolve()):
+                return FileResponse(real, headers=_no_store)
+            index = spa_dir / "index.html"
+            return (
+                FileResponse(index, headers=_no_store)
+                if index.is_file()
+                else HTMLResponse("Not found", status_code=404)
+            )
 
     return app
 
