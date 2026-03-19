@@ -1,0 +1,349 @@
+/* lessons-db dashboard — superhot-ui design system */
+@import '../../node_modules/superhot-ui/css/superhot.css';
+
+/* ── Layout ── */
+:root {
+  --sidebar-width: 200px;
+  --topbar-height: 48px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-mono, 'VT323', monospace);
+  background: var(--bg-base, #0f0f0f);
+  color: var(--text-primary, #e8e8e8);
+  min-height: 100vh;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.layout-root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.layout-sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-surface, #1a1a1a);
+  border-right: 1px solid var(--border-primary, #333);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4, 16px) 0;
+  flex-shrink: 0;
+}
+
+.layout-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6, 24px);
+  min-width: 0;
+}
+
+/* ── Sidebar nav ── */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-4, 16px);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-label, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.05em);
+  color: var(--text-secondary, #999);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  text-decoration: none;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.nav-item:hover {
+  color: var(--text-primary, #e8e8e8);
+}
+
+.nav-item.active {
+  color: var(--sh-phosphor, #00d4ff);
+  border-left-color: var(--sh-phosphor, #00d4ff);
+}
+
+/* ── Topbar ── */
+.topbar {
+  height: var(--topbar-height);
+  background: var(--bg-surface, #1a1a1a);
+  border-bottom: 1px solid var(--border-primary, #333);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4, 16px);
+  gap: var(--space-4, 16px);
+  flex-shrink: 0;
+}
+
+.topbar-title {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-title, 1.25rem);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest, 0.1em);
+  color: var(--sh-phosphor, #00d4ff);
+}
+
+.topbar-status {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-small, 0.75rem);
+  color: var(--text-muted, #666);
+  margin-left: auto;
+}
+
+/* ── Stat cards ── */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-4, 16px);
+  margin-bottom: var(--space-6, 24px);
+}
+
+.stat-card {
+  background: var(--bg-surface, #1a1a1a);
+  border: 1px solid var(--border-primary, #333);
+  padding: var(--space-4, 16px);
+  font-family: var(--font-mono, monospace);
+}
+
+.stat-card-label {
+  font-size: var(--type-label, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.05em);
+  color: var(--text-muted, #666);
+  margin-bottom: var(--space-1, 4px);
+}
+
+.stat-card-value {
+  font-size: var(--type-title, 1.25rem);
+  font-weight: 700;
+  color: var(--text-primary, #e8e8e8);
+}
+
+/* ── Status indicators ── */
+.status-ok { color: var(--sh-phosphor, #00d4ff); }
+.status-warn { color: var(--status-warning, #f59e0b); }
+.status-alert { color: var(--sh-threat, #dc2626); }
+
+/* ── Tables ── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-body, 0.875rem);
+}
+
+.data-table th {
+  text-align: left;
+  padding: var(--space-2, 8px);
+  font-size: var(--type-label, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.05em);
+  color: var(--text-muted, #666);
+  border-bottom: 1px solid var(--border-primary, #333);
+}
+
+.data-table td {
+  padding: var(--space-2, 8px);
+  border-bottom: 1px solid var(--border-subtle, #222);
+  color: var(--text-secondary, #999);
+}
+
+.data-table tr:hover td {
+  color: var(--text-primary, #e8e8e8);
+}
+
+/* ── Triage cards ── */
+.triage-card {
+  background: var(--bg-surface, #1a1a1a);
+  border: 1px solid var(--border-primary, #333);
+  padding: var(--space-4, 16px);
+  margin-bottom: var(--space-4, 16px);
+}
+
+.triage-card-title {
+  font-size: var(--type-body, 0.875rem);
+  color: var(--text-primary, #e8e8e8);
+  margin-bottom: var(--space-2, 8px);
+}
+
+.triage-actions {
+  display: flex;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-3, 12px);
+}
+
+/* ── Buttons ── */
+.btn {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-label, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.05em);
+  padding: var(--space-1, 4px) var(--space-3, 12px);
+  border: 1px solid var(--border-primary, #333);
+  background: transparent;
+  color: var(--text-primary, #e8e8e8);
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--sh-phosphor, #00d4ff);
+  color: var(--sh-phosphor, #00d4ff);
+}
+
+.btn-threat {
+  border-color: var(--sh-threat, #dc2626);
+  color: var(--sh-threat, #dc2626);
+}
+
+.btn-threat:hover {
+  background: var(--sh-threat, #dc2626);
+  color: var(--sh-bright, #ffffff);
+}
+
+.btn-phosphor {
+  border-color: var(--sh-phosphor, #00d4ff);
+  color: var(--sh-phosphor, #00d4ff);
+}
+
+.btn-phosphor:hover {
+  background: var(--sh-phosphor, #00d4ff);
+  color: var(--sh-void, #000);
+}
+
+/* ── Filter bar ── */
+.filter-bar {
+  display: flex;
+  gap: var(--space-2, 8px);
+  margin-bottom: var(--space-4, 16px);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.filter-bar input,
+.filter-bar select {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-body, 0.875rem);
+  background: var(--bg-base, #0f0f0f);
+  border: 1px solid var(--border-primary, #333);
+  color: var(--text-primary, #e8e8e8);
+  padding: var(--space-1, 4px) var(--space-2, 8px);
+}
+
+.filter-bar input:focus,
+.filter-bar select:focus {
+  outline: 2px solid var(--sh-phosphor, #00d4ff);
+  outline-offset: 1px;
+}
+
+/* ── Health metric cards ── */
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-4, 16px);
+  margin-bottom: var(--space-6, 24px);
+}
+
+.health-card {
+  background: var(--bg-surface, #1a1a1a);
+  border: 1px solid var(--border-primary, #333);
+  padding: var(--space-4, 16px);
+  font-family: var(--font-mono, monospace);
+}
+
+.health-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2, 8px);
+}
+
+.health-card-label {
+  font-size: var(--type-label, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.05em);
+  color: var(--text-muted, #666);
+}
+
+.health-card-value {
+  font-size: var(--type-body, 0.875rem);
+  color: var(--text-primary, #e8e8e8);
+}
+
+.health-card-context {
+  font-size: var(--type-small, 0.75rem);
+  color: var(--text-muted, #666);
+  margin-top: var(--space-2, 8px);
+  line-height: 1.4;
+}
+
+/* ── Loading ── */
+.loading-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted, #666);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.05em);
+}
+
+/* ── Page header ── */
+.page-header {
+  margin-bottom: var(--space-6, 24px);
+}
+
+.page-title {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-title, 1.25rem);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest, 0.1em);
+  color: var(--text-primary, #e8e8e8);
+  margin-bottom: var(--space-1, 4px);
+}
+
+.page-subtitle {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-small, 0.75rem);
+  text-transform: uppercase;
+  color: var(--text-muted, #666);
+}
+
+/* ── Section ── */
+.section {
+  margin-bottom: var(--space-6, 24px);
+}
+
+.section-title {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-label, 0.75rem);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest, 0.1em);
+  color: var(--text-muted, #666);
+  margin-bottom: var(--space-4, 16px);
+  padding-bottom: var(--space-2, 8px);
+  border-bottom: 1px solid var(--border-subtle, #222);
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .layout-sidebar {
+    display: none;
+  }
+  .layout-main {
+    padding: var(--space-4, 16px);
+  }
+  .stat-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
