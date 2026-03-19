@@ -1,6 +1,6 @@
 import * as esbuild from 'esbuild';
 import { createHash } from 'crypto';
-import { readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -17,6 +17,8 @@ const preactAlias = {
   '@preact/signals':     resolve(__dirname, 'node_modules/@preact/signals'),
 };
 
+const isProd = !isWatch;
+
 const config = {
   entryPoints: ['src/index.jsx'],
   bundle: true,
@@ -27,16 +29,22 @@ const config = {
   jsxFragment: 'Fragment',
   inject: ['./src/preact-shim.js'],
   loader: { '.jsx': 'jsx' },
-  minify: !isWatch,
+  minify: isProd,
   sourcemap: isWatch,
   logLevel: 'info',
   alias: preactAlias,
 };
 
-function injectVersionHash() {
-  // Copy CSS to dist
-  copyFileSync('src/index.css', 'dist/bundle.css');
+const cssConfig = {
+  entryPoints: ['src/index.css'],
+  bundle: true,
+  outfile: 'dist/bundle.css',
+  minify: isProd,
+  loader: { '.woff': 'file', '.woff2': 'file', '.ttf': 'file' },
+  logLevel: 'info',
+};
 
+function injectVersionHash() {
   const js  = readFileSync('dist/bundle.js');
   const css = readFileSync('dist/bundle.css');
   const hash = createHash('sha256')
@@ -52,9 +60,12 @@ function injectVersionHash() {
 
 if (isWatch) {
   const ctx = await esbuild.context(config);
+  const cssCtx = await esbuild.context(cssConfig);
   await ctx.watch();
+  await cssCtx.watch();
   console.log('esbuild watching for changes...');
 } else {
   await esbuild.build(config);
+  await esbuild.build(cssConfig);
   injectVersionHash();
 }

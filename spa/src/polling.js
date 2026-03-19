@@ -13,12 +13,13 @@ const _pollers = new Map();
  */
 export function startPolling(id, fn, intervalMs, immediate = true) {
   stopPolling(id);
-  if (immediate) {
-    try { fn(); } catch (_) { /* swallow initial error */ }
-  }
-  const timerId = setInterval(() => {
-    try { fn(); } catch (_) { /* swallow poll error */ }
-  }, intervalMs);
+  const safeFn = () => {
+    Promise.resolve(fn()).catch(err => {
+      console.warn(`[poll:${id}]`, err.message || err);
+    });
+  };
+  if (immediate) safeFn();
+  const timerId = setInterval(safeFn, intervalMs);
   _pollers.set(id, timerId);
 }
 

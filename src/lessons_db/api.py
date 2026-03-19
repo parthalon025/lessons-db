@@ -14,7 +14,6 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from lessons_db.config import LANCE_DIR, SQLITE_PATH
@@ -1089,8 +1088,6 @@ def create_app(  # noqa: C901, PLR0915
                 if index.is_file()
                 else HTMLResponse("Not found", status_code=404)
             )
-
-        app.mount("/ui", StaticFiles(directory=str(spa_dir), html=True), name="ui")
 
     return app
 

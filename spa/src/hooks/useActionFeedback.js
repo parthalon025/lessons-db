@@ -11,10 +11,12 @@ import { useState, useCallback, useRef } from 'preact/hooks';
 export function useActionFeedback() {
   const [state, setState] = useState({ phase: 'idle', msg: '' });
   const timerRef = useRef(null);
+  const loadingRef = useRef(false);
 
   const run = useCallback(async (loadingMsg, fn, successFn) => {
-    // Double-click guard
-    if (state.phase === 'loading') return;
+    // Double-click guard — ref-based to avoid stale closure over state.phase
+    if (loadingRef.current) return;
+    loadingRef.current = true;
 
     if (timerRef.current) clearTimeout(timerRef.current);
 
@@ -26,12 +28,14 @@ export function useActionFeedback() {
       setState({ phase: 'success', msg: successMsg });
     } catch (err) {
       setState({ phase: 'error', msg: err.message || 'FAILED' });
+    } finally {
+      loadingRef.current = false;
     }
 
     timerRef.current = setTimeout(() => {
       setState({ phase: 'idle', msg: '' });
     }, 2000);
-  }, [state.phase]);
+  }, []);
 
   return [state, run];
 }

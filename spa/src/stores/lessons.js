@@ -38,7 +38,7 @@ export async function refreshLessons() {
 export async function refreshCategories() {
   try {
     categories.value = await fetchCategories();
-  } catch (_) {
-    // Non-critical — categories are for filtering convenience
+  } catch (err) {
+    console.warn('[categories]', err.message);
   }
 }
