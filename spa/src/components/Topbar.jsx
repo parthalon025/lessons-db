@@ -10,7 +10,7 @@ export default function Topbar() {
   return (
     <header class="topbar">
       <span class="topbar-title">LESSONS-DB</span>
-      <span class="topbar-status">{connectionStatus.value}</span>
+      <span class="topbar-status" role="status" aria-live="polite">{connectionStatus.value}</span>
     </header>
   );
 }

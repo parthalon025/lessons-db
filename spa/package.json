@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node esbuild.config.mjs --watch",
     "build": "node esbuild.config.mjs",
-    "build:css": "cp src/index.css dist/bundle.css"
+    "build:css": "cp src/index.css dist/bundle.css",
+    "postinstall": "node node_modules/superhot-ui/scripts/setup.js"
   },
   "dependencies": {
     "@preact/signals": "^2.0.0",

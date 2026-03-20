@@ -130,7 +130,7 @@ body {
 
 /* ── Status indicators ── */
 .status-ok { color: var(--sh-phosphor, #00d4ff); }
-.status-warn { color: var(--status-warning, #f59e0b); }
+.status-warn { color: var(--sh-portal-orange, #ff9a00); }
 .status-alert { color: var(--sh-threat, #dc2626); }
 
 /* ── Tables ── */
@@ -205,8 +205,8 @@ body {
 }
 
 .btn-threat:hover {
-  background: var(--sh-threat, #dc2626);
-  color: var(--sh-bright, #ffffff);
+  box-shadow: 0 0 8px var(--sh-threat-glow);
+  border-color: var(--sh-threat);
 }
 
 .btn-phosphor {
@@ -215,8 +215,8 @@ body {
 }
 
 .btn-phosphor:hover {
-  background: var(--sh-phosphor, #00d4ff);
-  color: var(--sh-void, #000);
+  box-shadow: 0 0 8px var(--sh-phosphor-glow);
+  border-color: var(--sh-phosphor);
 }
 
 /* ── Filter bar ── */
