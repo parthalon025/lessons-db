@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    uses: parthalon025/ci-workflows/.github/workflows/reusable-lint-python.yml@v1
+    secrets: inherit
+  test:
+    needs: lint
+    uses: parthalon025/ci-workflows/.github/workflows/reusable-test-python.yml@v1
+    with:
+      coverage: true
+      codecov-upload: true
+    secrets: inherit
+  security:
+    uses: parthalon025/ci-workflows/.github/workflows/reusable-security.yml@v1
+    secrets: inherit
+  codeql:
+    uses: parthalon025/ci-workflows/.github/workflows/reusable-codeql.yml@v1
+    with:
+      language: python
+    secrets: inherit
+  ci-pass:
+    needs: [lint, test, security, codeql]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] || \
+             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            exit 1
+          fi
