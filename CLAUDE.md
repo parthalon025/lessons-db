@@ -348,6 +348,15 @@ Tests are grouped by pipeline stage. Run them to verify the pipeline without nee
 
 **Polarity differentiation**: Positive lessons start with S=3.0 (identity consolidation), negative with S=1.0. Positive surfacing uses 30% variable-ratio gate (Skinner) to prevent habituation.
 
+## Eval Pipeline Troubleshooting
+
+| Failure mode | Symptom | Recovery |
+|---|---|---|
+| **Queue timeout** | `eval-generate` stalls or returns `None` for many entries; queue logs show 504 | Use `--priority 1` to preempt queued jobs; or set `PROXY_WAIT_TIMEOUT=600` in ollama-queue config and restart the daemon |
+| **Stale embeddings** | Judge scores are suspiciously uniform across variants; AUC near 0.5 | Re-run `lessons-db index` to regenerate embeddings, then re-run `eval-judge` with a fresh `results.json` |
+| **Judge disagreement / F1 near zero** | Report shows precision=0 or recall=0 for all variants | Run with `--openai --judge-model gpt-4o-mini` as a sanity check; if OpenAI diverges, the cluster assignments may be stale — re-run `lessons-db index --seed-only` |
+| **Empty principles in results.json** | Many entries have `principle: null`; `--resume` re-skips them silently | Re-run with `--resume` omitted (starts fresh); or delete the null-entry rows from `results.json` manually before resuming |
+
 ## Scope Tags
 language:python, domain:lessons-db
 
