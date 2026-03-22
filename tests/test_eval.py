@@ -2115,12 +2115,7 @@ class TestParseMechanismTriplet:
         assert parse_mechanism_triplet("none") is None
 
     def test_strips_think_tags(self):
-        response = (
-            "<think>analyzing...</think>\n"
-            "TRIGGER: Missing validation\n"
-            "TARGET: Input data\n"
-            "FIX: Add schema check"
-        )
+        response = "<think>analyzing...</think>\nTRIGGER: Missing validation\nTARGET: Input data\nFIX: Add schema check"
         result = parse_mechanism_triplet(response)
         assert result is not None
         assert "Missing validation" in result["trigger"]
@@ -2756,7 +2751,7 @@ def _build_results_json(conn, lesson_ids, variant, tmp_path, filename="results.j
     entries = []
     for lid in lesson_ids:
         row = conn.execute(
-            "SELECT id, title, one_liner, description, cluster_seed, category " "FROM lessons WHERE id = ?",
+            "SELECT id, title, one_liner, description, cluster_seed, category FROM lessons WHERE id = ?",
             (lid,),
         ).fetchone()
         entries.append(

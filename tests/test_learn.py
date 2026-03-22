@@ -622,9 +622,9 @@ diff --git a/src/hub.py b/src/hub.py
 
         # Step 4: Verify the DB outcome changed from 'unknown' to 'dismissed'
         row = conn.execute("SELECT outcome FROM surfacing_events WHERE id = ?", [event_id_dismissed]).fetchone()
-        assert (
-            row["outcome"] == "dismissed"
-        ), "After evaluate_commit with anti-pattern present, outcome must be 'dismissed'"
+        assert row["outcome"] == "dismissed", (
+            "After evaluate_commit with anti-pattern present, outcome must be 'dismissed'"
+        )
 
         # === Path 2: HEEDED (anti-pattern absent from diff) ===
 
@@ -826,7 +826,7 @@ class TestFindExceptions:
                 "INSERT INTO surfacing_events "
                 "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
                 "VALUES (?, 'read', 'ctx', 'heeded', ?, ?)",
-                [other_lid, f"2026-02-2{3+i}T10:00:00", f"recent-session-{i}"],
+                [other_lid, f"2026-02-2{3 + i}T10:00:00", f"recent-session-{i}"],
             )
         conn.commit()
 
@@ -979,7 +979,7 @@ class TestFindExceptionsCLI:
                 "INSERT INTO surfacing_events "
                 "(lesson_id, hook_point, context, outcome, timestamp, session_id) "
                 "VALUES (?, 'read', 'ctx', 'heeded', ?, ?)",
-                [other_lid, f"2026-02-2{3+i}T10:00:00", f"recent-session-{i}"],
+                [other_lid, f"2026-02-2{3 + i}T10:00:00", f"recent-session-{i}"],
             )
         conn.commit()
         conn.close()

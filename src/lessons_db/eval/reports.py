@@ -281,8 +281,8 @@ def _render_v2_failure_analysis(scored_pairs: list[dict[str, Any]], lines: list[
                 )
             lines.append(
                 f"- [{p.get('variant', '?')}] P={p.get('posterior', 0):.2f} "
-                f"Principle: \"{p.get('principle', '')[:60]}\" → "
-                f"Target: \"{p.get('target_title', '')[:40]}\"{mech}"
+                f'Principle: "{p.get("principle", "")[:60]}" → '
+                f'Target: "{p.get("target_title", "")[:40]}"{mech}'
             )
         lines.append("")
 

@@ -51,7 +51,7 @@ def _insert_recurrence(conn, lesson_id, hours_ago=0.5):
     """Insert a pre-existing recurrence event, bypassing assess_and_enforce."""
     ts = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
     conn.execute(
-        "INSERT INTO recurrence_events (lesson_id, timestamp, hook_point, trigger_type) " "VALUES (?, ?, ?, ?)",
+        "INSERT INTO recurrence_events (lesson_id, timestamp, hook_point, trigger_type) VALUES (?, ?, ?, ?)",
         (lesson_id, ts, "edit", "test"),
     )
     conn.commit()
@@ -61,7 +61,7 @@ def _insert_surfacing(conn, lesson_id, hours_ago=2.0, outcome="unknown"):
     """Insert a surfacing event directly into the DB."""
     ts = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
     conn.execute(
-        "INSERT INTO surfacing_events (lesson_id, hook_point, outcome, timestamp) " "VALUES (?, ?, ?, ?)",
+        "INSERT INTO surfacing_events (lesson_id, hook_point, outcome, timestamp) VALUES (?, ?, ?, ?)",
         (lesson_id, "pre-edit", outcome, ts),
     )
     conn.commit()
@@ -101,7 +101,7 @@ class TestRecurrenceTracking:
         lid = _insert_lesson(conn)
         old_ts = (datetime.now(UTC) - timedelta(days=10)).isoformat()
         conn.execute(
-            "INSERT INTO recurrence_events (lesson_id, timestamp, hook_point, trigger_type) " "VALUES (?, ?, ?, ?)",
+            "INSERT INTO recurrence_events (lesson_id, timestamp, hook_point, trigger_type) VALUES (?, ?, ?, ?)",
             (lid, old_ts, "edit", "test"),
         )
         conn.commit()

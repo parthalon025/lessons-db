@@ -89,8 +89,8 @@ def build_feedback_prompt(
     fp_lines = []
     for i, fp in enumerate(false_positives[:5], 1):
         fp_lines.append(
-            f"  {i}. Principle: \"{fp.get('principle', '')}\"\n"
-            f"     Wrongly matched: \"{fp.get('target_title', '')}\" "
+            f'  {i}. Principle: "{fp.get("principle", "")}"\n'
+            f'     Wrongly matched: "{fp.get("target_title", "")}" '
             f"(cluster: {fp.get('target_cluster_seed', '?')})\n"
             f"     Source cluster: {fp.get('cluster_seed', '?')}"
         )

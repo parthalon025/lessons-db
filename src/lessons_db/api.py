@@ -763,8 +763,7 @@ def create_app(  # noqa: C901, PLR0915
                     "value": None,
                     "label": "Query failed",
                     "decision_context": (
-                        "Failed to compute embed failure rate. "
-                        "Check capture_drafts table and detection_source column."
+                        "Failed to compute embed failure rate. Check capture_drafts table and detection_source column."
                     ),
                     "status": "alert",
                 }

@@ -788,9 +788,9 @@ class TestDueLessonsSortedByRetrievability:
         due = get_due_lessons(fsrs_db, threshold=0.9)
         # Verify ascending R order
         for i in range(len(due) - 1):
-            assert (
-                due[i]["retrievability"] <= due[i + 1]["retrievability"]
-            ), f"Not sorted: R[{i}]={due[i]['retrievability']} > R[{i + 1}]={due[i + 1]['retrievability']}"
+            assert due[i]["retrievability"] <= due[i + 1]["retrievability"], (
+                f"Not sorted: R[{i}]={due[i]['retrievability']} > R[{i + 1}]={due[i + 1]['retrievability']}"
+            )
 
 
 # ---------------------------------------------------------------------------

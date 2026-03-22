@@ -3125,8 +3125,7 @@ def meta_eval_learn(ctx, results_file, trends):
                 f1s = [p["f1"] for p in points]
                 latest = points[-1]
                 click.echo(
-                    f"  {vid}: {len(points)} runs, latest F1={latest['f1']:.3f}, "
-                    f"range [{min(f1s):.3f}–{max(f1s):.3f}]"
+                    f"  {vid}: {len(points)} runs, latest F1={latest['f1']:.3f}, range [{min(f1s):.3f}–{max(f1s):.3f}]"
                 )
 
             dim_impacts = compute_dimension_impacts(entries)
@@ -3502,7 +3501,7 @@ def meta_eval_optimize(ctx, strategy, candidates, max_iterations, holdout, per_c
             ).fetchone()
             if row is None:
                 raise click.ClickException(
-                    f"Variant {variant_id!r} has no instruction text in " f"VARIANT_CONFIGS or prompt_variants table."
+                    f"Variant {variant_id!r} has no instruction text in VARIANT_CONFIGS or prompt_variants table."
                 )
             return row["instruction_text"]
 

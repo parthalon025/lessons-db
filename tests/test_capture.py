@@ -233,9 +233,9 @@ class TestCaptureFromTranscript:
             with caplog.at_level(logging.WARNING, logger="lessons_db.capture"):
                 capture_from_transcript("Session transcript text. " * 10, conn)
 
-        assert any(
-            "75" in r.message and "truncating" in r.message for r in caplog.records
-        ), "Expected a WARNING log mentioning 75 and truncating"
+        assert any("75" in r.message and "truncating" in r.message for r in caplog.records), (
+            "Expected a WARNING log mentioning 75 and truncating"
+        )
 
     @patch("lessons_db.capture.requests.post")
     def test_exactly_50_lessons_not_truncated(self, mock_post, db_path):
@@ -527,7 +527,7 @@ class TestCaptureDesignDocCLI:
 def _insert_lesson(conn, polarity="negative"):
     """Helper: insert a minimal lesson and return its id."""
     cursor = conn.execute(
-        "INSERT INTO lessons (title, one_liner, tier, created_date, polarity) " "VALUES (?, ?, 'observation', ?, ?)",
+        "INSERT INTO lessons (title, one_liner, tier, created_date, polarity) VALUES (?, ?, 'observation', ?, ?)",
         [f"Test lesson ({polarity})", "one-liner", date.today().isoformat(), polarity],
     )
     conn.commit()

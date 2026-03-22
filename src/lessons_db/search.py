@@ -164,7 +164,7 @@ def _apply_composite_scores(conn: sqlite3.Connection, results: list[dict]) -> li
             score = relevance_score(conn, lesson_id, context, semantic_sim)
         except Exception as exc:
             logger.warning(
-                "search_combined: relevance_score fallback for lesson %d — %s. " "Using semantic_sim=%.3f as score.",
+                "search_combined: relevance_score fallback for lesson %d — %s. Using semantic_sim=%.3f as score.",
                 lesson_id,
                 exc,
                 semantic_sim,

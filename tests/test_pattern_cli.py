@@ -120,9 +120,9 @@ class TestPatternReview:
         # Highest confidence shown first
         assert "0.90" in result.output, f"Expected 0.90 in output: {result.output}"
         assert "0.80" in result.output, f"Expected 0.80 in output: {result.output}"
-        assert result.output.index("0.90") < result.output.index(
-            "0.80"
-        ), "Expected 0.90 before 0.80 (sorted by confidence DESC)"
+        assert result.output.index("0.90") < result.output.index("0.80"), (
+            "Expected 0.90 before 0.80 (sorted by confidence DESC)"
+        )
 
 
 class TestPatternStatus:

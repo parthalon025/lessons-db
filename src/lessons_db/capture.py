@@ -430,7 +430,7 @@ def detect_wins(
             wins.append(
                 {
                     "win_type": "all_heeded",
-                    "detail": (f"{len(heeded)}/{total} surfaced lessons heeded " f"({heed_rate:.0%} heed rate)"),
+                    "detail": (f"{len(heeded)}/{total} surfaced lessons heeded ({heed_rate:.0%} heed rate)"),
                     "lesson_ids": sorted({e["lesson_id"] for e in heeded}),
                 }
             )

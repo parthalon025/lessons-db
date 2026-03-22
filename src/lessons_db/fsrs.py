@@ -245,7 +245,7 @@ DEFAULT_RETRIEVABILITY = 1.0
 def backfill_fsrs_defaults(conn: sqlite3.Connection) -> int:
     """Set FSRS defaults on any lesson with stability IS NULL. Returns count updated."""
     cursor = conn.execute(
-        "UPDATE lessons SET stability = ?, difficulty = ?, retrievability = ? " "WHERE stability IS NULL",
+        "UPDATE lessons SET stability = ?, difficulty = ?, retrievability = ? WHERE stability IS NULL",
         (DEFAULT_STABILITY, DEFAULT_DIFFICULTY, DEFAULT_RETRIEVABILITY),
     )
     conn.commit()

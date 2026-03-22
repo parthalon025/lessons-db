@@ -47,7 +47,7 @@ def dismiss_latest(conn: sqlite3.Connection, lesson_id: int) -> bool:
     Returns True if an event was found and updated, False if none existed.
     """
     row = conn.execute(
-        "SELECT id FROM surfacing_events " "WHERE lesson_id = ? AND outcome = 'unknown' " "ORDER BY id DESC LIMIT 1",
+        "SELECT id FROM surfacing_events WHERE lesson_id = ? AND outcome = 'unknown' ORDER BY id DESC LIMIT 1",
         [lesson_id],
     ).fetchone()
     if row is None:
@@ -148,7 +148,7 @@ def evaluate_commit(
         return []
 
     dp_rows = conn.execute(
-        "SELECT lesson_id, regex FROM detection_patterns " "WHERE pattern_type IN ('syntactic', 'regex')"
+        "SELECT lesson_id, regex FROM detection_patterns WHERE pattern_type IN ('syntactic', 'regex')"
     ).fetchall()
     dp_by_lesson: dict[int, list[str]] = {}
     for dp in dp_rows:
@@ -226,7 +226,7 @@ def update_win_streak(conn: sqlite3.Connection, category: str, won: bool) -> dic
         current = 1 if won else 0
         longest = current
         conn.execute(
-            "INSERT INTO win_streaks (category, current_streak, longest_streak, last_updated) " "VALUES (?, ?, ?, ?)",
+            "INSERT INTO win_streaks (category, current_streak, longest_streak, last_updated) VALUES (?, ?, ?, ?)",
             [category, current, longest, now],
         )
     else:
@@ -237,7 +237,7 @@ def update_win_streak(conn: sqlite3.Connection, category: str, won: bool) -> dic
             current = 0
             longest = row["longest_streak"]
         conn.execute(
-            "UPDATE win_streaks SET current_streak = ?, longest_streak = ?, last_updated = ? " "WHERE category = ?",
+            "UPDATE win_streaks SET current_streak = ?, longest_streak = ?, last_updated = ? WHERE category = ?",
             [current, longest, now, category],
         )
     conn.commit()

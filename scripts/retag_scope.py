@@ -234,7 +234,7 @@ def main() -> None:
     print(f"\nApplied scope tags to {len(updates)} lessons.")
     total_scoped = conn.execute("SELECT COUNT(*) FROM lessons WHERE scope IS NOT NULL AND scope != ''").fetchone()[0]
     total = conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0]
-    print(f"Coverage: {total_scoped}/{total} lessons now have scope ({100*total_scoped//total}%)")
+    print(f"Coverage: {total_scoped}/{total} lessons now have scope ({100 * total_scoped // total}%)")
 
 
 if __name__ == "__main__":

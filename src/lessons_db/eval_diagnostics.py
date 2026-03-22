@@ -62,7 +62,7 @@ def render_confusion_report(
 
     clusters = sorted({k[0] for k in matrix} | {k[1] for k in matrix})
     lines = ["# Cluster Confusion Matrix\n"]
-    lines.append("Average transfer score — high off-diagonal values " "indicate principle bleed.\n")
+    lines.append("Average transfer score — high off-diagonal values indicate principle bleed.\n")
 
     header = "| Source \\ Target | " + " | ".join(clusters) + " |"
     sep = "|" + "---|" * (len(clusters) + 1)

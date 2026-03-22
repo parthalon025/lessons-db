@@ -62,9 +62,9 @@ class TestEmbedding:
         get_embedding("test text")
 
         called_url = mock_post.call_args[0][0]
-        assert (
-            "7683" in called_url or "7683" in OLLAMA_EMBED_URL
-        ), f"Embed URL should route through ollama-queue (7683), got: {called_url}"
+        assert "7683" in called_url or "7683" in OLLAMA_EMBED_URL, (
+            f"Embed URL should route through ollama-queue (7683), got: {called_url}"
+        )
 
 
 class TestLanceDB:

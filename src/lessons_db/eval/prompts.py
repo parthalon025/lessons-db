@@ -461,7 +461,7 @@ def build_simulation_prompt(scenario: str, principle: str | None = None) -> str:
     """
     rule_section = ""
     if principle:
-        rule_section = "\n## CODING RULE (always check for this)\n" f"{principle}\n\n"
+        rule_section = f"\n## CODING RULE (always check for this)\n{principle}\n\n"
     return (
         "You are reviewing code for a potential bug.\n"
         f"{rule_section}"

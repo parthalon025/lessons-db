@@ -53,7 +53,7 @@ def validate_syntax(
     if not (MIN_CODE_LINES <= bad_lines <= MAX_CODE_LINES):
         return {
             "passed": False,
-            "reason": (f"bad_code length {bad_lines} not in " f"[{MIN_CODE_LINES}, {MAX_CODE_LINES}]"),
+            "reason": (f"bad_code length {bad_lines} not in [{MIN_CODE_LINES}, {MAX_CODE_LINES}]"),
         }
 
     # Python syntax

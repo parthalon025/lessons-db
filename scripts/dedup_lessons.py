@@ -188,9 +188,7 @@ def main() -> None:
         for did in delete_ids:
             dl = lesson_by_id[did]
             print(
-                f"  DEL   [{did}] ({dl['source']}"
-                f"{' +pattern' if did in pattern_ids else ''}): "
-                f"{dl['one_liner'][:70]}"
+                f"  DEL   [{did}] ({dl['source']}{' +pattern' if did in pattern_ids else ''}): {dl['one_liner'][:70]}"
             )
 
     print(f"\nSummary: {len(to_delete)} duplicates to delete across {len(clusters)} clusters")

@@ -106,7 +106,7 @@ def test_migrate_adds_new_files_on_rerun(tmp_path):
     lesson_dir = tmp_path / "lessons"
     lesson_dir.mkdir()
     first = lesson_dir / "2026-01-01-first-lesson.md"
-    first.write_text("# Lesson: First lesson\n\n" "**Tier:** observation\n\n" "## Observation\nFirst.\n")
+    first.write_text("# Lesson: First lesson\n\n**Tier:** observation\n\n## Observation\nFirst.\n")
 
     db_path = tmp_path / "test.db"
     runner = CliRunner()
@@ -123,7 +123,7 @@ def test_migrate_adds_new_files_on_rerun(tmp_path):
 
     # Add a second file
     second = lesson_dir / "2026-01-02-second-lesson.md"
-    second.write_text("# Lesson: Second lesson\n\n" "**Tier:** insight\n\n" "## Observation\nSecond.\n")
+    second.write_text("# Lesson: Second lesson\n\n**Tier:** insight\n\n## Observation\nSecond.\n")
 
     # Second run — should add 1, skip 1
     result = runner.invoke(main, migrate_args)

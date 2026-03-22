@@ -195,9 +195,9 @@ def test_scan_summary_metric_structure(client):
         assert set(obj.keys()) == METRIC_KEYS, f"{metric} has wrong keys: {set(obj.keys())}"
         assert obj["status"] in VALID_STATUSES, f"{metric}.status invalid: {obj['status']}"
         assert isinstance(obj["label"], str) and obj["label"], f"{metric}.label must be non-empty string"
-        assert (
-            isinstance(obj["decision_context"], str) and obj["decision_context"]
-        ), f"{metric}.decision_context must be non-empty string"
+        assert isinstance(obj["decision_context"], str) and obj["decision_context"], (
+            f"{metric}.decision_context must be non-empty string"
+        )
 
 
 def test_scan_summary_promotion_rate_empty_db(client):

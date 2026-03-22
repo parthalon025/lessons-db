@@ -606,9 +606,7 @@ class TestEvalOptimizeEndToEnd:
         # Debug output on failure
         if result.exit_code != 0:
             raise AssertionError(
-                f"CLI exited with code {result.exit_code}\n"
-                f"Output: {result.output}\n"
-                f"Exception: {result.exception}"
+                f"CLI exited with code {result.exit_code}\nOutput: {result.output}\nException: {result.exception}"
             ) from result.exception
 
         # Should have registered at least one X-variant

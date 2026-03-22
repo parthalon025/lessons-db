@@ -373,8 +373,7 @@ def append_to_program_md(
         new_lines.append(f"- {date}: [ABLATION] top impacts: {'; '.join(ab_lines)}")
     for ins in insights:
         note = (
-            f"- {ins['date']}: [{ins['variant']}] {ins['summary']}. "
-            f"{ins['diagnosis']}. Next: {ins['recommendation']}."
+            f"- {ins['date']}: [{ins['variant']}] {ins['summary']}. {ins['diagnosis']}. Next: {ins['recommendation']}."
         )
         new_lines.append(note)
 
