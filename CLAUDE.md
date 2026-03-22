@@ -364,22 +364,3 @@ language:python, domain:lessons-db
 
 See `docs/` for implementation notes and design decisions.
 
-## Code Quality
-- Lint: `make lint`
-- Format: `make format`
-
-## Quality Gates
-- Before committing: `/verify`
-- Before PRs: `lessons-db scan --target . --baseline HEAD`
-
-## Lessons
-- Check before planning: `/check-lessons`
-- Capture after bugs: `/capture-lesson`
-- Lessons: `lessons-db search` to query, `lessons-db capture` to add. DB is authoritative — never write lesson .md files directly.
-
-## Local AI Review
-- Code review: `ollama-code-review .`
-
-## Semantic Search
-- Generate: `bash scripts/generate-embeddings.sh`
-- Storage: `.embeddings/` (gitignored)
