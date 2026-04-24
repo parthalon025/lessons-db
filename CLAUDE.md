@@ -327,6 +327,116 @@ Tests are grouped by pipeline stage. Run them to verify the pipeline without nee
 | `TestCleanPrinciple` | deepseek-r1 emits reasoning traces before the principle | Strips CoT preamble, `**Principle:**` markers, parenthetical `*(This principle applies...)*` suffixes |
 | `TestBayesianSignals` | Multi-signal fusion (paired + embedding + scope + mechanism) | Each extractor returns a probability in [0,1]; posterior fusion combines them correctly |
 
+## Eval Pipeline — Variants & Tests
+
+### What the eval pipeline does (plain language)
+
+Every lesson in the DB encodes a mistake or pattern. The goal is to generate a short *principle* — a generalisable rule — that another AI can use to recognise the same type of problem in a completely different codebase. The eval pipeline answers: **which prompt + model combination produces the most useful principles?**
+
+It works in two stages:
+
+1. **Generate** (`eval-generate`) — For each lesson, ask each variant (A-M) to produce a principle. Output: `results.json` (one row per variant × lesson).
+2. **Judge** (`eval-judge`) — An independent judge model reads each principle and rates: "Does this principle apply to a *related* lesson (same cluster)? Does it wrongly apply to an *unrelated* lesson?" Output: F1 score per variant + `report.md`.
+
+The cluster system is the ground truth: lessons in the same cluster share a root cause. A good principle transfers *within* a cluster (recall) and doesn't false-positive outside it (precision).
+
+**Recommended run order:**
+```
+# 1. Generate principles for all variants (takes ~20-60 min depending on model load)
+lessons-db meta eval-generate --variants A,B,C,D,E,F,G,H,M --per-cluster 4
+
+# 2. Score with the default judge (deepseek-r1:8b)
+lessons-db meta eval-judge results.json
+
+# 3. If you want a second opinion, rerun with OpenAI
+lessons-db meta eval-judge results.json --openai --judge-model gpt-4o-mini
+
+# 4. Check the report
+cat ~/.local/share/lessons-db/eval/report.md
+```
+Run A first alone to establish a baseline before investing compute in all variants.
+
+**Reading the results:**
+- **F1 ↑** = better overall. That's the number to optimise.
+- **Recall high, precision low** = principle is too broad — it matches everything, including unrelated lessons. Make the prompt more specific.
+- **Precision high, recall low** = principle is too narrow — it misses related lessons. Make the prompt more general.
+- **Mean AUC** (from rank metrics) is the most trustworthy number — it's rank-based and immune to a judge that inflates all scores equally.
+
+### Variant Matrix
+
+Each variant is one experiment: swap one thing (prompt style, model size, or generation strategy) and see if F1 improves. The letters are just IDs — no ranking implied.
+
+| ID | Why it exists | What it changes vs control | What it produces |
+|----|--------------|---------------------------|-----------------|
+| **A** *(control)* | Baseline — measures the floor. All other variants are compared to this. | Few-shot examples in prompt; 4k context window | Principles anchored to example format; fast to run |
+| **B** | Does "explain *why* this failed" beat "match this format"? | Removes few-shot examples; adds causal framing; 8k context | Principles stated as root causes, not just rules |
+| **C** | Does splitting a long lesson into small chunks avoid losing context halfway through? | Same prompt as B but each lesson is split into ≈512-token chunks first | One principle per chunk; more focused, but may miss cross-cutting patterns |
+| **D** | Does a bigger model do better with the same prompt? | Swaps deepseek-r1:8b → qwen3:14b (model ablation vs B) | Same causal principles, but from a 14B model |
+| **E** | Does chunking help a bigger model too? | qwen3:14b + chunked input (combination of C and D) | Chunk-level principles from the larger model |
+| **F** | Does asking "when does this NOT apply?" sharpen the principle? | Adds a contrastive instruction ("state the boundary conditions") | Principles with explicit scope limits — fewer false positives |
+| **G** | Can a bigger model follow contrastive instructions better? | qwen3:14b + contrastive prompt (model ablation vs F) | More precisely scoped principles from a 14B model |
+| **H** | Does a two-pass pipeline (observe → distill) produce the most transferable output? | Two LLM calls: pass 1 extracts the abstract pattern, pass 2 distills the principle | The most deliberate output; slowest (2× calls); best for hard-to-generalise lessons |
+| **M** | Does capturing *why* something fails (mechanism) transfer better than a surface rule? | Separate mechanism-extraction prompt; chunked; qwen3.5:9b; asks for root-cause chain | Causal mechanism triplets (trigger → failure → consequence) rather than rules |
+
+### Test Classes in `tests/test_eval.py`
+
+Tests are grouped by pipeline stage. Run them to verify the pipeline without needing a live Ollama connection (all external calls are mocked).
+
+**Config & structure tests** — verify the pipeline is wired up correctly before running anything:
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestEvalConfig` | Catch misconfigured data paths early | `EVAL_DIR` points to `DATA_DIR / "eval"` |
+| `TestVariantConfigs` | Prevent silent variant misconfiguration | 9 variants exist, all have required fields (`prompt_id`, `model`, `temperature`, `num_ctx`, `chunked`), A is the control |
+
+**Sampling tests** — verify that test set selection is unbiased and respects limits:
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestSelectSourceLessons` | Source lessons must be diverse and bounded | Per-cluster limits respected; category diversity maximised; double-loop meta-lessons excluded |
+| `TestSelectTransferTargets` | Transfer targets must be correctly split | Returns `same_cluster` and `diff_cluster` lists; source lesson excluded from targets |
+
+**Prompt builder tests** — verify prompts are assembled correctly before spending LLM time:
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestBuildGenerationPrompt` | Wrong prompt = wrong principle | Prompt contains lesson content; chunked variants split input into multiple chunks |
+| `TestBuildJudgePrompt` | Judge must see both principle and target | Prompt contains principle text and target lesson |
+| `TestBuildBinaryJudgePrompt` | YES/NO judge needs clean format | Prompt asks for YES/NO; includes both principle and target |
+| `TestBuildPairedJudgePrompt` | A/B position must be randomised to avoid position bias | A/B assignment is random; `same_is_a` flag correctly tracks which position is ground truth |
+
+**Response parser tests** — verify the pipeline doesn't silently drop scores when the LLM returns messy output:
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestParseJudgement` | LLMs return JSON in various formats | Valid JSON extracts scores 1-5; missing keys or bad JSON returns `None` (not a crash) |
+| `TestParseBinaryJudge` | YES/NO can appear in reasoning traces | Strips `<think>` blocks; `YES`/`NO` at start takes priority; ambiguous short responses handled |
+| `TestParsePairedJudge` | A/B/NEITHER can be buried in long responses | Strips thinking tags; single-letter fallback for short responses; `NEITHER` recognised anywhere |
+
+**Metrics tests** — verify that scores aggregate into the right F1/AUC numbers:
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestComputeMetrics` | Rubric scoring (1-5) must produce correct recall/precision/F1 | Same-cluster pairs with score ≥ 3 count as recall; diff-cluster pairs with score ≤ 2 count as precision |
+| `TestComputeMetricsBinary` | Binary scoring (YES/NO) uses TP/FP/FN/TN framing | `matched=True` on same-cluster = TP; `matched=True` on diff-cluster = FP; standard F1 formula |
+| `TestComputeRankMetrics` | Prevents "judge inflation" from inflating all scores equally | AUC per principle via Mann-Whitney U; `discriminating_frac` = fraction of principles with AUC > 0.5 |
+
+**End-to-end orchestration tests** — verify the full pipeline runs without a live model:
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestRunEvalGenerate` | Generation loop must write a valid results JSON | Mocks `call_ollama`; confirms `results.json` written, contains one entry per variant × source lesson |
+| `TestRunEvalJudge` | Judge loop must write scored pairs and a report | Mocks `call_judge`; confirms scored pairs JSON + `report.md` written; metrics aggregated |
+| `TestRunPairedTournament` | Tournament win_rate computation must be correct | Mocks judge + `build_paired_judge_prompt`; same-group target wins counted correctly |
+| `TestComputeTournamentMetrics` | Tournament aggregation must handle edge cases | Aggregates per-principle win_rates into mean, discriminating_frac, win/loss/neither totals |
+
+**Utility tests:**
+
+| Class | Why it exists | What it verifies |
+|-------|--------------|-----------------|
+| `TestCleanPrinciple` | deepseek-r1 emits reasoning traces before the principle | Strips CoT preamble, `**Principle:**` markers, parenthetical `*(This principle applies...)*` suffixes |
+| `TestBayesianSignals` | Multi-signal fusion (paired + embedding + scope + mechanism) | Each extractor returns a probability in [0,1]; posterior fusion combines them correctly |
+
 ## Learning System (8 Mechanisms)
 
 | Mechanism | Implementation | Key Component |
