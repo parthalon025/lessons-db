@@ -10,14 +10,25 @@ Automated lessons-learned system with human-like learning. Captures mistakes and
 src/lessons_db/
   __init__.py
   cli.py              # Click CLI: capture, search, scan, rule, index, export, summary, status, migrate, fsrs, learn, kpi, calibrate, transfer, reuse, meta
-  config.py            # Paths, Ollama URLs (queue/embed/analysis), env var overrides (incl. REPO_CACHE_DIR)
-  db.py                # SQLite schema, migrations, CRUD (incl. win_streaks, surfacing_events)
-  fsrs.py              # FSRS-6 spaced repetition: retrievability, stability, difficulty, adaptive fading
-  learn.py             # Surfacing events, outcome recording, feedback loop, exception-finding (SFBT)
-  prevention.py        # Velocity detection, fix queue, content checking
-  github_miner.py      # GitHub mining pipeline: discover_repos, mine_repos_for_gaps, MiningConfig
-  vectors.py           # LanceDB + Ollama embedding via ollama-queue
-  eval/                # Transfer-test evaluation package (split from monolith)
+  api.py              # FastAPI app (create_app) — server on port 7685; all /api/* and /eval/* routes
+  config.py           # Paths, Ollama URLs (queue/embed/analysis), env var overrides (incl. REPO_CACHE_DIR)
+  db.py               # SQLite schema, migrations, CRUD (incl. win_streaks, surfacing_events)
+  fsrs.py             # FSRS-6 spaced repetition: retrievability, stability, difficulty, adaptive fading
+  learn.py            # Surfacing events, outcome recording, feedback loop, exception-finding (SFBT)
+  prevention.py       # Velocity detection, fix queue, content checking
+  github_miner.py     # GitHub mining pipeline: discover_repos, mine_repos_for_gaps, MiningConfig
+  vectors.py          # LanceDB + Ollama embedding via ollama-queue
+  cluster.py          # HDBSCAN adaptive clustering on embeddings; discover_clusters(), extract_representative_terms()
+  enrich.py           # Ollama backfill: false_assumption, detection_pattern, invariant fields
+  review.py           # Triage + batch review: DraftReview Pydantic model, auto-promotion logic
+  pattern_extract.py  # Stage 1 pattern extraction: Semgrep + embedding similarity across repos
+  pattern_triage.py   # Pattern review: OpenAI structured output, noise filtering, confidence threshold
+  pattern_validator.py # AST analysis, code snippet verification
+  pattern_verify.py   # Full validation of patterns against lesson data
+  semgrep_import.py   # Import from semgrep/semgrep-rules registry (delta import)
+  conflict_detector.py # Detect contradictory or overlapping lessons
+  gap_analyzer.py     # Identify under-covered areas in the lesson database
+  eval/               # Transfer-test evaluation package — see eval/CLAUDE.md
     __init__.py        # Re-exports all public symbols for backward compatibility
     variants.py        # Variant configs (A-H, M), retry constants, group_by values
     sampling.py        # Test set selection: source lessons + transfer targets
@@ -27,6 +38,10 @@ src/lessons_db/
     generate.py        # Generation orchestrator: produce principles for (variant, lesson) pairs
     judge.py           # Judge orchestrator: scoring, metrics, paired tournament
     reports.py         # Report renderers: V1/V2 markdown, diagnostics, simulation lift
+    runs.py            # Record + query eval run history (eval_runs table)
+    optimize.py        # APO: run_apo_batch(), cost-aware variant selection
+    analysis.py        # bootstrap_f1_ci(), compute_stability(), extract_failure_cases(), propose_next_variant()
+    learn.py           # Bayesian principle learning: compute_posterior(), split_holdout()
   eval_diagnostics.py  # Confusion matrix + variant comparison diagnostics
   capture.py           # Auto-capture from transcript/diff/test + win detection
   search.py            # Semantic search + file-path lookup + content match
@@ -51,6 +66,8 @@ tests/
 ```
 
 ## How to Run
+
+Requires **Python 3.12+**. Entry point: `lessons_db.cli:main`. API server: `lessons_db.api:create_app` (uvicorn on port 7685).
 
 ```bash
 cd ~/Documents/projects/lessons-db
@@ -327,116 +344,6 @@ Tests are grouped by pipeline stage. Run them to verify the pipeline without nee
 | `TestCleanPrinciple` | deepseek-r1 emits reasoning traces before the principle | Strips CoT preamble, `**Principle:**` markers, parenthetical `*(This principle applies...)*` suffixes |
 | `TestBayesianSignals` | Multi-signal fusion (paired + embedding + scope + mechanism) | Each extractor returns a probability in [0,1]; posterior fusion combines them correctly |
 
-## Eval Pipeline — Variants & Tests
-
-### What the eval pipeline does (plain language)
-
-Every lesson in the DB encodes a mistake or pattern. The goal is to generate a short *principle* — a generalisable rule — that another AI can use to recognise the same type of problem in a completely different codebase. The eval pipeline answers: **which prompt + model combination produces the most useful principles?**
-
-It works in two stages:
-
-1. **Generate** (`eval-generate`) — For each lesson, ask each variant (A-M) to produce a principle. Output: `results.json` (one row per variant × lesson).
-2. **Judge** (`eval-judge`) — An independent judge model reads each principle and rates: "Does this principle apply to a *related* lesson (same cluster)? Does it wrongly apply to an *unrelated* lesson?" Output: F1 score per variant + `report.md`.
-
-The cluster system is the ground truth: lessons in the same cluster share a root cause. A good principle transfers *within* a cluster (recall) and doesn't false-positive outside it (precision).
-
-**Recommended run order:**
-```
-# 1. Generate principles for all variants (takes ~20-60 min depending on model load)
-lessons-db meta eval-generate --variants A,B,C,D,E,F,G,H,M --per-cluster 4
-
-# 2. Score with the default judge (deepseek-r1:8b)
-lessons-db meta eval-judge results.json
-
-# 3. If you want a second opinion, rerun with OpenAI
-lessons-db meta eval-judge results.json --openai --judge-model gpt-4o-mini
-
-# 4. Check the report
-cat ~/.local/share/lessons-db/eval/report.md
-```
-Run A first alone to establish a baseline before investing compute in all variants.
-
-**Reading the results:**
-- **F1 ↑** = better overall. That's the number to optimise.
-- **Recall high, precision low** = principle is too broad — it matches everything, including unrelated lessons. Make the prompt more specific.
-- **Precision high, recall low** = principle is too narrow — it misses related lessons. Make the prompt more general.
-- **Mean AUC** (from rank metrics) is the most trustworthy number — it's rank-based and immune to a judge that inflates all scores equally.
-
-### Variant Matrix
-
-Each variant is one experiment: swap one thing (prompt style, model size, or generation strategy) and see if F1 improves. The letters are just IDs — no ranking implied.
-
-| ID | Why it exists | What it changes vs control | What it produces |
-|----|--------------|---------------------------|-----------------|
-| **A** *(control)* | Baseline — measures the floor. All other variants are compared to this. | Few-shot examples in prompt; 4k context window | Principles anchored to example format; fast to run |
-| **B** | Does "explain *why* this failed" beat "match this format"? | Removes few-shot examples; adds causal framing; 8k context | Principles stated as root causes, not just rules |
-| **C** | Does splitting a long lesson into small chunks avoid losing context halfway through? | Same prompt as B but each lesson is split into ≈512-token chunks first | One principle per chunk; more focused, but may miss cross-cutting patterns |
-| **D** | Does a bigger model do better with the same prompt? | Swaps deepseek-r1:8b → qwen3:14b (model ablation vs B) | Same causal principles, but from a 14B model |
-| **E** | Does chunking help a bigger model too? | qwen3:14b + chunked input (combination of C and D) | Chunk-level principles from the larger model |
-| **F** | Does asking "when does this NOT apply?" sharpen the principle? | Adds a contrastive instruction ("state the boundary conditions") | Principles with explicit scope limits — fewer false positives |
-| **G** | Can a bigger model follow contrastive instructions better? | qwen3:14b + contrastive prompt (model ablation vs F) | More precisely scoped principles from a 14B model |
-| **H** | Does a two-pass pipeline (observe → distill) produce the most transferable output? | Two LLM calls: pass 1 extracts the abstract pattern, pass 2 distills the principle | The most deliberate output; slowest (2× calls); best for hard-to-generalise lessons |
-| **M** | Does capturing *why* something fails (mechanism) transfer better than a surface rule? | Separate mechanism-extraction prompt; chunked; qwen3.5:9b; asks for root-cause chain | Causal mechanism triplets (trigger → failure → consequence) rather than rules |
-
-### Test Classes in `tests/test_eval.py`
-
-Tests are grouped by pipeline stage. Run them to verify the pipeline without needing a live Ollama connection (all external calls are mocked).
-
-**Config & structure tests** — verify the pipeline is wired up correctly before running anything:
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestEvalConfig` | Catch misconfigured data paths early | `EVAL_DIR` points to `DATA_DIR / "eval"` |
-| `TestVariantConfigs` | Prevent silent variant misconfiguration | 9 variants exist, all have required fields (`prompt_id`, `model`, `temperature`, `num_ctx`, `chunked`), A is the control |
-
-**Sampling tests** — verify that test set selection is unbiased and respects limits:
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestSelectSourceLessons` | Source lessons must be diverse and bounded | Per-cluster limits respected; category diversity maximised; double-loop meta-lessons excluded |
-| `TestSelectTransferTargets` | Transfer targets must be correctly split | Returns `same_cluster` and `diff_cluster` lists; source lesson excluded from targets |
-
-**Prompt builder tests** — verify prompts are assembled correctly before spending LLM time:
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestBuildGenerationPrompt` | Wrong prompt = wrong principle | Prompt contains lesson content; chunked variants split input into multiple chunks |
-| `TestBuildJudgePrompt` | Judge must see both principle and target | Prompt contains principle text and target lesson |
-| `TestBuildBinaryJudgePrompt` | YES/NO judge needs clean format | Prompt asks for YES/NO; includes both principle and target |
-| `TestBuildPairedJudgePrompt` | A/B position must be randomised to avoid position bias | A/B assignment is random; `same_is_a` flag correctly tracks which position is ground truth |
-
-**Response parser tests** — verify the pipeline doesn't silently drop scores when the LLM returns messy output:
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestParseJudgement` | LLMs return JSON in various formats | Valid JSON extracts scores 1-5; missing keys or bad JSON returns `None` (not a crash) |
-| `TestParseBinaryJudge` | YES/NO can appear in reasoning traces | Strips `<think>` blocks; `YES`/`NO` at start takes priority; ambiguous short responses handled |
-| `TestParsePairedJudge` | A/B/NEITHER can be buried in long responses | Strips thinking tags; single-letter fallback for short responses; `NEITHER` recognised anywhere |
-
-**Metrics tests** — verify that scores aggregate into the right F1/AUC numbers:
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestComputeMetrics` | Rubric scoring (1-5) must produce correct recall/precision/F1 | Same-cluster pairs with score ≥ 3 count as recall; diff-cluster pairs with score ≤ 2 count as precision |
-| `TestComputeMetricsBinary` | Binary scoring (YES/NO) uses TP/FP/FN/TN framing | `matched=True` on same-cluster = TP; `matched=True` on diff-cluster = FP; standard F1 formula |
-| `TestComputeRankMetrics` | Prevents "judge inflation" from inflating all scores equally | AUC per principle via Mann-Whitney U; `discriminating_frac` = fraction of principles with AUC > 0.5 |
-
-**End-to-end orchestration tests** — verify the full pipeline runs without a live model:
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestRunEvalGenerate` | Generation loop must write a valid results JSON | Mocks `call_ollama`; confirms `results.json` written, contains one entry per variant × source lesson |
-| `TestRunEvalJudge` | Judge loop must write scored pairs and a report | Mocks `call_judge`; confirms scored pairs JSON + `report.md` written; metrics aggregated |
-| `TestRunPairedTournament` | Tournament win_rate computation must be correct | Mocks judge + `build_paired_judge_prompt`; same-group target wins counted correctly |
-| `TestComputeTournamentMetrics` | Tournament aggregation must handle edge cases | Aggregates per-principle win_rates into mean, discriminating_frac, win/loss/neither totals |
-
-**Utility tests:**
-
-| Class | Why it exists | What it verifies |
-|-------|--------------|-----------------|
-| `TestCleanPrinciple` | deepseek-r1 emits reasoning traces before the principle | Strips CoT preamble, `**Principle:**` markers, parenthetical `*(This principle applies...)*` suffixes |
-| `TestBayesianSignals` | Multi-signal fusion (paired + embedding + scope + mechanism) | Each extractor returns a probability in [0,1]; posterior fusion combines them correctly |
-
 ## Learning System (8 Mechanisms)
 
 | Mechanism | Implementation | Key Component |
@@ -467,10 +374,104 @@ Tests are grouped by pipeline stage. Run them to verify the pipeline without nee
 | **Judge disagreement / F1 near zero** | Report shows precision=0 or recall=0 for all variants | Run with `--openai --judge-model gpt-4o-mini` as a sanity check; if OpenAI diverges, the cluster assignments may be stale — re-run `lessons-db index --seed-only` |
 | **Empty principles in results.json** | Many entries have `principle: null`; `--resume` re-skips them silently | Re-run with `--resume` omitted (starts fresh); or delete the null-entry rows from `results.json` manually before resuming |
 
-## Scope Tags
-language:python, domain:lessons-db
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
 
-## Design Doc
+This project is indexed by GitNexus as **lessons-db** (2868 symbols, 11865 relationships, 244 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-See `docs/` for implementation notes and design decisions.
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## When Debugging
+
+1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
+2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
+3. `READ gitnexus://repo/lessons-db/process/{processName}` — trace the full execution flow step by step
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+
+## When Refactoring
+
+- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
+- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
+- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Tools Quick Reference
+
+| Tool | When to use | Command |
+|------|-------------|---------|
+| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
+| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
+| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
+| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
+| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
+| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
+
+## Impact Risk Levels
+
+| Depth | Meaning | Action |
+|-------|---------|--------|
+| d=1 | WILL BREAK — direct callers/importers | MUST update these |
+| d=2 | LIKELY AFFECTED — indirect deps | Should test |
+| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/lessons-db/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/lessons-db/clusters` | All functional areas |
+| `gitnexus://repo/lessons-db/processes` | All execution flows |
+| `gitnexus://repo/lessons-db/process/{name}` | Step-by-step execution trace |
+
+## Self-Check Before Finishing
+
+Before completing any code modification task, verify:
+1. `gitnexus_impact` was run for all modified symbols
+2. No HIGH/CRITICAL risk warnings were ignored
+3. `gitnexus_detect_changes()` confirms changes match expected scope
+4. All d=1 (WILL BREAK) dependents were updated
+
+## Keeping the Index Fresh
+
+After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
+
+```bash
+npx gitnexus analyze
+```
+
+If the index previously included embeddings, preserve them by adding `--embeddings`:
+
+```bash
+npx gitnexus analyze --embeddings
+```
+
+To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**
+
+> Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

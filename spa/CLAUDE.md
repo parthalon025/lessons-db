@@ -1,3 +1,31 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## SPA Dashboard — Architecture
+
+Preact 10 + `@preact/signals` + esbuild + superhot-ui, served by FastAPI at `http://localhost:7685/ui/`.
+
+**Build:**
+```bash
+npm run build   # produces dist/ (required before starting FastAPI)
+npm run dev     # watch mode
+```
+
+FastAPI only mounts `/ui/` if `dist/` exists at startup. `superhot-ui` is a `file:` dep at `../../superhot-ui` — if that path is missing, the build fails.
+
+**Routing:** Signal-based via `currentRoute` signal in `AppLayout.jsx` — no router library. Navigate by setting the signal value.
+
+**State:** Preact Signals stores in `src/stores/` — one store per domain (`lessons`, `stats`, `health`, `pipelines`, `prevention`, `triage`). Components subscribe by reading signals directly; no Context or prop-drilling.
+
+**API layer:** All calls in `src/api.js`, relative to `/api/` (same origin). `src/polling.js` manages interval-based refresh — call `startPolling(id, fn, intervalMs)` / `stopPolling(id)`.
+
+**Pages:** `Dashboard` (overview stats), `Lessons` (search + browse), `Triage` (capture draft review), `Eval` (quality pipeline), `Admin` (settings + scan triggers).
+
+**JSX gotcha:** Never use `h` or `Fragment` as callback parameter names — esbuild injects `h` as the JSX factory and shadowing it causes silent render crashes.
+
+---
+
 <!-- superhot-ui:0.4.0 -->
 ## superhot-ui Design System
 
